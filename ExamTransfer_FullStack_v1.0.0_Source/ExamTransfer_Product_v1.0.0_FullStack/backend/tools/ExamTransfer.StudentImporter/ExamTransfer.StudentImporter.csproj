@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ExamTransfer.StudentImporter</RootNamespace>
+    <AssemblyName>ExamTransfer.StudentImporter</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/ExamTransfer.Infrastructure/ExamTransfer.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

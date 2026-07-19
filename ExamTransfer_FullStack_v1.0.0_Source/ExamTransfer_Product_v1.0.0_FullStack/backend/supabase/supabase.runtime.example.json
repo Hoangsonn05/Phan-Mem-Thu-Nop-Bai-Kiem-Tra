@@ -1,0 +1,19 @@
+{
+  "Cloud": {
+    "Enabled": true,
+    "AccessMode": "UserSession",
+    "Environment": "Development",
+    "SupabaseUrl": "https://YOUR_PROJECT_REF.supabase.co",
+    "PublishableKey": "sb_publishable_REPLACE_ME",
+    "OrganizationId": "00000000-0000-0000-0000-000000000000",
+    "Schema": "public",
+    "ExamBucket": "exam-archives",
+    "SubmissionBucket": "submission-archives",
+    "ExportBucket": "report-exports",
+    "BackupBucket": "backup-archives",
+    "UseResumableUploads": true,
+    "StandardUploadThresholdBytes": 6291456,
+    "TusChunkSizeBytes": 6291456,
+    "PersistUserSession": true
+  }
+}

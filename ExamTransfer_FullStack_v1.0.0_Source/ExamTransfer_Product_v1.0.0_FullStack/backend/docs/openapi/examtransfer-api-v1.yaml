@@ -1,0 +1,82 @@
+openapi: 3.1.0
+info:
+  title: ExamTransfer LocalServer API
+  version: 1.2.0
+  description: Local-first LAN API with optional Supabase user-session or trusted-server synchronization.
+servers:
+  - url: http://localhost:5048/api/v1
+paths:
+  /system/status:
+    get:
+      summary: System bootstrap status
+      security: []
+      responses:
+        '200': { description: Status envelope }
+  /settings:
+    get:
+      summary: Read runtime settings
+      responses:
+        '200': { description: Settings envelope }
+    put:
+      summary: Save local and Supabase non-secret settings
+      responses:
+        '200': { description: Updated settings envelope }
+  /cloud/preflight:
+    get:
+      summary: Validate Supabase URL, key, tenant, session and reachability
+      responses:
+        '200': { description: Cloud preflight result }
+  /cloud/auth/session:
+    get:
+      summary: Read cached protected Supabase session status
+      responses:
+        '200': { description: Cloud session status }
+  /cloud/auth/login:
+    post:
+      summary: Sign in a Supabase Teacher or Admin for UserSession mode
+      responses:
+        '200': { description: Cloud session }
+        '401': { description: Authentication failed }
+        '403': { description: Wrong organization or role }
+  /cloud/auth/refresh:
+    post:
+      summary: Refresh the Supabase access token
+      responses:
+        '200': { description: Refreshed cloud session }
+  /cloud/auth/logout:
+    post:
+      summary: Revoke local cloud session and clear protected cache
+      responses:
+        '200': { description: Logged out }
+  /cloud/sync/status:
+    get:
+      summary: Read durable outbox synchronization status
+      responses:
+        '200': { description: Queue and connectivity status }
+  /cloud/sync:
+    post:
+      summary: Requeue failed outbox items
+      responses:
+        '200': { description: Retry scheduled }
+  /classes:
+    get: { summary: List classes, responses: { '200': { description: Paged classes } } }
+    post: { summary: Create class locally and enqueue cloud projection, responses: { '200': { description: Class detail } } }
+  /exams:
+    get: { summary: List exams, responses: { '200': { description: Paged exams } } }
+    post: { summary: Create exam locally and enqueue cloud projection, responses: { '200': { description: Exam detail } } }
+  /sessions/join:
+    post:
+      summary: Join a waiting LAN session
+      security: []
+      responses:
+        '200': { description: Join result and participant token }
+  /submissions/init:
+    post:
+      summary: Initialize idempotent chunk upload
+      responses:
+        '200': { description: Upload plan }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+security:
+  - bearerAuth: []

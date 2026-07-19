@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/backend/">
+    <Project Path="backend/src/ExamTransfer.Shared.Contracts/ExamTransfer.Shared.Contracts.csproj" />
+    <Project Path="backend/src/ExamTransfer.Domain/ExamTransfer.Domain.csproj" />
+    <Project Path="backend/src/ExamTransfer.Application/ExamTransfer.Application.csproj" />
+    <Project Path="backend/src/ExamTransfer.Infrastructure/ExamTransfer.Infrastructure.csproj" />
+    <Project Path="backend/src/ExamTransfer.LocalServer/ExamTransfer.LocalServer.csproj" />
+    <Project Path="backend/src/ExamTransfer.DbMigrator/ExamTransfer.DbMigrator.csproj" />
+    <Project Path="backend/src/ExamTransfer.Agent/ExamTransfer.Agent.csproj" />
+  </Folder>
+  <Folder Name="/frontend/">
+    <Project Path="frontend/src/ExamTransfer.Desktop/ExamTransfer.Desktop.csproj" />
+  </Folder>
+</Solution>

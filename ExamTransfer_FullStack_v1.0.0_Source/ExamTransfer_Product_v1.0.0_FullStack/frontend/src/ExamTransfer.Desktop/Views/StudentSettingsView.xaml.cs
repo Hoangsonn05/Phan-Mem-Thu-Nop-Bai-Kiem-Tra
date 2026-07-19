@@ -1,0 +1,11 @@
+﻿using System.Windows.Controls;
+
+namespace ExamTransfer.Desktop.Views;
+
+public partial class StudentSettingsView : UserControl
+{
+    public StudentSettingsView()
+    {
+        InitializeComponent();
+    }
+}

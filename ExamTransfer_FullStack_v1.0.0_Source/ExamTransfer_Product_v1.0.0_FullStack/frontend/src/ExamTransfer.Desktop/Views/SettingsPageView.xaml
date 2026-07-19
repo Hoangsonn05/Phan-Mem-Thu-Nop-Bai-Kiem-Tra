@@ -1,0 +1,265 @@
+﻿<UserControl x:Class="ExamTransfer.Desktop.Views.SettingsPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="32">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="16" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid>
+            <StackPanel>
+                <TextBlock Text="Cài đặt hệ thống"
+                           Style="{StaticResource PageTitleText}" />
+                <TextBlock Text="Cấu hình mạng LAN, lưu trữ, truyền file và đồng bộ Supabase."
+                           Style="{StaticResource BodyText}"
+                           Margin="0,5,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Right">
+                <Button Content="Chẩn đoán"
+                        Command="{Binding DiagnosticsCommand}"
+                        Style="{StaticResource SecondaryButton}" />
+                <Button Content="Kiểm tra Supabase"
+                        Command="{Binding CloudPreflightCommand}"
+                        Style="{StaticResource SecondaryButton}"
+                        Margin="8,0,0,0" />
+                <Button Content="Đồng bộ ngay"
+                        Command="{Binding SyncCommand}"
+                        Style="{StaticResource SecondaryButton}"
+                        Margin="8,0,0,0" />
+                <Button Content="Lưu cài đặt"
+                        Command="{Binding SaveCommand}"
+                        Style="{StaticResource PrimaryButton}"
+                        Margin="8,0,0,0" />
+            </StackPanel>
+        </Grid>
+
+        <ScrollViewer Grid.Row="2"
+                      VerticalScrollBarVisibility="Auto">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition />
+                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="Mạng LAN"
+                                       Style="{StaticResource SectionTitleText}" />
+                            <Grid Margin="0,14,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition />
+                                    <ColumnDefinition Width="10" />
+                                    <ColumnDefinition />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Cổng máy chủ"
+                                               Style="{StaticResource CaptionText}" />
+                                    <TextBox Text="{Binding ServerPort}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Cổng discovery"
+                                               Style="{StaticResource CaptionText}" />
+                                    <TextBox Text="{Binding DiscoveryPort}" />
+                                </StackPanel>
+                            </Grid>
+                            <CheckBox Content="Bật discovery trong LAN"
+                                      IsChecked="{Binding DiscoveryEnabled}"
+                                      Margin="0,12,0,0" />
+                            <CheckBox Content="Sử dụng HTTPS"
+                                      IsChecked="{Binding UseHttps}"
+                                      Margin="0,8,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}"
+                            Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Lưu trữ và truyền file"
+                                       Style="{StaticResource SectionTitleText}" />
+                            <TextBlock Text="Thư mục dữ liệu"
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="0,12,0,5" />
+                            <TextBox Text="{Binding StorageRoot}" />
+                            <Button Content="Chọn thư mục"
+                                    Command="{Binding BrowseStorageCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Margin="0,8,0,0" />
+                            <Grid Margin="0,14,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition />
+                                    <ColumnDefinition Width="10" />
+                                    <ColumnDefinition />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Chunk size (byte)"
+                                               Style="{StaticResource CaptionText}" />
+                                    <TextBox Text="{Binding ChunkSize}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Upload đồng thời"
+                                               Style="{StaticResource CaptionText}" />
+                                    <TextBox Text="{Binding MaxUploads}" />
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}"
+                            Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Kết quả chẩn đoán"
+                                       Style="{StaticResource SectionTitleText}" />
+                            <TextBlock Text="{Binding Diagnostics}"
+                                       Style="{StaticResource BodyText}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,12,0,0" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2">
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="Supabase Cloud"
+                                       Style="{StaticResource SectionTitleText}" />
+                            <TextBlock Text="SQLite và file local vẫn là nguồn vận hành trong phòng thi. Supabase lưu metadata, archive và bản sao khôi phục."
+                                       Style="{StaticResource BodyText}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,7,0,0" />
+                            <CheckBox Content="Bật đồng bộ Supabase"
+                                      IsChecked="{Binding CloudEnabled}"
+                                      Margin="0,14,0,0" />
+                            <CheckBox Content="Dùng upload resumable cho file lớn"
+                                      IsChecked="{Binding CloudUseResumableUploads}"
+                                      Margin="0,8,0,0" />
+
+                            <TextBlock Text="Chế độ truy cập"
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="0,14,0,5" />
+                            <ComboBox ItemsSource="{Binding CloudAccessModesList}"
+                                      SelectedItem="{Binding CloudAccessMode}"
+                                      IsEnabled="{Binding CloudEnabled}" />
+                            <TextBlock Text="UserSession dùng tài khoản Teacher/Admin và RLS. TrustedServer chỉ dành cho máy chủ do nhà trường quản lý."
+                                       Style="{StaticResource CaptionText}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,6,0,0" />
+
+                            <TextBlock Text="Project URL"
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="0,14,0,5" />
+                            <TextBox Text="{Binding SupabaseUrl}"
+                                     IsEnabled="{Binding CloudEnabled}" />
+
+                            <TextBlock Text="Publishable key"
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="0,12,0,5" />
+                            <TextBox Text="{Binding SupabasePublishableKey}"
+                                     IsEnabled="{Binding CloudEnabled}" />
+
+                            <TextBlock Text="Organization ID"
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="0,12,0,5" />
+                            <TextBox Text="{Binding OrganizationId}"
+                                     IsEnabled="{Binding CloudEnabled}" />
+
+                            <TextBlock Text="Môi trường cloud"
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="0,12,0,5" />
+                            <ComboBox SelectedValue="{Binding CloudEnvironment}"
+                                      SelectedValuePath="Content"
+                                      IsEnabled="{Binding CloudEnabled}">
+                                <ComboBoxItem Content="Development" />
+                                <ComboBoxItem Content="Staging" />
+                                <ComboBoxItem Content="Production" />
+                            </ComboBox>
+
+                            <Border Style="{StaticResource SubtleCard}"
+                                    Margin="0,14,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="Phiên Supabase"
+                                               Style="{StaticResource SectionTitleText}" />
+                                    <TextBlock Text="{Binding CloudSessionStatus}"
+                                               Style="{StaticResource BodyText}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,6,0,0" />
+                                    <TextBlock Text="Email"
+                                               Style="{StaticResource CaptionText}"
+                                               Margin="0,12,0,5" />
+                                    <TextBox Text="{Binding CloudEmail, UpdateSourceTrigger=PropertyChanged}"
+                                             IsEnabled="{Binding IsUserSessionMode}" />
+                                    <TextBlock Text="Mật khẩu"
+                                               Style="{StaticResource CaptionText}"
+                                               Margin="0,10,0,5" />
+                                    <PasswordBox x:Name="CloudPasswordBox"
+                                                 PasswordChanged="CloudPasswordBox_OnPasswordChanged"
+                                                 IsEnabled="{Binding IsUserSessionMode}" />
+                                    <StackPanel Orientation="Horizontal"
+                                                Margin="0,12,0,0">
+                                        <Button Content="Đăng nhập"
+                                                Command="{Binding CloudLoginCommand}"
+                                                Style="{StaticResource PrimaryButton}" />
+                                        <Button Content="Đăng xuất"
+                                                Command="{Binding CloudLogoutCommand}"
+                                                Style="{StaticResource SecondaryButton}"
+                                                Margin="8,0,0,0" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <Grid Margin="0,14,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition />
+                                    <ColumnDefinition />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Secret key"
+                                               Style="{StaticResource CaptionText}" />
+                                    <TextBlock Text="{Binding CloudSecretStatusText}"
+                                               Style="{StaticResource BodyText}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="Trạng thái"
+                                               Style="{StaticResource CaptionText}" />
+                                    <TextBlock Text="{Binding CloudConfigurationStatus}"
+                                               Style="{StaticResource BodyText}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Text="Secret key không được nhập hoặc lưu từ giao diện. Chỉ TrustedServer mới đọc secret từ biến môi trường của Backend."
+                                       Style="{StaticResource CaptionText}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,10,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}"
+                            Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Kiểm tra Supabase"
+                                       Style="{StaticResource SectionTitleText}" />
+                            <TextBlock Text="{Binding CloudPreflight}"
+                                       Style="{StaticResource BodyText}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,12,0,0" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
+        </ScrollViewer>
+
+        <Border Grid.Row="4"
+                Style="{StaticResource StatusPill}"
+                HorizontalAlignment="Left"
+                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
+            <TextBlock Text="{Binding Status}"
+                       Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" />
+        </Border>
+    </Grid>
+</UserControl>

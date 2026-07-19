@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><RootNamespace>ExamTransfer.Shared.Contracts</RootNamespace></PropertyGroup>
+</Project>

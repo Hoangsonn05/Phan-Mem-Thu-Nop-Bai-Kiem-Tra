@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="../ExamTransfer.Application/ExamTransfer.Application.csproj" />
+    <ProjectReference Include="../ExamTransfer.Infrastructure/ExamTransfer.Infrastructure.csproj" />
+    <ProjectReference Include="../ExamTransfer.Shared.Contracts/ExamTransfer.Shared.Contracts.csproj" />
+    <PackageReference Include="Swashbuckle.AspNetCore" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="ExamTransfer.Infrastructure.Tests" />
+  </ItemGroup>
+</Project>

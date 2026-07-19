@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../ExamTransfer.Domain/ExamTransfer.Domain.csproj" />
+    <ProjectReference Include="../ExamTransfer.Shared.Contracts/ExamTransfer.Shared.Contracts.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,20 @@
+namespace ExamTransfer.Shared.Contracts;
+
+public enum UserRole { Admin, Teacher, Student }
+public enum ClassStatus { Active, Archived }
+public enum ExamStatus { Draft, Published, Archived, Cancelled }
+public enum SessionStatus { Draft, Waiting, Distributing, InProgress, Paused, Collecting, Finished, Archived, Cancelled }
+public enum ParticipantStatus { NotConnected, Connected, PendingApproval, Approved, Rejected, Disconnected }
+public enum DownloadStatus { NotStarted, Queued, Downloading, Verifying, Completed, Failed }
+public enum SubmissionStatus { NotStarted, Preparing, Uploading, Verifying, Submitted, LateSubmitted, Rejected, Failed }
+public enum TransferStatus { Queued, Running, Paused, Retrying, Completed, Failed, Cancelled }
+public enum SyncStatus { LocalOnly, Pending, Syncing, Synced, Conflict, Failed }
+public enum GradingStatus { NotGraded, InProgress, Graded, Returned }
+public enum ConnectionState { Offline, Connecting, Online, Reconnecting, Degraded }
+public enum PolicyApplyStatus { NotRequested, Applying, Applied, Unsupported, Failed }
+public enum ViolationSeverity { Info, Warning, Critical }
+public enum ExportStatus { Queued, Running, Completed, Failed, Cancelled }
+public enum BackupStatus { Creating, Ready, Invalid, RestorePending, Failed }
+public enum MessageType { Information, Warning, TimeChange, System }
+public enum TransferDirection { Download, Upload }
+public enum ControlActionType { Warn, Unlock, EndDeviceSession, RequestExplanation }

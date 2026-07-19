@@ -1,0 +1,20 @@
+@base = http://localhost:5048/api/v1
+@teacher = REPLACE_WITH_ACCOUNT_TOKEN
+
+GET {{base}}/system/status
+
+###
+GET {{base}}/dashboard/summary
+Authorization: Bearer {{teacher}}
+
+###
+POST {{base}}/classes
+Authorization: Bearer {{teacher}}
+Content-Type: application/json
+
+{
+  "name": "CNTT K17",
+  "code": "CNTT-K17",
+  "schoolYear": "2026-2027",
+  "description": "Lớp mẫu"
+}
