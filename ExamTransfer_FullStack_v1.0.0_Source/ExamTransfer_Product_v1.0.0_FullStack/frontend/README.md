@@ -4,7 +4,7 @@ Thư mục này được thiết kế để thay thế trực tiếp thư mục 
 
 ## Lỗi điều hướng đã sửa
 
-Khi người dùng chọn một menu, `PageTitle` thay đổi nhưng vùng nội dung vẫn giữ `WelcomeView`. Nguyên nhân là helper điều hướng gọi:
+Khi người dùng chọn một menu, `PageTitle` thay đổi nhưng vùng nội dung không cập nhật. Nguyên nhân là helper điều hướng gọi:
 
 ```csharp
 Set(ref page, value);
@@ -35,10 +35,9 @@ Các workflow chi tiết được đặt trong View chuyên biệt hoặc panel 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\frontend\scripts\verify-frontend.ps1
-.\scripts\run-frontend.ps1 -UseMock $true
+.\scripts\run-backend.ps1
+.\scripts\run-frontend.ps1 -ApiUrl "http://localhost:5048"
 ```
-
-Mock mode is explicit opt-in; the default frontend run targets the real backend and shared login flow.
 
 ## Các hotfix đi kèm
 

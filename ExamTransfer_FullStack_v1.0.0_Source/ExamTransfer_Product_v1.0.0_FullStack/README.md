@@ -61,16 +61,6 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\verify.ps1
 ```
 
-## Chạy bằng dữ liệu local trong bộ nhớ
-
-```powershell
-.\scripts\run-frontend.ps1 -UseMock $true
-```
-
-Mock mode is explicit opt-in. Without `-UseMock $true`, the frontend uses the real backend and starts at the shared account login screen.
-
-Mock mode dùng cùng DTO và request contract với Backend thật. Dữ liệu mock có state cho các workflow lớp, bài kiểm tra, phòng thi, nộp bài, export, chấm bài, policy, backup và settings.
-
 ## Chạy với Backend thật
 
 PowerShell thứ nhất:
@@ -82,7 +72,7 @@ PowerShell thứ nhất:
 PowerShell thứ hai:
 
 ```powershell
-.\scripts\run-frontend.ps1 -UseMock $false -ApiUrl "http://localhost:5048"
+.\scripts\run-frontend.ps1 -ApiUrl "http://localhost:5048"
 ```
 
 Địa chỉ mặc định:

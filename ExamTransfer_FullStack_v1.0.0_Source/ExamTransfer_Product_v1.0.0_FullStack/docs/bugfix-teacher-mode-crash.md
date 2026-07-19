@@ -7,7 +7,7 @@ Date: 2026-07-13
 Command:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-frontend.ps1 -UseMock $true
+powershell -ExecutionPolicy Bypass -File .\scripts\run-frontend.ps1 -ApiUrl "http://localhost:5048"
 ```
 
 Steps:
@@ -90,7 +90,7 @@ Result: passed. Remaining warnings:
 - `NU1903` for backend `SQLitePCLRaw.lib.e_sqlite3` 2.1.11.
 - `CS9113` unread backend parameter `realtime` in `ExamService.cs`.
 
-Mock smoke:
+Frontend navigation smoke:
 
 - Open app.
 - Click Teacher.
@@ -105,7 +105,7 @@ Mock smoke:
 Offline backend smoke:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-frontend.ps1 -UseMock $false -ApiUrl "http://localhost:5048"
+powershell -ExecutionPolicy Bypass -File .\scripts\run-frontend.ps1 -ApiUrl "http://localhost:5048"
 ```
 
 - Backend offline.
@@ -117,7 +117,7 @@ Real backend smoke:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run-backend.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\run-frontend.ps1 -UseMock $false -ApiUrl "http://localhost:5048"
+powershell -ExecutionPolicy Bypass -File .\scripts\run-frontend.ps1 -ApiUrl "http://localhost:5048"
 ```
 
 - Backend listened on `http://0.0.0.0:5048`.

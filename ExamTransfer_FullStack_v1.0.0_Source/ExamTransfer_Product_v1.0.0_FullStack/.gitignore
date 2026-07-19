@@ -10,3 +10,9 @@
 *.db-wal
 artifacts/
 logs/
+_backup_*/
+**/.temp/
+backend/artifacts/student-import-*.csv
+*.log
+*.tmp
+*.cache

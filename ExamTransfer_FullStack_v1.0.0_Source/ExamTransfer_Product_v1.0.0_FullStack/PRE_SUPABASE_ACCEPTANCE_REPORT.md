@@ -8,7 +8,7 @@ Date: 2026-07-15
 - Student room join was anonymous/client-identity driven and trusted `StudentCode` / `DisplayName` from the request.
 - Account tokens and exam participant tokens shared the same bearer slot, so joining a room could overwrite the application login token.
 - Development teacher token behavior existed as a fallback path; it is now disabled by default and has no built-in token value.
-- Mock mode was too easy to run by default; it is now explicit opt-in.
+- Production startup now always uses the real backend client.
 - There was no dedicated application account session service, challenge flow, heartbeat, logout, or single-session lease.
 - Supabase schema did not yet model Student account login, profile fields, or atomic single-session RPCs.
 - The standalone student workspace page duplicated functionality that belongs in the current exam flow.
@@ -44,7 +44,7 @@ Date: 2026-07-15
 - Backend auth/session flow: `ExamTransferAuthHandler.cs`, `Program.cs`, `ApiControllerBase.cs`, `SessionsController.cs`, `ExamsController.cs`, `SubmissionsController.cs`, `ExamHub.cs`, `SessionTokenService.cs`, `SessionService.cs`, `AccountSessionService.cs`
 - Backend config/docs/scripts: `appsettings.json`, `appsettings.Development.json`, `ExamTransfer.http`, `smoke-test-supabase.ps1`, `frontend-integration.md`
 - Supabase tests: `backend/supabase/tests/0001_schema_and_rls.sql`
-- Frontend shell/auth/client: `MainViewModel.cs`, `MainWindow.xaml`, `ServiceContracts.cs`, `BackendClient.cs`, `MockBackendClient.cs`
+- Frontend shell/auth/client: `MainViewModel.cs`, `MainWindow.xaml`, `ServiceContracts.cs`, `BackendClient.cs`
 - Frontend student flow: `StudentConnectViewModel.cs`, `StudentConnectView.xaml`, `StudentExamViewModel.cs`, `LiveMonitorViewModel.cs`, `ProductModules.cs`
 - Frontend/docs/scripts: `FEATURE_CORE_CHECKLIST.md`, `README.md`, `frontend/README.md`, `frontend/docs/implementation-status.md`, `frontend/docs/screen-map.md`, `scripts/run-frontend.ps1`
 
@@ -102,4 +102,4 @@ Date: 2026-07-15
 - Run the full Supabase local or linked-remote test suite once Docker/local Postgres or a linked project is available.
 - Run WPF runtime UI smoke testing on a desktop session; the current verification covered compile/build and contract checks only.
 
-No real Supabase URL, publishable key, secret key, service-role key, or password was added to source. Existing `sb_publishable_...` and `sb_secret_...` strings are placeholders in docs/examples or mock-only code.
+No real Supabase URL, publishable key, secret key, service-role key, or password was added to source. Existing `sb_publishable_...` and `sb_secret_...` strings are placeholders in docs/examples.

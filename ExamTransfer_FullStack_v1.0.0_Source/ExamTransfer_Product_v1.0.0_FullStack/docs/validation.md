@@ -10,7 +10,7 @@
 - Kiểm tra cân bằng delimiter/string/comment cơ bản cho toàn bộ C# source.
 - Đối chiếu 22 route sidebar với ViewModel chuyên biệt và DataTemplate tương ứng.
 - Đối chiếu 73 lời gọi REST/file transfer của Frontend với 97 route Controller Backend; không phát hiện endpoint lệch sau khi bỏ query string và chuẩn hóa route parameter.
-- Kiểm tra `BackendClient` và `MockBackendClient` triển khai đủ `IBackendClient`.
+- Kiểm tra `BackendClient` triển khai đủ `IBackendClient`.
 - Không còn route production dùng `WorkflowPageView`, `FeaturePageView` hoặc `ListPageViewModel`.
 - Không còn endpoint `/mock` trong ViewModel production.
 - Không còn nhãn demo/beta/mock trong giao diện người dùng.
@@ -33,12 +33,13 @@ Môi trường đóng gói không có .NET SDK và không chạy Windows, nên c
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\setup.ps1
 .\scripts\verify.ps1
-.\scripts\run-frontend.ps1 -UseMock $true
+.\scripts\run-backend.ps1
+.\scripts\run-frontend.ps1 -ApiUrl "http://localhost:5048"
 ```
 
 Kiểm tra real mode:
 
 ```powershell
 .\scripts\run-backend.ps1
-.\scripts\run-frontend.ps1 -UseMock $false -ApiUrl "http://localhost:5048"
+.\scripts\run-frontend.ps1 -ApiUrl "http://localhost:5048"
 ```

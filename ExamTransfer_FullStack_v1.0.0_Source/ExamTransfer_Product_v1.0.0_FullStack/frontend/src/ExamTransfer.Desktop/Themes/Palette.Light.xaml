@@ -22,11 +22,22 @@
     <Color x:Key="Color.DangerSoft">#FEE2E2</Color>
     <Color x:Key="Color.Info">#0369A1</Color>
     <Color x:Key="Color.InfoSoft">#E0F2FE</Color>
-    <Color x:Key="Color.Sidebar">#0B1220</Color>
-    <Color x:Key="Color.SidebarHover">#172033</Color>
-    <Color x:Key="Color.SidebarActive">#1D4ED8</Color>
+    <Color x:Key="Color.OnPrimary">#FFFFFFFF</Color>
+    <Color x:Key="Color.OnPrimaryMuted">#DBEAFE</Color>
+    <Color x:Key="Color.OnDanger">#FFFFFFFF</Color>
+    <Color x:Key="Color.HeroText">#FFFFFFFF</Color>
+    <Color x:Key="Color.HeroMuted">#E5F0FF</Color>
+    <Color x:Key="Color.HeroAvatar">#FFFFFFFF</Color>
+    <Color x:Key="Color.HeroAvatarForeground">#1D4ED8</Color>
+    <Color x:Key="Color.OverlaySoft">#28FFFFFF</Color>
+    <Color x:Key="Color.SuccessOnSoft">#166534</Color>
+    <Color x:Key="Color.InputSelection">#BFDBFE</Color>
+    <Color x:Key="Color.Sidebar">#1E5FD7</Color>
+    <Color x:Key="Color.SidebarHover">#2F73E0</Color>
+    <Color x:Key="Color.SidebarActive">#0F46B5</Color>
     <Color x:Key="Color.SidebarText">#F8FAFC</Color>
-    <Color x:Key="Color.SidebarMuted">#94A3B8</Color>
+    <Color x:Key="Color.SidebarMuted">#D7E6FF</Color>
+    <Color x:Key="Color.SidebarBadge">#33FFFFFF</Color>
 
     <SolidColorBrush x:Key="AppBackgroundBrush" Color="{StaticResource Color.AppBackground}"/>
     <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource Color.Surface}"/>
@@ -50,9 +61,20 @@
     <SolidColorBrush x:Key="DangerSoftBrush" Color="{StaticResource Color.DangerSoft}"/>
     <SolidColorBrush x:Key="InfoBrush" Color="{StaticResource Color.Info}"/>
     <SolidColorBrush x:Key="InfoSoftBrush" Color="{StaticResource Color.InfoSoft}"/>
+    <SolidColorBrush x:Key="OnPrimaryBrush" Color="{StaticResource Color.OnPrimary}"/>
+    <SolidColorBrush x:Key="OnPrimaryMutedBrush" Color="{StaticResource Color.OnPrimaryMuted}"/>
+    <SolidColorBrush x:Key="OnDangerBrush" Color="{StaticResource Color.OnDanger}"/>
+    <SolidColorBrush x:Key="HeroTextBrush" Color="{StaticResource Color.HeroText}"/>
+    <SolidColorBrush x:Key="HeroMutedBrush" Color="{StaticResource Color.HeroMuted}"/>
+    <SolidColorBrush x:Key="HeroAvatarBrush" Color="{StaticResource Color.HeroAvatar}"/>
+    <SolidColorBrush x:Key="HeroAvatarForegroundBrush" Color="{StaticResource Color.HeroAvatarForeground}"/>
+    <SolidColorBrush x:Key="OverlaySoftBrush" Color="{StaticResource Color.OverlaySoft}"/>
+    <SolidColorBrush x:Key="SuccessOnSoftBrush" Color="{StaticResource Color.SuccessOnSoft}"/>
+    <SolidColorBrush x:Key="InputSelectionBrush" Color="{StaticResource Color.InputSelection}"/>
     <SolidColorBrush x:Key="SidebarBrush" Color="{StaticResource Color.Sidebar}"/>
     <SolidColorBrush x:Key="SidebarHoverBrush" Color="{StaticResource Color.SidebarHover}"/>
     <SolidColorBrush x:Key="SidebarActiveBrush" Color="{StaticResource Color.SidebarActive}"/>
     <SolidColorBrush x:Key="SidebarTextBrush" Color="{StaticResource Color.SidebarText}"/>
     <SolidColorBrush x:Key="SidebarMutedBrush" Color="{StaticResource Color.SidebarMuted}"/>
+    <SolidColorBrush x:Key="SidebarBadgeBrush" Color="{StaticResource Color.SidebarBadge}"/>
 </ResourceDictionary>

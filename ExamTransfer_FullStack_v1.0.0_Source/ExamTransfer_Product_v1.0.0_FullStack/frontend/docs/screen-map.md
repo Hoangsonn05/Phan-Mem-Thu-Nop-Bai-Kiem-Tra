@@ -2,7 +2,7 @@
 
 | ID | Màn hình/Workflow | View | ViewModel |
 |---|---|---|---|
-| SH-01/02 | Khởi động, chọn chế độ, system status | `WelcomeView`, App Shell | `WelcomeViewModel`, `MainViewModel` |
+| SH-01/02 | Khởi động, đăng nhập, system status | `LoginView`, App Shell | `LoginViewModel`, `MainViewModel` |
 | SH-03 | Cloud/local sync status | `SettingsPageView` | `SettingsPageViewModel` |
 | T-01 | Tổng quan | `DashboardView` | `DashboardViewModel` |
 | T-02/03/04 | Lớp, chi tiết lớp, học sinh, import/export | `ClassManagementView` | `ClassManagementViewModel` |

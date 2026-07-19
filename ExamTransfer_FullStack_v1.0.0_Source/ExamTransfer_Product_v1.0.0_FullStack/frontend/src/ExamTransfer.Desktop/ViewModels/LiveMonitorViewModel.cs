@@ -20,11 +20,8 @@ public sealed class LiveMonitorViewModel : ProductPageBase
     public LiveMonitorViewModel(IBackendClient api)
     {
         this.api = api;
-        if (!AppServices.UseMock)
-        {
-            realtime = new RealtimeService(AppServices.BaseUrl);
-            realtime.EventReceived += OnRealtimeEvent;
-        }
+        realtime = new RealtimeService(AppServices.BaseUrl);
+        realtime.EventReceived += OnRealtimeEvent;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSessionAsync, () => !IsBusy && SelectedSession is not null);
         MessageCommand = new AsyncRelayCommand(MessageAsync, () => !IsBusy && SelectedSession is not null);

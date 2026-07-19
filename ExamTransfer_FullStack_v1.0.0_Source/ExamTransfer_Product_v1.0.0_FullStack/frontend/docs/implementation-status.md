@@ -2,7 +2,7 @@
 
 ## Kết luận kiểm tra mã nguồn
 
-Frontend đã có View và ViewModel chuyên biệt cho toàn bộ menu Giáo viên/Học sinh. Hiện tượng tiêu đề menu đổi nhưng nội dung vẫn giữ màn hình giới thiệu không phải vì các trang không tồn tại; nguyên nhân là sự kiện `PropertyChanged` được phát với tên helper method thay vì `CurrentPage`.
+Frontend đã có View và ViewModel chuyên biệt cho toàn bộ menu Giáo viên/Học sinh. Hiện tượng tiêu đề menu đổi nhưng nội dung không cập nhật không phải vì các trang không tồn tại; nguyên nhân là sự kiện `PropertyChanged` được phát với tên helper method thay vì `CurrentPage`.
 
 ## Sửa lỗi điều hướng
 
@@ -14,7 +14,7 @@ Trước sửa:
 Set(ref page, value);
 ```
 
-Do lệnh nằm trong `SetCurrentPageWithoutDisposing`, `CallerMemberName` tạo notification tên `SetCurrentPageWithoutDisposing`. `ContentControl` bind `CurrentPage` không nhận được notification và giữ nguyên `WelcomeView`.
+Do lệnh nằm trong `SetCurrentPageWithoutDisposing`, `CallerMemberName` tạo notification tên `SetCurrentPageWithoutDisposing`. `ContentControl` bind `CurrentPage` không nhận được notification và giữ nguyên màn hình trước đó.
 
 Sau sửa:
 
@@ -56,9 +56,8 @@ Set(ref page, value, nameof(CurrentPage));
 
 ```powershell
 .\frontend\scripts\verify-frontend.ps1
-.\scripts\run-frontend.ps1 -UseMock $true
+.\scripts\run-backend.ps1
+.\scripts\run-frontend.ps1 -ApiUrl "http://localhost:5048"
 ```
-
-`UseMock` is no longer the default. Production/default startup uses the real backend and account login.
 
 Sau khi mở app, kiểm tra từng menu và xác nhận vùng nội dung thay đổi theo tiêu đề.

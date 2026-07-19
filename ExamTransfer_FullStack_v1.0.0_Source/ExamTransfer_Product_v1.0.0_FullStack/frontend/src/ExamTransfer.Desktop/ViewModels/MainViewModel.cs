@@ -105,7 +105,6 @@ public sealed class MainViewModel : ObservableObject
         ? "Hoàn tất bảo mật tài khoản trước khi sử dụng chức năng học sinh"
         : Selected?.Description ?? (authState.IsAuthenticated ? "Thu và gửi bài thi an toàn trong mạng LAN" : "Sử dụng tài khoản được cấp sẵn");
     public string PageGlyph => CurrentPage is ChangePasswordViewModel ? "\uE72E" : Selected?.Glyph ?? "\uE8A5";
-    public bool IsMock => AppServices.UseMock;
     public string EnvironmentLabel => "Local-first LAN";
 
     public ICommand RefreshCommand { get; }
@@ -438,12 +437,12 @@ public sealed class MainViewModel : ObservableObject
             new("T-01", "Tổng quan", "Tổng quan", "Thống kê, cảnh báo và phiên đang vận hành", "\uE80F"),
             new("T-02", "Lớp học", "Quản lý", "Lớp, học sinh, import CSV/Excel", "\uE716"),
             new("T-05", "Bài kiểm tra", "Quản lý", "Đề thi, file đề, phiên bản và quy định", "\uE8A5"),
-            new("T-08", "Phòng thi", "Vận hành", "Tạo, cấu hình và mở phòng thi", "\uE7FC"),
-            new("T-10", "Phòng chờ", "Vận hành", "Duyệt học sinh và kiểm tra sẵn sàng", "\uE77B", "12"),
-            new("T-11", "Giám sát trực tiếp", "Vận hành", "Theo dõi realtime toàn bộ học sinh", "\uE9D2", "LIVE"),
-            new("T-12", "Thu bài", "Kết quả", "Bài nộp, attempt, biên nhận và nộp lại", "\uE896", "8"),
+            new("T-08", "Phòng thi", "Vận hành", "Tạo, cấu hình và mở phòng thi", "\uE7BE"),
+            new("T-10", "Phòng chờ", "Vận hành", "Duyệt học sinh và kiểm tra sẵn sàng", "\uE77B"),
+            new("T-11", "Giám sát trực tiếp", "Vận hành", "Theo dõi realtime toàn bộ học sinh", "\uE9D2"),
+            new("T-12", "Thu bài", "Kết quả", "Bài nộp, attempt, biên nhận và nộp lại", "\uE896"),
             new("T-14", "Xuất dữ liệu", "Kết quả", "ZIP, Excel/CSV, manifest và audit", "\uEDE1"),
-            new("T-15", "Chấm bài", "Nâng cao", "Điểm, rubric, nhận xét và trả kết quả", "\uE70B", "24"),
+            new("T-15", "Chấm bài", "Nâng cao", "Điểm, rubric, nhận xét và trả kết quả", "\uE70B"),
             new("T-17", "Kiểm soát thi", "Nâng cao", "Policy, agent, vi phạm và xử lý", "\uE72E"),
             new("T-18", "Lịch sử & Audit", "Hệ thống", "Lịch sử phiên và nhật ký bất biến", "\uE81C"),
             new("T-20", "Sao lưu", "Hệ thống", "Backup, checksum và khôi phục", "\uE753"),
@@ -456,10 +455,10 @@ public sealed class MainViewModel : ObservableObject
             new("S-00", "Trang chủ", "Tài khoản", "Thông tin sinh viên và trạng thái phiên đăng nhập", "\uE80F"),
             new("S-01", "Kết nối phòng", "Tham gia", "Quét LAN, nhập IP/cổng hoặc mã phòng", "\uE968"),
             new("S-03", "Phòng chờ", "Tham gia", "Chờ duyệt và kiểm tra sẵn sàng", "\uE823"),
-            new("S-04", "Kỳ thi hiện tại", "Làm bài", "Đồng hồ server và tiến trình làm bài", "\uE916", "LIVE"),
+            new("S-04", "Kỳ thi hiện tại", "Làm bài", "Đồng hồ server và tiến trình làm bài", "\uE916"),
             new("S-05", "Nhận đề", "Làm bài", "Tải file, resume và xác minh SHA-256", "\uE896"),
             new("S-07", "Nộp bài", "Làm bài", "Chunk upload, resume, finalize và xác nhận", "\uE898"),
-            new("S-08", "Biên nhận", "Kết quả", "Mã biên nhận, thời gian server và hash", "\uE8B7"),
+            new("S-08", "Biên nhận", "Kết quả", "Mã biên nhận, thời gian server và hash", "\uF0E3"),
             new("S-09", "Lịch sử cục bộ", "Kết quả", "Các phiên và bài đã nộp trên máy", "\uE81C"),
             new("S-10", "Cài đặt", "Hệ thống", "Profile, mạng, thư mục, thông báo và log", "\uE713")
         };
@@ -470,10 +469,6 @@ public static class AppServices
     public static string BaseUrl { get; } =
         Environment.GetEnvironmentVariable("EXAMTRANSFER_API") ?? "http://localhost:5048";
 
-    public static bool UseMock { get; } =
-        (Environment.GetEnvironmentVariable("EXAMTRANSFER_USE_MOCK") ?? "false")
-        .Equals("true", StringComparison.OrdinalIgnoreCase);
-
     public static IFileDialogService Files { get; } = new FileDialogService();
     public static IFolderDialogService Folders { get; } = new FolderDialogService();
     public static IDialogService Dialogs { get; } = new DialogService();
@@ -483,11 +478,6 @@ public static class AppServices
     public static AppAuthSessionState AuthState { get; } = new();
     public static StudentSessionState StudentState { get; } = new();
 
-    public static IBackendClient Backend { get; } = CreateBackend();
-
-    private static IBackendClient CreateBackend()
-    {
-        if (UseMock) return new MockBackendClient();
-        return new ExamTransfer.Desktop.Infrastructure.BackendClient(BaseUrl);
-    }
+    public static IBackendClient Backend { get; } =
+        new ExamTransfer.Desktop.Infrastructure.BackendClient(BaseUrl);
 }
