@@ -5,22 +5,53 @@ using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SessionService(AppDbContext db, ISessionTokenService tokens, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options) : ISessionService
+public sealed class SessionService(AppDbContext db, ISessionTokenService tokens, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger) : ISessionService
 {
     private readonly ExamTransferOptions _options = options.Value;
 
     public async Task<PagedResult<SessionSummaryDto>> ListAsync(SessionStatus? status, int page, int pageSize, CancellationToken cancellationToken)
     {
-        page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 1, 200);
-        var query = db.ExamSessionsSet.AsNoTracking().Include(x => x.Exam).Include(x => x.Participants).AsQueryable();
-        if (status.HasValue) query = query.Where(x => x.Status == status.Value);
-        var total = await query.CountAsync(cancellationToken);
-        var rows = await query.OrderByDescending(x => x.UpdatedAtUtc).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
-        return new(rows.Select(ToSummary).ToList(), page, pageSize, total);
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+
+        var baseQuery = db.ExamSessionsSet.AsNoTracking().AsQueryable();
+        if (status.HasValue) baseQuery = baseQuery.Where(x => x.Status == status.Value);
+
+        var total = await baseQuery.CountAsync(cancellationToken);
+        var sortKeys = await baseQuery
+            .Select(x => new { x.Id, x.UpdatedAtUtc })
+            .ToListAsync(cancellationToken);
+        var pageIds = sortKeys
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x => x.Id)
+            .ToList();
+
+        if (pageIds.Count == 0)
+            return new([], page, pageSize, total);
+
+        var position = pageIds
+            .Select((id, index) => new { id, index })
+            .ToDictionary(x => x.id, x => x.index);
+        var rows = await db.ExamSessionsSet
+            .AsNoTracking()
+            .Where(x => pageIds.Contains(x.Id))
+            .Include(x => x.Exam)
+            .Include(x => x.Participants)
+            .ToListAsync(cancellationToken);
+        var items = rows
+            .OrderBy(x => position[x.Id])
+            .Select(ToSummary)
+            .ToList();
+
+        return new(items, page, pageSize, total);
     }
 
     public async Task<SessionDetailDto> GetAsync(Guid id, CancellationToken cancellationToken)
@@ -32,27 +63,33 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
 
     public async Task<SessionDetailDto> CreateAsync(CreateSessionRequest request, string hostDeviceId, CancellationToken cancellationToken)
     {
-        var exam = await db.ExamsSet.FirstOrDefaultAsync(x => x.Id == request.ExamId, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
-        if (exam.Status != ExamStatus.Published) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ tạo phòng từ bài kiểm tra đã phát hành.", 409);
-        ValidateSessionConfiguration(request.SettingsJson, request.Capacity);
-        if (request.ClassId.HasValue && !await db.ClassesSet.AnyAsync(x => x.Id == request.ClassId.Value, cancellationToken))
-            throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp được chọn.", 404);
-        var roomCode = string.IsNullOrWhiteSpace(request.CustomRoomCode) ? await GenerateRoomCodeAsync(cancellationToken) : request.CustomRoomCode.Trim().ToUpperInvariant();
-        if (roomCode.Length < 4 || roomCode.Length > 12) throw new ApiException(ErrorCodes.ValidationFailed, "Mã phòng phải dài 4-12 ký tự.");
-        if (await db.ExamSessionsSet.AnyAsync(x => x.RoomCode == roomCode && x.Status != SessionStatus.Archived && x.Status != SessionStatus.Cancelled && x.Status != SessionStatus.Finished, cancellationToken))
-            throw new ApiException(ErrorCodes.RoomCodeConflict, "Mã phòng đang được sử dụng.", 409);
-        var session = new ExamSession
+        return await InTransactionAsync(async () =>
         {
-            ExamId = request.ExamId, ClassId = request.ClassId ?? exam.ClassId, RoomCode = roomCode,
-            HostDeviceId = hostDeviceId, PlannedStartUtc = request.PlannedStartUtc, SettingsJson = string.IsNullOrWhiteSpace(request.SettingsJson) ? "{}" : request.SettingsJson,
-            AutoApprove = request.AutoApprove, Capacity = request.Capacity, Status = SessionStatus.Draft, AcceptingParticipants = true
-        };
-        db.ExamSessionsSet.Add(session); await db.SaveChangesAsync(cancellationToken);
-        session.Exam = exam;
-        await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, session, cancellationToken);
-        await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", ToCloud(session), cancellationToken: cancellationToken);
-        return ToDetail(session);
+            var exam = await db.ExamsSet.FirstOrDefaultAsync(x => x.Id == request.ExamId, cancellationToken)
+                ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
+            if (exam.Status != ExamStatus.Published) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ tạo phòng từ bài kiểm tra đã phát hành.", 409);
+            ValidateSessionConfiguration(request.SettingsJson, request.Capacity);
+            var effectiveClassId = request.ClassId ?? exam.ClassId;
+            if (request.ClassId.HasValue && exam.ClassId.HasValue && request.ClassId.Value != exam.ClassId.Value)
+                throw new ApiException(ErrorCodes.ValidationFailed, "Lớp của phòng thi phải trùng với lớp của bài kiểm tra.", 422);
+            if (effectiveClassId.HasValue && !await db.ClassesSet.AnyAsync(x => x.Id == effectiveClassId.Value, cancellationToken))
+                throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp được chọn.", 404);
+            var roomCode = string.IsNullOrWhiteSpace(request.CustomRoomCode) ? await GenerateRoomCodeAsync(cancellationToken) : request.CustomRoomCode.Trim().ToUpperInvariant();
+            if (roomCode.Length < 4 || roomCode.Length > 12) throw new ApiException(ErrorCodes.ValidationFailed, "Mã phòng phải dài 4-12 ký tự.");
+            if (await db.ExamSessionsSet.AnyAsync(x => x.RoomCode == roomCode && x.Status != SessionStatus.Archived && x.Status != SessionStatus.Cancelled && x.Status != SessionStatus.Finished, cancellationToken))
+                throw new ApiException(ErrorCodes.RoomCodeConflict, "Mã phòng đang được sử dụng.", 409);
+            var session = new ExamSession
+            {
+                ExamId = request.ExamId, ClassId = effectiveClassId, RoomCode = roomCode,
+                HostDeviceId = hostDeviceId, PlannedStartUtc = request.PlannedStartUtc, SettingsJson = string.IsNullOrWhiteSpace(request.SettingsJson) ? "{}" : request.SettingsJson,
+                AutoApprove = request.AutoApprove, Capacity = request.Capacity, Status = SessionStatus.Draft, AcceptingParticipants = true
+            };
+            db.ExamSessionsSet.Add(session); await db.SaveChangesAsync(cancellationToken);
+            session.Exam = exam;
+            await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, session, cancellationToken);
+            await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", ToCloud(session), cancellationToken: cancellationToken);
+            return ToDetail(session);
+        }, cancellationToken);
     }
 
     public async Task<SessionDetailDto> UpdateAsync(Guid id, UpdateSessionRequest request, CancellationToken cancellationToken)
@@ -79,21 +116,25 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
 
     public async Task<SessionDetailDto> TransitionAsync(Guid id, SessionStatus target, EndSessionRequest? endRequest, CancellationToken cancellationToken)
     {
-        var session = await db.ExamSessionsSet.Include(x => x.Exam).Include(x => x.Participants).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
-        if (target is SessionStatus.Finished or SessionStatus.Cancelled)
+        var detail = await InTransactionAsync(async () =>
         {
-            var activeUploads = await db.SubmissionsSet.AnyAsync(x => x.SessionId == id && (x.Status == SubmissionStatus.Uploading || x.Status == SubmissionStatus.Verifying), cancellationToken);
-            if (activeUploads && endRequest?.Force != true) throw new ApiException(ErrorCodes.Conflict, "Đang có bài nộp upload; cần force=true và lý do để kết thúc.", 409);
-            if (endRequest?.Force == true && string.IsNullOrWhiteSpace(endRequest.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Kết thúc cưỡng bức phải có lý do.");
-        }
-        var before = session.Status;
-        session.TransitionTo(target);
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("SessionStateChanged", nameof(ExamSession), session.Id.ToString(), session.Id, new { status = before }, new { status = session.Status, reason = endRequest?.Reason }, cancellationToken);
-        await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", ToCloud(session), cancellationToken: cancellationToken);
-        await realtime.PublishSessionAsync(session.Id, RealtimeEvents.SessionStateChanged, session.Sequence, new SessionStateChangedEvent(session.Status, DateTimeOffset.UtcNow, EffectiveDeadline(session)), cancellationToken);
-        return ToDetail(session);
+            var session = await db.ExamSessionsSet.Include(x => x.Exam).Include(x => x.Participants).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+                ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
+            if (target is SessionStatus.Finished or SessionStatus.Cancelled)
+            {
+                var activeUploads = await db.SubmissionsSet.AnyAsync(x => x.SessionId == id && (x.Status == SubmissionStatus.Uploading || x.Status == SubmissionStatus.Verifying), cancellationToken);
+                if (activeUploads && endRequest?.Force != true) throw new ApiException(ErrorCodes.Conflict, "Đang có bài nộp upload; cần force=true và lý do để kết thúc.", 409);
+                if (endRequest?.Force == true && string.IsNullOrWhiteSpace(endRequest.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Kết thúc cưỡng bức phải có lý do.");
+            }
+            var before = session.Status;
+            session.TransitionTo(target);
+            await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync("SessionStateChanged", nameof(ExamSession), session.Id.ToString(), session.Id, new { status = before }, new { status = session.Status, reason = endRequest?.Reason }, cancellationToken);
+            await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", ToCloud(session), cancellationToken: cancellationToken);
+            return ToDetail(session);
+        }, cancellationToken);
+        await PublishSessionStateSafeAsync(detail, cancellationToken);
+        return detail;
     }
 
     public async Task<JoinSessionResponse> JoinAsync(JoinSessionRequest request, Guid accountUserId, string studentCode, string displayName, string? ipAddress, CancellationToken cancellationToken)
@@ -422,6 +463,44 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         created_at = x.CreatedAtUtc,
         updated_at = x.UpdatedAtUtc
     };
+
+    private async Task PublishSessionStateSafeAsync(SessionDetailDto detail, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await realtime.PublishSessionAsync(
+                detail.Summary.Id,
+                RealtimeEvents.SessionStateChanged,
+                detail.Summary.Sequence,
+                new SessionStateChangedEvent(detail.Summary.Status, DateTimeOffset.UtcNow, detail.Summary.EffectiveDeadlineUtc),
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Realtime publish failed after local session transition committed. SessionId={SessionId}; Status={Status}; Sequence={Sequence}",
+                detail.Summary.Id,
+                detail.Summary.Status,
+                detail.Summary.Sequence);
+        }
+    }
+
+    private async Task<T> InTransactionAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
+    {
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            var result = await action();
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
 
     private static void ValidateSessionConfiguration(string? settingsJson, int? capacity)
     {

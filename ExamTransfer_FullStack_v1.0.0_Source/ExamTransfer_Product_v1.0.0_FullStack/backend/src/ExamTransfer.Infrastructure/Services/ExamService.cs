@@ -6,11 +6,12 @@ using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Storage;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options) : IExamService
+public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<ExamService> logger) : IExamService
 {
     private readonly ExamTransferOptions _options = options.Value;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -18,15 +19,56 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
     public async Task<PagedResult<ExamSummaryDto>> ListAsync(string? search, ExamStatus? status, int page, int pageSize, CancellationToken cancellationToken)
     {
-        page = Math.Max(page, 1); pageSize = Math.Clamp(pageSize, 1, 200);
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+
         var query = db.ExamsSet.AsNoTracking();
-        if (!string.IsNullOrWhiteSpace(search)) query = query.Where(x => x.Title.Contains(search) || x.Subject.Contains(search));
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(x => x.Title.Contains(term) || x.Subject.Contains(term));
+        }
         if (status.HasValue) query = query.Where(x => x.Status == status.Value);
+
         var total = await query.CountAsync(cancellationToken);
-        var rows = await query.OrderByDescending(x => x.UpdatedAtUtc).Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(x => new { Entity = x, FileCount = x.Files.Count(f => f.TransferStatus == TransferStatus.Completed && f.Version == x.Version) })
+
+        // SQLite stores DateTimeOffset as TEXT and EF Core cannot translate
+        // ORDER BY for DateTimeOffset. Read only the lightweight sort keys,
+        // order them in memory, then fetch the requested page and preserve
+        // that order. This keeps the existing database format unchanged.
+        var sortKeys = await query
+            .Select(x => new { x.Id, x.UpdatedAtUtc })
             .ToListAsync(cancellationToken);
-        return new(rows.Select(x => x.Entity.ToSummary(x.FileCount)).ToList(), page, pageSize, total);
+        var pageIds = sortKeys
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x => x.Id)
+            .ToList();
+
+        if (pageIds.Count == 0)
+            return new([], page, pageSize, total);
+
+        var position = pageIds
+            .Select((id, index) => new { id, index })
+            .ToDictionary(x => x.id, x => x.index);
+        var rows = await query
+            .Where(x => pageIds.Contains(x.Id))
+            .Select(x => new
+            {
+                Entity = x,
+                FileCount = x.Files.Count(f =>
+                    f.TransferStatus == TransferStatus.Completed
+                    && f.Version == x.Version)
+            })
+            .ToListAsync(cancellationToken);
+        var items = rows
+            .OrderBy(x => position[x.Entity.Id])
+            .Select(x => x.Entity.ToSummary(x.FileCount))
+            .ToList();
+
+        return new(items, page, pageSize, total);
     }
 
     public async Task<ExamDetailDto> GetAsync(Guid id, CancellationToken cancellationToken)
@@ -38,58 +80,71 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
     public async Task<ExamDetailDto> CreateAsync(CreateExamRequest request, CancellationToken cancellationToken)
     {
-        Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
-        if (request.ClassId.HasValue && !await db.ClassesSet.AnyAsync(x => x.Id == request.ClassId, cancellationToken))
-            throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
-        var exam = new Exam
+        return await InTransactionAsync(async () =>
         {
-            ClassId = request.ClassId, Title = request.Title.Trim(), Subject = request.Subject.Trim(), Description = request.Description?.Trim(),
-            DurationMinutes = request.DurationMinutes, FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions), Status = ExamStatus.Draft, Version = 1
-        };
-        db.ExamsSet.Add(exam); await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ExamCreated", nameof(Exam), exam.Id.ToString(), null, null, exam, cancellationToken);
-        await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
-        return ToDetail(exam);
+            Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
+            if (request.ClassId.HasValue && !await db.ClassesSet.AnyAsync(x => x.Id == request.ClassId, cancellationToken))
+                throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
+            var exam = new Exam
+            {
+                ClassId = request.ClassId, Title = request.Title.Trim(), Subject = request.Subject.Trim(), Description = request.Description?.Trim(),
+                DurationMinutes = request.DurationMinutes, FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions), Status = ExamStatus.Draft, Version = 1
+            };
+            db.ExamsSet.Add(exam); await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync("ExamCreated", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
+            await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
+            return ToDetail(exam);
+        }, cancellationToken);
     }
 
     public async Task<ExamDetailDto> UpdateAsync(Guid id, UpdateExamRequest request, CancellationToken cancellationToken)
     {
-        Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
-        var exam = await db.ExamsSet.Include(x => x.Files).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
-        EnsureRowVersion(exam.RowVersion, request.RowVersion);
-        if (exam.Status == ExamStatus.Archived) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể sửa bài kiểm tra đã lưu trữ.", 409);
-        var before = new { exam.Title, exam.Subject, exam.Description, exam.DurationMinutes, exam.FileRuleJson, exam.Version };
-        exam.ClassId = request.ClassId; exam.Title = request.Title.Trim(); exam.Subject = request.Subject.Trim(); exam.Description = request.Description?.Trim();
-        exam.DurationMinutes = request.DurationMinutes; exam.FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions);
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ExamUpdated", nameof(Exam), exam.Id.ToString(), null, before, exam, cancellationToken);
-        await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
-        await NotifyActiveSessionsAsync(exam.Id, exam.Version, RealtimeEvents.ExamUpdated, cancellationToken);
-        return ToDetail(exam);
+        var detail = await InTransactionAsync(async () =>
+        {
+            Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
+            var exam = await db.ExamsSet.Include(x => x.Files).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+                ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
+            EnsureRowVersion(exam.RowVersion, request.RowVersion);
+            if (exam.Status == ExamStatus.Archived) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể sửa bài kiểm tra đã lưu trữ.", 409);
+            if (request.ClassId.HasValue && !await db.ClassesSet.AnyAsync(x => x.Id == request.ClassId.Value, cancellationToken))
+                throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
+            var before = new { exam.Title, exam.Subject, exam.Description, exam.DurationMinutes, exam.FileRuleJson, exam.Version };
+            exam.ClassId = request.ClassId; exam.Title = request.Title.Trim(); exam.Subject = request.Subject.Trim(); exam.Description = request.Description?.Trim();
+            exam.DurationMinutes = request.DurationMinutes; exam.FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions);
+            await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync("ExamUpdated", nameof(Exam), exam.Id.ToString(), null, before, ToAudit(exam), cancellationToken);
+            await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
+            return ToDetail(exam);
+        }, cancellationToken);
+        await NotifyActiveSessionsAsync(detail.Id, detail.Version, RealtimeEvents.ExamUpdated, cancellationToken);
+        return detail;
     }
 
     public async Task<ExamDetailDto> PublishAsync(Guid id, CancellationToken cancellationToken)
     {
-        var exam = await db.ExamsSet.Include(x => x.Files).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
-        if (exam.Status is ExamStatus.Archived or ExamStatus.Cancelled) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể phát hành bài kiểm tra ở trạng thái hiện tại.", 409);
-        var rule = exam.ParseFileRule();
-        var completed = exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).ToList();
-        if (rule.RequireAtLeastOneFile && completed.Count == 0) throw new ApiException(ErrorCodes.ValidationFailed, "Bài kiểm tra yêu cầu ít nhất một file đề.");
-        exam.Status = ExamStatus.Published;
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ExamPublished", nameof(Exam), exam.Id.ToString(), null, null, exam, cancellationToken);
-        await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
-        await NotifyActiveSessionsAsync(exam.Id, exam.Version, RealtimeEvents.ExamPublished, cancellationToken);
-        return ToDetail(exam);
+        var detail = await InTransactionAsync(async () =>
+        {
+            var exam = await db.ExamsSet.Include(x => x.Files).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+                ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
+            if (exam.Status is ExamStatus.Archived or ExamStatus.Cancelled) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể phát hành bài kiểm tra ở trạng thái hiện tại.", 409);
+            var rule = exam.ParseFileRule();
+            var completed = exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).ToList();
+            if (rule.RequireAtLeastOneFile && completed.Count == 0) throw new ApiException(ErrorCodes.ValidationFailed, "Bài kiểm tra yêu cầu ít nhất một file đề.", 422);
+            exam.Status = ExamStatus.Published;
+            await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync("ExamPublished", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
+            await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
+            return ToDetail(exam);
+        }, cancellationToken);
+        await NotifyActiveSessionsAsync(detail.Id, detail.Version, RealtimeEvents.ExamPublished, cancellationToken);
+        return detail;
     }
 
     public async Task ArchiveAsync(Guid id, CancellationToken cancellationToken)
     {
         var exam = await db.ExamsSet.FirstOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
         exam.Status = ExamStatus.Archived; await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ExamArchived", nameof(Exam), id.ToString(), null, null, exam, cancellationToken);
+        await audit.WriteAsync("ExamArchived", nameof(Exam), id.ToString(), null, null, ToAudit(exam), cancellationToken);
         await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
     }
 
@@ -314,7 +369,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         var full = string.IsNullOrWhiteSpace(file.RelativePath) ? null : Path.Combine(paths.RootPath, file.RelativePath);
         db.ExamFilesSet.Remove(file); await db.SaveChangesAsync(cancellationToken);
         if (full is not null && File.Exists(full)) File.Delete(full);
-        await audit.WriteAsync("ExamFileDeleted", nameof(ExamFile), file.Id.ToString(), null, file, null, cancellationToken);
+        await audit.WriteAsync("ExamFileDeleted", nameof(ExamFile), file.Id.ToString(), null, ToAudit(file), null, cancellationToken);
         await outbox.EnqueueAsync(
             "exam_files",
             file.Id.ToString(),
@@ -431,17 +486,40 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
         foreach (var session in sessions)
         {
-            await realtime.PublishSessionAsync(
-                session.Id,
-                eventName,
-                session.Sequence,
-                new
-                {
-                    examId,
-                    version,
-                    manifestUrl = $"/api/v1/exams/{examId}/manifest"
-                },
-                cancellationToken);
+            try
+            {
+                await realtime.PublishSessionAsync(
+                    session.Id,
+                    eventName,
+                    session.Sequence,
+                    new
+                    {
+                        examId,
+                        version,
+                        manifestUrl = $"/api/v1/exams/{examId}/manifest"
+                    },
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Realtime publish failed after local exam commit. ExamId={ExamId}; SessionId={SessionId}; Event={EventName}", examId, session.Id, eventName);
+            }
+        }
+    }
+
+    private async Task<T> InTransactionAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
+    {
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            var result = await action();
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
         }
     }
 
@@ -497,6 +575,43 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
     private ExamDetailDto ToDetail(Exam exam) => exam.ToDetail(exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).Select(ToFileDto).ToList());
     private static FileDescriptorDto ToFileDto(ExamFile x) => new(x.Id, x.OriginalName, x.SizeBytes, x.Sha256, x.MimeType, $"/api/v1/exams/{x.ExamId}/files/{x.Id}/content");
+    private static object ToAudit(Exam x) => new
+    {
+        id = x.Id,
+        class_id = x.ClassId,
+        title = x.Title,
+        subject = x.Subject,
+        description = x.Description,
+        duration_minutes = x.DurationMinutes,
+        file_rule_json = x.FileRuleJson,
+        status = x.Status.ToString(),
+        version = x.Version,
+        created_by = x.CreatedBy,
+        completed_file_count = x.Files.Count(file =>
+            file.Version == x.Version
+            && file.TransferStatus == TransferStatus.Completed),
+        created_at = x.CreatedAtUtc,
+        updated_at = x.UpdatedAtUtc,
+        row_version = x.RowVersion
+    };
+
+    private static object ToAudit(ExamFile x) => new
+    {
+        id = x.Id,
+        exam_id = x.ExamId,
+        version = x.Version,
+        original_name = x.OriginalName,
+        stored_name = x.StoredName,
+        relative_path = x.RelativePath,
+        mime_type = x.MimeType,
+        size_bytes = x.SizeBytes,
+        sha256 = x.Sha256,
+        transfer_status = x.TransferStatus.ToString(),
+        sync_status = x.SyncStatus.ToString(),
+        created_at = x.CreatedAtUtc,
+        updated_at = x.UpdatedAtUtc,
+        row_version = x.RowVersion
+    };
     private static object ToCloud(Exam x) => new
     {
         id = x.Id,

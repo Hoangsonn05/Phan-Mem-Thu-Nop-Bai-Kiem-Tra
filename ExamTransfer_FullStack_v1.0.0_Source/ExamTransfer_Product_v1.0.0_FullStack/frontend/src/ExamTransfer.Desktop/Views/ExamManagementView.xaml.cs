@@ -8,4 +8,10 @@ public partial class ExamManagementView : UserControl
     {
         InitializeComponent();
     }
+
+    private async void OnExamSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DataContext is ViewModels.ExamManagementViewModel viewModel)
+            await viewModel.LoadSelectedExamAsync();
+    }
 }

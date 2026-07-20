@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
+using ExamTransfer.Desktop.ViewModels;
 using ExamTransfer.Shared.Contracts;
 
 namespace ExamTransfer.Desktop.Infrastructure;
@@ -160,7 +161,17 @@ public sealed class BackendClient : IBackendClient
         try
         {
             var parsed = JsonSerializer.Deserialize<ApiResponse<T>>(body, Json);
-            if (parsed is not null) return parsed;
+            if (parsed is not null)
+            {
+                if (parsed.Success || parsed.Error is null) return parsed;
+                var endpoint = response.RequestMessage?.RequestUri?.AbsolutePath;
+                var transport = new BackendTransportDetails(
+                    (int)response.StatusCode,
+                    endpoint,
+                    parsed.Error.Details,
+                    !string.IsNullOrWhiteSpace(parsed.TraceId));
+                return parsed with { Error = parsed.Error with { Details = transport } };
+            }
         }
         catch (JsonException ex)
         {
@@ -197,7 +208,8 @@ public sealed class BackendClient : IBackendClient
         var endpoint = string.IsNullOrWhiteSpace(path) ? string.Empty : $" tại {path}";
         var error = new ApiError(
             "INVALID_SERVER_RESPONSE",
-            $"{message} (HTTP {statusCode}{endpoint}).");
+            $"{message} (HTTP {statusCode}{endpoint}).",
+            Details: new BackendTransportDetails(statusCode, path, null, false));
 
         return new ApiResponse<T>(
             false,

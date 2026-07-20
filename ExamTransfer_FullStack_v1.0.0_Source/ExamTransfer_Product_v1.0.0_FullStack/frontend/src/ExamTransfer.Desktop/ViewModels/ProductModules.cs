@@ -79,11 +79,21 @@ public sealed class ClassManagementViewModel : ProductPageBase
     {
         await RunAsync("Đang tải danh sách lớp", "Danh sách lớp đã được cập nhật", async token =>
         {
-            var data = ApiGuard.Require(await api.GetClassesAsync(token));
-            Classes.ReplaceWith(data.Items);
-            SelectedClass ??= Classes.FirstOrDefault();
-            if (SelectedClass is not null) await LoadDetailAsync(token);
+            await RefreshClassesCoreAsync(SelectedClass?.Id, token);
         });
+    }
+
+    private async Task RefreshClassesCoreAsync(Guid? selectedId, CancellationToken ct)
+    {
+        var data = ApiGuard.Require(await api.GetClassesAsync(ct));
+        Classes.ReplaceWith(data.Items);
+        SelectedClass = selectedId.HasValue
+            ? Classes.FirstOrDefault(x => x.Id == selectedId.Value) ?? Classes.FirstOrDefault()
+            : Classes.FirstOrDefault();
+        if (SelectedClass is not null)
+            await LoadDetailAsync(ct);
+        else
+            Students.Clear();
     }
 
     private Task OpenAsync() => RunAsync("Đang mở lớp", "Đã tải chi tiết lớp", LoadDetailAsync);
@@ -105,9 +115,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
     {
         if (string.IsNullOrWhiteSpace(Name) || string.IsNullOrWhiteSpace(Code)) throw new InvalidOperationException("Tên lớp và mã lớp là bắt buộc.");
         var created = ApiGuard.Require(await api.PostAsync<CreateClassRequest, ClassDetailDto>("api/v1/classes", new(Name.Trim(), Code.Trim(), SchoolYear.Trim(), Description.Trim()), ct));
-        Classes.Add(new(created.Id, created.Name, created.Code, created.SchoolYear, created.Status, created.Students.Count, created.RowVersion));
-        SelectedClass = Classes.Last();
-        Students.Clear();
+        await RefreshClassesCoreAsync(created.Id, ct);
     });
 
 
@@ -116,11 +124,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
         if (SelectedClass is null) return;
         if (string.IsNullOrWhiteSpace(Name) || string.IsNullOrWhiteSpace(Code)) throw new InvalidOperationException("Tên lớp và mã lớp là bắt buộc.");
         var updated = ApiGuard.Require(await api.PutAsync<UpdateClassRequest, ClassDetailDto>($"api/v1/classes/{SelectedClass.Id}", new(Name.Trim(), Code.Trim(), SchoolYear.Trim(), Description.Trim(), currentClassRowVersion), ct));
-        currentClassRowVersion = updated.RowVersion;
-        var index = Classes.IndexOf(SelectedClass);
-        var summary = new ClassSummaryDto(updated.Id, updated.Name, updated.Code, updated.SchoolYear, updated.Status, updated.Students.Count, updated.RowVersion);
-        if (index >= 0) Classes[index] = summary;
-        SelectedClass = summary;
+        await RefreshClassesCoreAsync(updated.Id, ct);
     });
 
     private Task UpdateStudentAsync() => RunAsync("Đang cập nhật học sinh", "Thông tin học sinh đã được cập nhật", async ct =>
@@ -135,9 +139,9 @@ public sealed class ClassManagementViewModel : ProductPageBase
     private Task RemoveStudentAsync() => RunAsync("Đang xóa học sinh khỏi lớp", "Học sinh đã được xóa khỏi lớp", async ct =>
     {
         if (SelectedClass is null || SelectedStudent is null || !AppServices.Dialogs.Confirm("Xóa học sinh", $"Xóa {SelectedStudent.DisplayName} khỏi lớp?")) return;
+        var classId = SelectedClass.Id;
         _ = await api.DeleteAsync<object>($"api/v1/classes/{SelectedClass.Id}/students/{SelectedStudent.Id}", ct);
-        Students.Remove(SelectedStudent);
-        SelectedStudent = Students.FirstOrDefault();
+        await RefreshClassesCoreAsync(classId, ct);
     });
 
     private Task ExportAsync() => RunAsync("Đang xuất danh sách lớp", "Danh sách lớp đã được xuất", async ct =>
@@ -153,7 +157,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
         if (SelectedClass is null) return;
         if (string.IsNullOrWhiteSpace(StudentCode) || string.IsNullOrWhiteSpace(StudentName)) throw new InvalidOperationException("Mã và họ tên học sinh là bắt buộc.");
         var student = ApiGuard.Require(await api.PostAsync<CreateStudentRequest, StudentDto>($"api/v1/classes/{SelectedClass.Id}/students", new(StudentCode.Trim(), StudentName.Trim(), string.IsNullOrWhiteSpace(StudentEmail) ? null : StudentEmail.Trim(), null), ct));
-        Students.Add(student);
+        await RefreshClassesCoreAsync(SelectedClass.Id, ct);
         StudentCode = StudentName = StudentEmail = string.Empty;
     });
 
@@ -166,7 +170,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
         var preview = ApiGuard.Require(await api.PostAsync<ImportPreviewRequest, ImportPreviewDto>($"api/v1/classes/{SelectedClass.Id}/imports/preview", new(Path.GetFileName(file), base64, null), ct));
         if (!AppServices.Dialogs.Confirm("Xác nhận import", $"Có {preview.ValidRows} dòng hợp lệ và {preview.InvalidRows} dòng lỗi. Tiếp tục import?")) return;
         _ = ApiGuard.Require(await api.PostAsync<ImportCommitRequest, ImportCommitResultDto>($"api/v1/classes/{SelectedClass.Id}/imports/commit", new(preview.PreviewToken, true), ct));
-        await LoadDetailAsync(ct);
+        await RefreshClassesCoreAsync(SelectedClass.Id, ct);
     });
 
     private Task ArchiveAsync() => RunAsync("Đang lưu trữ lớp", "Lớp đã được lưu trữ", async ct =>
@@ -187,9 +191,14 @@ public sealed class ClassManagementViewModel : ProductPageBase
 public sealed class ExamManagementViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
+    private CancellationTokenSource? detailLoadCts;
+    private long detailLoadGeneration;
     private ExamSummaryDto? selectedExam;
+    private ClassSummaryDto? selectedClass;
     private FileDescriptorDto? selectedFile;
     private string currentExamRowVersion = "1";
+    private bool currentAutoZip;
+    private bool currentRequireAtLeastOneFile = true;
     private string title = string.Empty;
     private string subject = string.Empty;
     private string description = string.Empty;
@@ -201,7 +210,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         this.api = api;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         CreateCommand = new AsyncRelayCommand(CreateAsync, () => !IsBusy);
-        PublishCommand = new AsyncRelayCommand(PublishAsync, () => !IsBusy && SelectedExam is not null);
+        PublishCommand = new AsyncRelayCommand(PublishAsync, () => !IsBusy && CanPublish);
         CloneCommand = new AsyncRelayCommand(CloneAsync, () => !IsBusy && SelectedExam is not null);
         ArchiveCommand = new AsyncRelayCommand(ArchiveAsync, () => !IsBusy && SelectedExam is not null);
         UploadCommand = new AsyncRelayCommand(UploadFileAsync, () => !IsBusy && SelectedExam is not null);
@@ -211,14 +220,22 @@ public sealed class ExamManagementViewModel : ProductPageBase
     }
 
     public ObservableCollection<ExamSummaryDto> Exams { get; } = new();
+    public ObservableCollection<ClassSummaryDto> Classes { get; } = new();
     public ObservableCollection<FileDescriptorDto> Files { get; } = new();
-    public ExamSummaryDto? SelectedExam { get => selectedExam; set { if (Set(ref selectedExam, value)) { RaiseCommands(); LoadSelectedSafe(); } } }
+    public ExamSummaryDto? SelectedExam { get => selectedExam; set { if (Set(ref selectedExam, value)) { Raise(nameof(PublishHint)); RaiseCommands(); } } }
+    public ClassSummaryDto? SelectedClass { get => selectedClass; set => Set(ref selectedClass, value); }
     public FileDescriptorDto? SelectedFile { get => selectedFile; set { if (Set(ref selectedFile, value)) RaiseCommands(); } }
     public string Title { get => title; set => Set(ref title, value); }
     public string Subject { get => subject; set => Set(ref subject, value); }
     public string Description { get => description; set => Set(ref description, value); }
     public string Duration { get => duration; set => Set(ref duration, value); }
     public string AllowedExtensions { get => allowedExtensions; set => Set(ref allowedExtensions, value); }
+    public bool CanPublish => SelectedExam is not null
+        && SelectedExam.Status is not (ExamStatus.Archived or ExamStatus.Cancelled)
+        && (!currentRequireAtLeastOneFile || Files.Count > 0);
+    public string PublishHint => currentRequireAtLeastOneFile && Files.Count == 0
+        ? "Cần tải lên và hoàn tất ít nhất một file đề trước khi phát hành."
+        : "Bài kiểm tra đã đáp ứng quy tắc file để phát hành.";
     public ICommand RefreshCommand { get; }
     public ICommand CreateCommand { get; }
     public ICommand PublishCommand { get; }
@@ -233,48 +250,112 @@ public sealed class ExamManagementViewModel : ProductPageBase
     {
         await RunAsync("Đang tải bài kiểm tra", "Danh sách bài kiểm tra đã được cập nhật", async token =>
         {
-            var data = ApiGuard.Require(await api.GetExamsAsync(token));
-            Exams.ReplaceWith(data.Items);
-            SelectedExam ??= Exams.FirstOrDefault();
-            if (SelectedExam is not null) await LoadSelectedAsync(token);
+            await RefreshExamsCoreAsync(SelectedExam?.Id, token);
         });
     }
 
-    private void LoadSelectedSafe()
+    public async Task LoadSelectedExamAsync()
     {
-        if (SelectedExam is not null) LoadSelectedAsync(DisposeToken).SafeFireAndForget("ExamManagement.LoadSelected");
+        if (IsDisposed) return;
+        try
+        {
+            Status = "Đang tải chi tiết bài kiểm tra";
+            StatusTone = "primary";
+            await LoadSelectedAsync(DisposeToken);
+            if (!IsDisposed)
+            {
+                Status = "Đã tải chi tiết bài kiểm tra";
+                StatusTone = "success";
+            }
+        }
+        catch (OperationCanceledException) when (DisposeToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            ReportFailure(ex);
+        }
+    }
+
+    private async Task RefreshExamsCoreAsync(Guid? selectedId, CancellationToken ct)
+    {
+        var selectedClassId = SelectedClass?.Id;
+        var classes = ApiGuard.Require(await api.GetClassesAsync(ct));
+        var exams = ApiGuard.Require(await api.GetExamsAsync(ct));
+        Classes.ReplaceWith(classes.Items.Where(x => x.Status == ClassStatus.Active));
+        Exams.ReplaceWith(exams.Items);
+        SelectedExam = selectedId.HasValue
+            ? Exams.FirstOrDefault(x => x.Id == selectedId.Value) ?? Exams.FirstOrDefault()
+            : Exams.FirstOrDefault();
+        SelectedClass = selectedClassId.HasValue
+            ? Classes.FirstOrDefault(x => x.Id == selectedClassId.Value) ?? Classes.FirstOrDefault()
+            : Classes.FirstOrDefault();
+        if (SelectedExam is not null)
+            await LoadSelectedAsync(ct);
+        else
+        {
+            Files.Clear();
+            Raise(nameof(PublishHint));
+            RaiseCommands();
+        }
     }
 
     private async Task LoadSelectedAsync(CancellationToken ct)
     {
-        if (SelectedExam is null) return;
-        var detail = ApiGuard.Require(await api.GetAsync<ExamDetailDto>($"api/v1/exams/{SelectedExam.Id}", ct));
+        var target = SelectedExam;
+        if (target is null) return;
+        var generation = Interlocked.Increment(ref detailLoadGeneration);
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, DisposeToken);
+        var previous = Interlocked.Exchange(ref detailLoadCts, linked);
+        previous?.Cancel();
+        previous?.Dispose();
+        ExamDetailDto detail;
+        try
+        {
+            detail = ApiGuard.Require(await api.GetAsync<ExamDetailDto>($"api/v1/exams/{target.Id}", linked.Token));
+        }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested)
+        {
+            return;
+        }
+        finally
+        {
+            if (Interlocked.CompareExchange(ref detailLoadCts, null, linked) == linked)
+                linked.Dispose();
+        }
+        if (generation != Interlocked.Read(ref detailLoadGeneration) || SelectedExam?.Id != target.Id)
+            return;
         Title = detail.Title;
         Subject = detail.Subject;
         Description = detail.Description ?? string.Empty;
         Duration = detail.DurationMinutes.ToString();
         AllowedExtensions = string.Join(',', detail.FileRule.AllowedExtensions);
+        currentAutoZip = detail.FileRule.AutoZip;
+        currentRequireAtLeastOneFile = detail.FileRule.RequireAtLeastOneFile;
+        SelectedClass = detail.ClassId.HasValue ? Classes.FirstOrDefault(x => x.Id == detail.ClassId.Value) : null;
         Files.ReplaceWith(detail.Files);
         SelectedFile = Files.FirstOrDefault();
         currentExamRowVersion = detail.RowVersion;
+        Raise(nameof(CanPublish));
+        Raise(nameof(PublishHint));
+        RaiseCommands();
     }
 
     private Task SaveAsync() => RunAsync("Đang lưu bài kiểm tra", "Bài kiểm tra đã được cập nhật", async ct =>
     {
         if (SelectedExam is null) return;
         if (!int.TryParse(Duration, out var minutes) || minutes <= 0) throw new InvalidOperationException("Thời lượng phải là số phút lớn hơn 0.");
-        var rule = new FileRuleDto(AllowedExtensions.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), 100_000_000, 500_000_000, 20, true, true);
-        var updated = ApiGuard.Require(await api.PutAsync<UpdateExamRequest, ExamDetailDto>($"api/v1/exams/{SelectedExam.Id}", new(SelectedExam.ClassId, Title.Trim(), Subject.Trim(), Description.Trim(), minutes, rule, currentExamRowVersion), ct));
-        currentExamRowVersion = updated.RowVersion;
-        ReplaceSelected(updated);
+        var rule = new FileRuleDto(AllowedExtensions.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), 100L * 1024 * 1024, 500L * 1024 * 1024, 20, currentAutoZip, currentRequireAtLeastOneFile);
+        var updated = ApiGuard.Require(await api.PutAsync<UpdateExamRequest, ExamDetailDto>($"api/v1/exams/{SelectedExam.Id}", new(SelectedClass?.Id, Title.Trim(), Subject.Trim(), Description.Trim(), minutes, rule, currentExamRowVersion), ct));
+        await RefreshExamsCoreAsync(updated.Id, ct);
     });
 
     private Task DeleteFileAsync() => RunAsync("Đang xóa file đề", "File đề đã được xóa", async ct =>
     {
         if (SelectedExam is null || SelectedFile is null || !AppServices.Dialogs.Confirm("Xóa file đề", $"Xóa {SelectedFile.Name}?")) return;
+        var examId = SelectedExam.Id;
         _ = await api.DeleteAsync<object>($"api/v1/exams/{SelectedExam.Id}/files/{SelectedFile.Id}", ct);
-        Files.Remove(SelectedFile);
-        SelectedFile = Files.FirstOrDefault();
+        await RefreshExamsCoreAsync(examId, ct);
     });
 
     private Task DownloadFileAsync() => RunAsync("Đang tải file đề", "File đề đã được lưu", async ct =>
@@ -290,32 +371,29 @@ public sealed class ExamManagementViewModel : ProductPageBase
         if (!int.TryParse(Duration, out var minutes) || minutes <= 0) throw new InvalidOperationException("Thời lượng phải là số phút lớn hơn 0.");
         if (string.IsNullOrWhiteSpace(Title) || string.IsNullOrWhiteSpace(Subject)) throw new InvalidOperationException("Tiêu đề và môn học là bắt buộc.");
         var rule = new FileRuleDto(AllowedExtensions.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), 100L * 1024 * 1024, 500L * 1024 * 1024, 20, false, true);
-        var exam = ApiGuard.Require(await api.PostAsync<CreateExamRequest, ExamDetailDto>("api/v1/exams", new(null, Title.Trim(), Subject.Trim(), Description.Trim(), minutes, rule), ct));
-        Exams.Add(new(exam.Id, exam.ClassId, exam.Title, exam.Subject, exam.DurationMinutes, exam.Status, exam.Version, exam.Files.Count, exam.RowVersion));
-        SelectedExam = Exams.Last();
+        var exam = ApiGuard.Require(await api.PostAsync<CreateExamRequest, ExamDetailDto>("api/v1/exams", new(SelectedClass?.Id, Title.Trim(), Subject.Trim(), Description.Trim(), minutes, rule), ct));
+        await RefreshExamsCoreAsync(exam.Id, ct);
     });
 
     private Task PublishAsync() => RunAsync("Đang phát hành đề", "Bài kiểm tra đã được phát hành", async ct =>
     {
         if (SelectedExam is null || !AppServices.Dialogs.Confirm("Phát hành bài kiểm tra", "Sau khi phát hành, thay file đề sẽ tạo phiên bản mới. Tiếp tục?")) return;
         var detail = ApiGuard.Require(await api.PostAsync<object, ExamDetailDto>($"api/v1/exams/{SelectedExam.Id}/publish", new { }, ct));
-        ReplaceSelected(detail);
+        await RefreshExamsCoreAsync(detail.Id, ct);
     });
 
     private Task CloneAsync() => RunAsync("Đang nhân bản", "Đã tạo bản sao bài kiểm tra", async ct =>
     {
         if (SelectedExam is null) return;
         var detail = ApiGuard.Require(await api.PostAsync<object, ExamDetailDto>($"api/v1/exams/{SelectedExam.Id}/clone", new { }, ct));
-        Exams.Add(new(detail.Id, detail.ClassId, detail.Title, detail.Subject, detail.DurationMinutes, detail.Status, detail.Version, detail.Files.Count, detail.RowVersion));
+        await RefreshExamsCoreAsync(detail.Id, ct);
     });
 
     private Task ArchiveAsync() => RunAsync("Đang lưu trữ", "Bài kiểm tra đã được lưu trữ", async ct =>
     {
         if (SelectedExam is null || !AppServices.Dialogs.Confirm("Lưu trữ bài kiểm tra", $"Lưu trữ {SelectedExam.Title}?")) return;
         _ = await api.PostAsync<object, object>($"api/v1/exams/{SelectedExam.Id}/archive", new { }, ct);
-        var old = SelectedExam;
-        Exams.Remove(old);
-        SelectedExam = Exams.FirstOrDefault();
+        await RefreshExamsCoreAsync(null, ct);
     });
 
     private Task UploadFileAsync() => RunAsync("Đang tải file đề", "File đề đã được tải và xác minh", async ct =>
@@ -336,17 +414,8 @@ public sealed class ExamManagementViewModel : ProductPageBase
             Status = $"Đang tải file đề: {index + 1}/{init.TotalChunks} phần";
         }
         var descriptor = ApiGuard.Require(await api.PostAsync<FinalizeFileUploadRequest, FileDescriptorDto>($"api/v1/exams/{SelectedExam.Id}/files/{init.FileId}/finalize", new(sha), ct));
-        Files.Add(descriptor);
+        await RefreshExamsCoreAsync(SelectedExam.Id, ct);
     });
-
-    private void ReplaceSelected(ExamDetailDto detail)
-    {
-        if (SelectedExam is null) return;
-        var index = Exams.IndexOf(SelectedExam);
-        var summary = new ExamSummaryDto(detail.Id, detail.ClassId, detail.Title, detail.Subject, detail.DurationMinutes, detail.Status, detail.Version, detail.Files.Count, detail.RowVersion);
-        if (index >= 0) Exams[index] = summary;
-        SelectedExam = summary;
-    }
 
     private static async Task<string> ComputeShaAsync(string path, CancellationToken ct)
     {
@@ -358,6 +427,14 @@ public sealed class ExamManagementViewModel : ProductPageBase
     protected override void RaiseCommands()
     {
         foreach (var command in new[] { RefreshCommand, CreateCommand, PublishCommand, CloneCommand, ArchiveCommand, UploadCommand, SaveCommand, DeleteFileCommand, DownloadFileCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+    }
+
+    public override void Dispose()
+    {
+        detailLoadCts?.Cancel();
+        detailLoadCts?.Dispose();
+        detailLoadCts = null;
+        base.Dispose();
     }
 }
 
@@ -375,11 +452,14 @@ public sealed class SessionManagementViewModel : ProductPageBase
         this.api = api;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         CreateCommand = new AsyncRelayCommand(CreateAsync, () => !IsBusy && SelectedExam is not null);
-        OpenCommand = new AsyncRelayCommand(() => TransitionAsync("open", "Phòng thi đã mở và sẵn sàng nhận học sinh"), () => !IsBusy && SelectedSession is not null);
-        StartCommand = new AsyncRelayCommand(() => TransitionAsync("start", "Phiên thi đã bắt đầu"), () => !IsBusy && SelectedSession is not null);
-        PauseCommand = new AsyncRelayCommand(() => TransitionAsync("pause", "Phiên thi đã tạm dừng"), () => !IsBusy && SelectedSession is not null);
-        ResumeCommand = new AsyncRelayCommand(() => TransitionAsync("resume", "Phiên thi đã tiếp tục"), () => !IsBusy && SelectedSession is not null);
-        EndCommand = new AsyncRelayCommand(EndAsync, () => !IsBusy && SelectedSession is not null);
+        OpenCommand = new AsyncRelayCommand(() => TransitionAsync("open", "Phòng thi đã mở và sẵn sàng nhận học sinh"), () => !IsBusy && SelectedSession?.Status == SessionStatus.Draft);
+        DistributeCommand = new AsyncRelayCommand(() => TransitionAsync("distribute", "Đề thi đã được phân phối"), () => !IsBusy && SelectedSession?.Status == SessionStatus.Waiting);
+        StartCommand = new AsyncRelayCommand(() => TransitionAsync("start", "Phiên thi đã bắt đầu"), () => !IsBusy && (SelectedSession?.Status is SessionStatus.Waiting or SessionStatus.Distributing));
+        PauseCommand = new AsyncRelayCommand(() => TransitionAsync("pause", "Phiên thi đã tạm dừng"), () => !IsBusy && SelectedSession?.Status == SessionStatus.InProgress);
+        ResumeCommand = new AsyncRelayCommand(() => TransitionAsync("resume", "Phiên thi đã tiếp tục"), () => !IsBusy && SelectedSession?.Status == SessionStatus.Paused);
+        CollectCommand = new AsyncRelayCommand(() => TransitionAsync("collect", "Hệ thống đang thu bài"), () => !IsBusy && (SelectedSession?.Status is SessionStatus.InProgress or SessionStatus.Paused));
+        EndCommand = new AsyncRelayCommand(EndAsync, () => !IsBusy && (SelectedSession?.Status is SessionStatus.InProgress or SessionStatus.Paused or SessionStatus.Collecting));
+        CancelCommand = new AsyncRelayCommand(CancelAsync, () => !IsBusy && SelectedSession?.Status == SessionStatus.Draft);
     }
 
     public ObservableCollection<ExamSummaryDto> Exams { get; } = new();
@@ -392,22 +472,34 @@ public sealed class SessionManagementViewModel : ProductPageBase
     public ICommand RefreshCommand { get; }
     public ICommand CreateCommand { get; }
     public ICommand OpenCommand { get; }
+    public ICommand DistributeCommand { get; }
     public ICommand StartCommand { get; }
     public ICommand PauseCommand { get; }
     public ICommand ResumeCommand { get; }
+    public ICommand CollectCommand { get; }
     public ICommand EndCommand { get; }
+    public ICommand CancelCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
         await RunAsync("Đang tải phòng thi", "Danh sách phòng thi đã được cập nhật", async token =>
         {
-            var exams = ApiGuard.Require(await api.GetExamsAsync(token));
-            var sessions = ApiGuard.Require(await api.GetSessionsAsync(token));
-            Exams.ReplaceWith(exams.Items.Where(x => x.Status == ExamStatus.Published));
-            Sessions.ReplaceWith(sessions.Items);
-            SelectedExam ??= Exams.FirstOrDefault();
-            SelectedSession ??= Sessions.FirstOrDefault();
+            await RefreshSessionsCoreAsync(SelectedExam?.Id, SelectedSession?.Id, token);
         });
+    }
+
+    private async Task RefreshSessionsCoreAsync(Guid? examId, Guid? sessionId, CancellationToken ct)
+    {
+        var exams = ApiGuard.Require(await api.GetExamsAsync(ct));
+        var sessions = ApiGuard.Require(await api.GetSessionsAsync(ct));
+        Exams.ReplaceWith(exams.Items.Where(x => x.Status == ExamStatus.Published));
+        Sessions.ReplaceWith(sessions.Items);
+        SelectedExam = examId.HasValue
+            ? Exams.FirstOrDefault(x => x.Id == examId.Value) ?? Exams.FirstOrDefault()
+            : Exams.FirstOrDefault();
+        SelectedSession = sessionId.HasValue
+            ? Sessions.FirstOrDefault(x => x.Id == sessionId.Value) ?? Sessions.FirstOrDefault()
+            : Sessions.FirstOrDefault();
     }
 
     private Task CreateAsync() => RunAsync("Đang tạo phòng thi", "Phòng thi đã được tạo ở trạng thái nháp", async ct =>
@@ -415,8 +507,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
         if (SelectedExam is null) return;
         if (!int.TryParse(Capacity, out var cap) || cap <= 0) throw new InvalidOperationException("Sức chứa phải lớn hơn 0.");
         var detail = ApiGuard.Require(await api.PostAsync<CreateSessionRequest, SessionDetailDto>("api/v1/sessions", new(SelectedExam.Id, SelectedExam.ClassId, DateTimeOffset.UtcNow.AddMinutes(5), $"{{\"autoApprove\":{AutoApprove.ToString().ToLowerInvariant()}}}", AutoApprove, cap, string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim()), ct));
-        Sessions.Add(detail.Summary);
-        SelectedSession = detail.Summary;
+        await RefreshSessionsCoreAsync(SelectedExam.Id, detail.Summary.Id, ct);
     });
 
     private Task TransitionAsync(string action, string success) => RunAsync("Đang cập nhật trạng thái phòng", success, async ct =>
@@ -433,6 +524,13 @@ public sealed class SessionManagementViewModel : ProductPageBase
         ReplaceSelected(detail.Summary);
     });
 
+    private Task CancelAsync() => RunAsync("Đang hủy phòng", "Phòng thi đã được hủy", async ct =>
+    {
+        if (SelectedSession is null || !AppServices.Dialogs.Confirm("Hủy phòng thi", "Hủy phòng thi đang ở trạng thái nháp?")) return;
+        var detail = ApiGuard.Require(await api.PostAsync<EndSessionRequest, SessionDetailDto>($"api/v1/sessions/{SelectedSession.Id}/cancel", new(false, "Giáo viên hủy phòng nháp."), ct));
+        ReplaceSelected(detail.Summary);
+    });
+
     private void ReplaceSelected(SessionSummaryDto summary)
     {
         if (SelectedSession is null) return;
@@ -443,7 +541,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, OpenCommand, StartCommand, PauseCommand, ResumeCommand, EndCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
     }
 }
 

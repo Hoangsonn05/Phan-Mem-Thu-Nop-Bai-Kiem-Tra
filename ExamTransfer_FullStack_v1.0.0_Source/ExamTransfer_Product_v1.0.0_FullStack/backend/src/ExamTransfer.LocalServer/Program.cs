@@ -93,6 +93,11 @@ await using (var scope = app.Services.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     var paths = scope.ServiceProvider.GetRequiredService<IStoragePaths>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("StorageDiagnostics");
+    logger.LogInformation(
+        "ExamTransfer storage initialized. Storage.RootPath={StorageRootPath}; DatabasePath={DatabasePath}",
+        paths.RootPath,
+        paths.DatabasePath);
     await DbInitializer.InitializeAsync(db, paths);
 }
 

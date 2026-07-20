@@ -21,11 +21,35 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
             var term = search.Trim();
             query = query.Where(x => x.Name.Contains(term) || x.Code.Contains(term) || x.SchoolYear.Contains(term));
         }
+
         var total = await query.CountAsync(cancellationToken);
-        var rows = await query.OrderByDescending(x => x.UpdatedAtUtc).Skip((page - 1) * pageSize).Take(pageSize)
+        var sortKeys = await query
+            .Select(x => new { x.Id, x.UpdatedAtUtc })
+            .ToListAsync(cancellationToken);
+        var pageIds = sortKeys
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x => x.Id)
+            .ToList();
+
+        if (pageIds.Count == 0)
+            return new PagedResult<ClassSummaryDto>([], page, pageSize, total);
+
+        var position = pageIds
+            .Select((id, index) => new { id, index })
+            .ToDictionary(x => x.id, x => x.index);
+        var rows = await query
+            .Where(x => pageIds.Contains(x.Id))
             .Select(x => new { Entity = x, StudentCount = x.Members.Count })
             .ToListAsync(cancellationToken);
-        return new PagedResult<ClassSummaryDto>(rows.Select(x => x.Entity.ToSummary(x.StudentCount)).ToList(), page, pageSize, total);
+        var items = rows
+            .OrderBy(x => position[x.Entity.Id])
+            .Select(x => x.Entity.ToSummary(x.StudentCount))
+            .ToList();
+
+        return new PagedResult<ClassSummaryDto>(items, page, pageSize, total);
     }
 
     public async Task<ClassDetailDto> GetAsync(Guid id, CancellationToken cancellationToken)
@@ -37,38 +61,44 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
 
     public async Task<ClassDetailDto> CreateAsync(CreateClassRequest request, CancellationToken cancellationToken)
     {
-        ValidateClass(request.Name, request.Code, request.SchoolYear);
-        if (await db.ClassesSet.AnyAsync(x => x.Code == request.Code.Trim() && x.SchoolYear == request.SchoolYear.Trim(), cancellationToken))
-            throw new ApiException(ErrorCodes.Conflict, "Mã lớp đã tồn tại trong năm học này.", 409);
-        var entity = new ClassRoom
+        return await InTransactionAsync(async () =>
         {
-            Name = request.Name.Trim(), Code = request.Code.Trim(), SchoolYear = request.SchoolYear.Trim(),
-            Description = request.Description?.Trim(), Status = ClassStatus.Active
-        };
-        db.ClassesSet.Add(entity);
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ClassCreated", nameof(ClassRoom), entity.Id.ToString(), null, null, entity, cancellationToken);
-        await outbox.EnqueueAsync("classes", entity.Id.ToString(), "upsert", ToCloud(entity), cancellationToken: cancellationToken);
-        return entity.ToDetail([]);
+            ValidateClass(request.Name, request.Code, request.SchoolYear);
+            if (await db.ClassesSet.AnyAsync(x => x.Code == request.Code.Trim() && x.SchoolYear == request.SchoolYear.Trim(), cancellationToken))
+                throw new ApiException(ErrorCodes.Conflict, "Mã lớp đã tồn tại trong năm học này.", 409);
+            var entity = new ClassRoom
+            {
+                Name = request.Name.Trim(), Code = request.Code.Trim(), SchoolYear = request.SchoolYear.Trim(),
+                Description = request.Description?.Trim(), Status = ClassStatus.Active
+            };
+            db.ClassesSet.Add(entity);
+            await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync("ClassCreated", nameof(ClassRoom), entity.Id.ToString(), null, null, entity, cancellationToken);
+            await outbox.EnqueueAsync("classes", entity.Id.ToString(), "upsert", ToCloud(entity), cancellationToken: cancellationToken);
+            return entity.ToDetail([]);
+        }, cancellationToken);
     }
 
     public async Task<ClassDetailDto> UpdateAsync(Guid id, UpdateClassRequest request, CancellationToken cancellationToken)
     {
-        ValidateClass(request.Name, request.Code, request.SchoolYear);
-        var entity = await db.ClassesSet.Include(x => x.Members).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
-        EnsureRowVersion(entity.RowVersion, request.RowVersion);
-        if (await db.ClassesSet.AnyAsync(x => x.Id != id && x.Code == request.Code.Trim() && x.SchoolYear == request.SchoolYear.Trim(), cancellationToken))
-            throw new ApiException(ErrorCodes.Conflict, "Mã lớp đã tồn tại trong năm học này.", 409);
-        var before = new { entity.Name, entity.Code, entity.SchoolYear, entity.Description };
-        entity.Name = request.Name.Trim();
-        entity.Code = request.Code.Trim();
-        entity.SchoolYear = request.SchoolYear.Trim();
-        entity.Description = request.Description?.Trim();
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ClassUpdated", nameof(ClassRoom), entity.Id.ToString(), null, before, entity, cancellationToken);
-        await outbox.EnqueueAsync("classes", entity.Id.ToString(), "upsert", ToCloud(entity), cancellationToken: cancellationToken);
-        return entity.ToDetail(entity.Members.OrderBy(x => x.StudentCode).Select(x => x.ToDto()).ToList());
+        return await InTransactionAsync(async () =>
+        {
+            ValidateClass(request.Name, request.Code, request.SchoolYear);
+            var entity = await db.ClassesSet.Include(x => x.Members).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+                ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
+            EnsureRowVersion(entity.RowVersion, request.RowVersion);
+            if (await db.ClassesSet.AnyAsync(x => x.Id != id && x.Code == request.Code.Trim() && x.SchoolYear == request.SchoolYear.Trim(), cancellationToken))
+                throw new ApiException(ErrorCodes.Conflict, "Mã lớp đã tồn tại trong năm học này.", 409);
+            var before = new { entity.Name, entity.Code, entity.SchoolYear, entity.Description };
+            entity.Name = request.Name.Trim();
+            entity.Code = request.Code.Trim();
+            entity.SchoolYear = request.SchoolYear.Trim();
+            entity.Description = request.Description?.Trim();
+            await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync("ClassUpdated", nameof(ClassRoom), entity.Id.ToString(), null, before, entity, cancellationToken);
+            await outbox.EnqueueAsync("classes", entity.Id.ToString(), "upsert", ToCloud(entity), cancellationToken: cancellationToken);
+            return entity.ToDetail(entity.Members.OrderBy(x => x.StudentCode).Select(x => x.ToDto()).ToList());
+        }, cancellationToken);
     }
 
     public async Task ArchiveAsync(Guid id, CancellationToken cancellationToken)
@@ -380,6 +410,22 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
         created_at = x.CreatedAtUtc,
         updated_at = x.UpdatedAtUtc
     };
+
+    private async Task<T> InTransactionAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
+    {
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            var result = await action();
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
     private static object ToCloud(ClassMember x) => new
     {
         id = x.Id,

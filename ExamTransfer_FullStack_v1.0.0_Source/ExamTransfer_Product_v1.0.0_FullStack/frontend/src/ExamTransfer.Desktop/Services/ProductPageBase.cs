@@ -71,11 +71,13 @@ public abstract class ProductPageBase : ObservableObject, IAsyncInitializable, I
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
         }
+        catch (ExamTransfer.Desktop.ViewModels.BackendApiException ex)
+        {
+            ReportFailure(ex);
+        }
         catch (Exception ex)
         {
-            var traceId = FrontendLogger.Log(ex, GetType().Name);
-            Status = $"Không thể hoàn tất thao tác. Mã tra cứu: {traceId}";
-            StatusTone = "danger";
+            ReportFailure(ex);
         }
         finally
         {
@@ -84,6 +86,22 @@ public abstract class ProductPageBase : ObservableObject, IAsyncInitializable, I
                 IsBusy = false;
             }
         }
+    }
+
+    protected void ReportFailure(Exception exception)
+    {
+        if (exception is ExamTransfer.Desktop.ViewModels.BackendApiException backend)
+        {
+            var traceId = FrontendLogger.Log(backend, GetType().Name, backend.BackendTraceId);
+            var http = backend.HttpStatusCode.HasValue ? $" / HTTP {backend.HttpStatusCode}" : string.Empty;
+            Status = $"{backend.Message} (Mã lỗi: {backend.ApiCode}{http}; Mã tra cứu: {traceId})";
+        }
+        else
+        {
+            var traceId = FrontendLogger.Log(exception, GetType().Name);
+            Status = $"Không thể hoàn tất thao tác. Mã tra cứu: {traceId}";
+        }
+        StatusTone = "danger";
     }
 
     protected virtual void RaiseCommands() { }
