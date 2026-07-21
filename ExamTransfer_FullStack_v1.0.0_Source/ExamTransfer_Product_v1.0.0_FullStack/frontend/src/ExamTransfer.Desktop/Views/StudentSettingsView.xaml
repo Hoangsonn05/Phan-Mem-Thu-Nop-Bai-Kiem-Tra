@@ -1,1 +1,61 @@
-<UserControl x:Class="ExamTransfer.Desktop.Views.StudentSettingsView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><Grid Margin="32"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="20"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><StackPanel><TextBlock Text="Cài đặt học sinh" Style="{StaticResource PageTitleText}"/><TextBlock Text="Hồ sơ, thư mục mặc định, thông báo, định danh thiết bị và log hỗ trợ." Style="{StaticResource BodyText}" Margin="0,5,0,0"/></StackPanel><Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Hồ sơ" Style="{StaticResource SectionTitleText}"/><TextBlock Text="Họ tên" Style="{StaticResource CaptionText}" Margin="0,14,0,5"/><TextBox Text="{Binding DisplayName}"/><TextBlock Text="Mã học sinh" Style="{StaticResource CaptionText}" Margin="0,10,0,5"/><TextBox Text="{Binding StudentCode}"/><TextBlock Text="Device ID" Style="{StaticResource CaptionText}" Margin="0,10,0,5"/><TextBox Text="{Binding DeviceId}" IsReadOnly="True"/><CheckBox Content="Bật thông báo" IsChecked="{Binding Notifications}" Margin="0,14,0,0"/><Button Content="Lưu hồ sơ" Command="{Binding SaveCommand}" Style="{StaticResource PrimaryButton}" Margin="0,16,0,0"/></StackPanel></Border><Border Grid.Column="2" Style="{StaticResource Card}"><StackPanel><TextBlock Text="Workspace và hỗ trợ" Style="{StaticResource SectionTitleText}"/><TextBlock Text="Thư mục làm bài mặc định của kỳ thi" Style="{StaticResource CaptionText}" Margin="0,14,0,5"/><TextBox Text="{Binding Workspace}"/><Button Content="Chọn thư mục" Command="{Binding BrowseCommand}" Style="{StaticResource SecondaryButton}" Margin="0,8,0,0"/><Button Content="Mở thư mục log" Command="{Binding OpenLogCommand}" Style="{StaticResource SecondaryButton}" Margin="0,8,0,0"/><Border Style="{StaticResource SubtleCard}" Margin="0,16,0,0"><TextBlock Text="Device ID và thông tin phiên thi không thể thay đổi trong giao diện để bảo đảm đối chiếu đúng với máy chủ." Style="{StaticResource BodyText}"/></Border></StackPanel></Border></Grid><Border Grid.Row="3" Style="{StaticResource StatusPill}" HorizontalAlignment="Left" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}"><TextBlock Text="{Binding Status}" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"/></Border></Grid></UserControl>
+<UserControl x:Class="ExamTransfer.Desktop.Views.StudentSettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
+             beh:EntranceAnimation.IsEnabled="True">
+    <Grid Margin="28,24,28,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="20" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="Cài đặt học sinh" Style="{StaticResource PageTitleText}" />
+            <TextBlock Text="Hồ sơ, thư mục mặc định, thông báo, định danh thiết bị và log hỗ trợ."
+                       Style="{StaticResource BodyText}" Margin="0,5,0,0" />
+        </StackPanel>
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition />
+            </Grid.ColumnDefinitions>
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="Hồ sơ" Style="{StaticResource SectionTitleText}" />
+                    <TextBlock Text="Họ tên" Style="{StaticResource LabelText}" Margin="0,16,0,6" />
+                    <TextBox Text="{Binding DisplayName}" />
+                    <TextBlock Text="Mã học sinh" Style="{StaticResource LabelText}" Margin="0,12,0,6" />
+                    <TextBox Text="{Binding StudentCode}" />
+                    <TextBlock Text="Device ID" Style="{StaticResource LabelText}" Margin="0,12,0,6" />
+                    <TextBox Text="{Binding DeviceId}" IsReadOnly="True" />
+                    <CheckBox Content="Bật thông báo" IsChecked="{Binding Notifications}" Margin="0,16,0,0" />
+                    <Button Content="Lưu hồ sơ" Command="{Binding SaveCommand}"
+                            Style="{StaticResource PrimaryButton}" Margin="0,18,0,0" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="2" Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="Workspace và hỗ trợ" Style="{StaticResource SectionTitleText}" />
+                    <TextBlock Text="Thư mục làm bài mặc định của kỳ thi"
+                               Style="{StaticResource LabelText}" Margin="0,16,0,6" />
+                    <TextBox Text="{Binding Workspace}" />
+                    <Button Content="Chọn thư mục" Command="{Binding BrowseCommand}"
+                            Style="{StaticResource SecondaryButton}" Margin="0,10,0,0" />
+                    <Button Content="Mở thư mục log" Command="{Binding OpenLogCommand}"
+                            Style="{StaticResource SecondaryButton}" Margin="0,8,0,0" />
+                    <Border Style="{StaticResource SubtleCard}" Margin="0,18,0,0">
+                        <TextBlock Text="Device ID và thông tin phiên thi không thể thay đổi trong giao diện để bảo đảm đối chiếu đúng với máy chủ."
+                                   Style="{StaticResource BodyText}" />
+                    </Border>
+                </StackPanel>
+            </Border>
+        </Grid>
+        <Border Grid.Row="4" Style="{StaticResource StatusPill}" HorizontalAlignment="Left"
+                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
+            <TextBlock Text="{Binding Status}" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" FontSize="12" />
+        </Border>
+    </Grid>
+</UserControl>

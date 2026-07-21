@@ -1,1 +1,128 @@
-﻿<UserControl x:Class="ExamTransfer.Desktop.Views.StudentWaitingView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><Grid Margin="32"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="20"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><StackPanel><TextBlock Text="Phòng chờ" Style="{StaticResource PageTitleText}"/><TextBlock Text="Theo dõi trạng thái duyệt và kiểm tra thiết bị trước khi kỳ thi bắt đầu." Style="{StaticResource BodyText}" Margin="0,5,0,0"/></StackPanel><Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Trạng thái tham gia" Style="{StaticResource SectionTitleText}"/><TextBlock Text="Mã phòng" Style="{StaticResource CaptionText}" Margin="0,16,0,4"/><TextBlock Text="{Binding RoomCode}" FontSize="32" FontWeight="Bold" Foreground="{DynamicResource PrimaryBrush}"/><TextBlock Text="{Binding Participant.DisplayName}" FontSize="18" FontWeight="SemiBold" Margin="0,16,0,0"/><TextBlock Text="{Binding Participant.StudentCode}" Style="{StaticResource BodyText}"/><Border Style="{StaticResource StatusPill}" HorizontalAlignment="Left" Margin="0,16,0,0"><TextBlock Text="{Binding Participant.Status}"/></Border><Button Content="Kiểm tra lại" Command="{Binding RefreshCommand}" Style="{StaticResource PrimaryButton}" Margin="0,18,0,0"/><Button Content="Rời phòng" Command="{Binding LeaveCommand}" Style="{StaticResource DangerButton}" Margin="0,8,0,0"/></StackPanel></Border><Border Grid.Column="2" Style="{StaticResource Card}"><StackPanel><TextBlock Text="Sẵn sàng thiết bị" Style="{StaticResource SectionTitleText}"/><TextBlock Text="✓ Kết nối LAN/Wi-Fi" Style="{StaticResource BodyText}" Margin="0,16,0,0"/><TextBlock Text="✓ Quyền ghi thư mục làm bài" Style="{StaticResource BodyText}" Margin="0,8,0,0"/><TextBlock Text="✓ Dung lượng trống" Style="{StaticResource BodyText}" Margin="0,8,0,0"/><TextBlock Text="✓ Phiên bản ứng dụng tương thích" Style="{StaticResource BodyText}" Margin="0,8,0,0"/><Border Style="{StaticResource SubtleCard}" Margin="0,20,0,0"><TextBlock Text="Đề thi chỉ xuất hiện sau khi giáo viên phát hành. Không đóng ứng dụng trong khi đang chờ duyệt." Style="{StaticResource BodyText}"/></Border></StackPanel></Border></Grid><Border Grid.Row="3" Style="{StaticResource StatusPill}" HorizontalAlignment="Left" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}"><TextBlock Text="{Binding Status}" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"/></Border></Grid></UserControl>
+<UserControl x:Class="ExamTransfer.Desktop.Views.StudentWaitingView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
+             beh:EntranceAnimation.IsEnabled="True">
+    <Grid Margin="28,24,28,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="20" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="Phòng chờ"
+                       Style="{StaticResource PageTitleText}" />
+            <TextBlock Text="Theo dõi trạng thái duyệt và kiểm tra thiết bị trước khi kỳ thi bắt đầu."
+                       Style="{StaticResource BodyText}"
+                       Margin="0,5,0,0" />
+        </StackPanel>
+
+        <!-- Content -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition />
+            </Grid.ColumnDefinitions>
+
+            <!-- Join status -->
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="Trạng thái tham gia"
+                               Style="{StaticResource SectionTitleText}" />
+                    <TextBlock Text="Mã phòng"
+                               Style="{StaticResource CaptionText}"
+                               Margin="0,18,0,6" />
+                    <TextBlock Text="{Binding RoomCode}"
+                               FontSize="34"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="{Binding Participant.DisplayName}"
+                               FontSize="18"
+                               FontWeight="SemiBold"
+                               Margin="0,18,0,0" />
+                    <TextBlock Text="{Binding Participant.StudentCode}"
+                               Style="{StaticResource BodyText}"
+                               Margin="0,2,0,0" />
+                    <Border Style="{StaticResource StatusPill}"
+                            HorizontalAlignment="Left"
+                            Margin="0,16,0,0">
+                        <TextBlock Text="{Binding Participant.Status}" FontSize="13" />
+                    </Border>
+                    <Button Content="Kiểm tra lại"
+                            Command="{Binding RefreshCommand}"
+                            Style="{StaticResource PrimaryButton}"
+                            Margin="0,20,0,0" />
+                    <Button Content="Rời phòng"
+                            Command="{Binding LeaveCommand}"
+                            Style="{StaticResource DangerButton}"
+                            Margin="0,10,0,0" />
+                </StackPanel>
+            </Border>
+
+            <!-- Device readiness -->
+            <Border Grid.Column="2" Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="Sẵn sàng thiết bị"
+                               Style="{StaticResource SectionTitleText}" />
+                    <StackPanel Margin="0,18,0,0">
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="&#xE73E;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="14"
+                                       Foreground="{DynamicResource SuccessBrush}"
+                                       Margin="0,0,10,0" />
+                            <TextBlock Text="Kết nối LAN/Wi-Fi"
+                                       Style="{StaticResource BodyText}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="&#xE73E;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="14"
+                                       Foreground="{DynamicResource SuccessBrush}"
+                                       Margin="0,0,10,0" />
+                            <TextBlock Text="Quyền ghi thư mục làm bài"
+                                       Style="{StaticResource BodyText}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="&#xE73E;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="14"
+                                       Foreground="{DynamicResource SuccessBrush}"
+                                       Margin="0,0,10,0" />
+                            <TextBlock Text="Dung lượng trống"
+                                       Style="{StaticResource BodyText}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE73E;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="14"
+                                       Foreground="{DynamicResource SuccessBrush}"
+                                       Margin="0,0,10,0" />
+                            <TextBlock Text="Phiên bản ứng dụng tương thích"
+                                       Style="{StaticResource BodyText}" />
+                        </StackPanel>
+                    </StackPanel>
+                    <Border Style="{StaticResource SubtleCard}" Margin="0,22,0,0">
+                        <TextBlock Text="Đề thi chỉ xuất hiện sau khi giáo viên phát hành. Không đóng ứng dụng trong khi đang chờ duyệt."
+                                   Style="{StaticResource BodyText}" />
+                    </Border>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- Status bar -->
+        <Border Grid.Row="4"
+                Style="{StaticResource StatusPill}"
+                HorizontalAlignment="Left"
+                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
+            <TextBlock Text="{Binding Status}"
+                       Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"
+                       FontSize="12" />
+        </Border>
+    </Grid>
+</UserControl>

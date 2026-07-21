@@ -1,6 +1,6 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Color x:Key="Color.AppBackground">#F4F7FB</Color>
+    <Color x:Key="Color.AppBackground">#F1F5FB</Color>
     <Color x:Key="Color.Surface">#FFFFFFFF</Color>
     <Color x:Key="Color.SurfaceSubtle">#F8FAFC</Color>
     <Color x:Key="Color.SurfaceRaised">#FFFFFFFF</Color>
@@ -11,6 +11,7 @@
     <Color x:Key="Color.TextMuted">#64748B</Color>
     <Color x:Key="Color.Primary">#2563EB</Color>
     <Color x:Key="Color.PrimaryHover">#1D4ED8</Color>
+    <Color x:Key="Color.PrimaryPressed">#1E40AF</Color>
     <Color x:Key="Color.PrimarySoft">#DBEAFE</Color>
     <Color x:Key="Color.Accent">#0891B2</Color>
     <Color x:Key="Color.AccentSoft">#CFFAFE</Color>
@@ -20,6 +21,7 @@
     <Color x:Key="Color.WarningSoft">#FEF3C7</Color>
     <Color x:Key="Color.Danger">#B91C1C</Color>
     <Color x:Key="Color.DangerSoft">#FEE2E2</Color>
+    <Color x:Key="Color.DangerHover">#991B1B</Color>
     <Color x:Key="Color.Info">#0369A1</Color>
     <Color x:Key="Color.InfoSoft">#E0F2FE</Color>
     <Color x:Key="Color.OnPrimary">#FFFFFFFF</Color>
@@ -32,12 +34,18 @@
     <Color x:Key="Color.OverlaySoft">#28FFFFFF</Color>
     <Color x:Key="Color.SuccessOnSoft">#166534</Color>
     <Color x:Key="Color.InputSelection">#BFDBFE</Color>
-    <Color x:Key="Color.Sidebar">#1E5FD7</Color>
-    <Color x:Key="Color.SidebarHover">#2F73E0</Color>
-    <Color x:Key="Color.SidebarActive">#0F46B5</Color>
+    <Color x:Key="Color.Sidebar">#1D4ED8</Color>
+    <Color x:Key="Color.SidebarHover">#2563EB</Color>
+    <Color x:Key="Color.SidebarActive">#1E40AF</Color>
     <Color x:Key="Color.SidebarText">#F8FAFC</Color>
-    <Color x:Key="Color.SidebarMuted">#D7E6FF</Color>
-    <Color x:Key="Color.SidebarBadge">#33FFFFFF</Color>
+    <Color x:Key="Color.SidebarMuted">#BFDBFE</Color>
+    <Color x:Key="Color.SidebarBadge">#3DFFFFFF</Color>
+    <Color x:Key="Color.SidebarActiveIndicator">#93C5FD</Color>
+    <Color x:Key="Color.DataGridRowHover">#F0F6FF</Color>
+    <Color x:Key="Color.DataGridRowSelected">#DBEAFE</Color>
+    <Color x:Key="Color.FocusRing">#2563EB</Color>
+    <Color x:Key="Color.ScrollThumb">#CBD5E1</Color>
+    <Color x:Key="Color.ScrollThumbHover">#94A3B8</Color>
 
     <SolidColorBrush x:Key="AppBackgroundBrush" Color="{StaticResource Color.AppBackground}"/>
     <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource Color.Surface}"/>
@@ -50,6 +58,7 @@
     <SolidColorBrush x:Key="TextMutedBrush" Color="{StaticResource Color.TextMuted}"/>
     <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource Color.Primary}"/>
     <SolidColorBrush x:Key="PrimaryHoverBrush" Color="{StaticResource Color.PrimaryHover}"/>
+    <SolidColorBrush x:Key="PrimaryPressedBrush" Color="{StaticResource Color.PrimaryPressed}"/>
     <SolidColorBrush x:Key="PrimarySoftBrush" Color="{StaticResource Color.PrimarySoft}"/>
     <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource Color.Accent}"/>
     <SolidColorBrush x:Key="AccentSoftBrush" Color="{StaticResource Color.AccentSoft}"/>
@@ -59,6 +68,7 @@
     <SolidColorBrush x:Key="WarningSoftBrush" Color="{StaticResource Color.WarningSoft}"/>
     <SolidColorBrush x:Key="DangerBrush" Color="{StaticResource Color.Danger}"/>
     <SolidColorBrush x:Key="DangerSoftBrush" Color="{StaticResource Color.DangerSoft}"/>
+    <SolidColorBrush x:Key="DangerHoverBrush" Color="{StaticResource Color.DangerHover}"/>
     <SolidColorBrush x:Key="InfoBrush" Color="{StaticResource Color.Info}"/>
     <SolidColorBrush x:Key="InfoSoftBrush" Color="{StaticResource Color.InfoSoft}"/>
     <SolidColorBrush x:Key="OnPrimaryBrush" Color="{StaticResource Color.OnPrimary}"/>
@@ -77,4 +87,10 @@
     <SolidColorBrush x:Key="SidebarTextBrush" Color="{StaticResource Color.SidebarText}"/>
     <SolidColorBrush x:Key="SidebarMutedBrush" Color="{StaticResource Color.SidebarMuted}"/>
     <SolidColorBrush x:Key="SidebarBadgeBrush" Color="{StaticResource Color.SidebarBadge}"/>
+    <SolidColorBrush x:Key="SidebarActiveIndicatorBrush" Color="{StaticResource Color.SidebarActiveIndicator}"/>
+    <SolidColorBrush x:Key="DataGridRowHoverBrush" Color="{StaticResource Color.DataGridRowHover}"/>
+    <SolidColorBrush x:Key="DataGridRowSelectedBrush" Color="{StaticResource Color.DataGridRowSelected}"/>
+    <SolidColorBrush x:Key="FocusRingBrush" Color="{StaticResource Color.FocusRing}"/>
+    <SolidColorBrush x:Key="ScrollThumbBrush" Color="{StaticResource Color.ScrollThumb}"/>
+    <SolidColorBrush x:Key="ScrollThumbHoverBrush" Color="{StaticResource Color.ScrollThumbHover}"/>
 </ResourceDictionary>
