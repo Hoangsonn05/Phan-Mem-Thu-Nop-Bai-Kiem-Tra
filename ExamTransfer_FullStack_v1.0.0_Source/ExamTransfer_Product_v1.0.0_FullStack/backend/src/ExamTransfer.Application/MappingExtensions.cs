@@ -39,12 +39,16 @@ public static class MappingExtensions
         new(entity.Id, entity.StudentCode, entity.DisplayName, entity.Email, entity.MetadataJson);
 
     public static ExamSummaryDto ToSummary(this Exam entity, int fileCount) =>
-        new(entity.Id, entity.ClassId, entity.Title, entity.Subject, entity.DurationMinutes, entity.Status, entity.Version, fileCount, entity.RowVersion);
+        new(entity.Id, entity.ClassId, entity.Title, entity.Subject, entity.DurationMinutes, entity.DeliveryType, entity.Status, entity.Version, fileCount, entity.RowVersion);
 
     public static ExamDetailDto ToDetail(this Exam entity, IReadOnlyList<FileDescriptorDto> files) =>
-        new(entity.Id, entity.ClassId, entity.Title, entity.Subject, entity.Description, entity.DurationMinutes, entity.Status, entity.Version, entity.ParseFileRule(), files, entity.RowVersion);
+        new(entity.Id, entity.ClassId, entity.Title, entity.Subject, entity.Description, entity.DurationMinutes, entity.DeliveryType, entity.Status, entity.Version, entity.ParseFileRule(), files, entity.RowVersion);
 
-    public static ParticipantDto ToDto(this SessionParticipant entity, DateTimeOffset nowUtc, int disconnectAfterSeconds = 20)
+    public static ParticipantDto ToDto(
+        this SessionParticipant entity,
+        DateTimeOffset nowUtc,
+        int disconnectAfterSeconds = 20,
+        DateTimeOffset? effectiveDeadlineUtc = null)
     {
         var connection = entity.Status == ParticipantStatus.Rejected
             ? ConnectionState.Offline
@@ -58,7 +62,7 @@ public static class MappingExtensions
 
         return new ParticipantDto(entity.Id, entity.SessionId, entity.StudentCode, entity.DisplayName, entity.DeviceId,
             entity.MachineName, entity.IpAddress, entity.AppVersion, entity.Status, entity.LastSeenUtc,
-            entity.DownloadStatus, entity.SubmissionStatus, entity.ExtraTimeMinutes, connection);
+            entity.DownloadStatus, entity.SubmissionStatus, entity.ExtraTimeMinutes, effectiveDeadlineUtc, connection);
     }
 
     public static SubmissionFileDto ToDto(this SubmissionFile entity, IReadOnlyList<int> chunks) =>

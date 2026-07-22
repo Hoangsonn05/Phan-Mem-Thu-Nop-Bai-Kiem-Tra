@@ -44,12 +44,15 @@ public sealed class UdpDiscoveryService(IServiceScopeFactory scopeFactory, IOpti
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 var rooms = await db.ExamSessionsSet.CountAsync(x => x.Status == SessionStatus.Waiting || x.Status == SessionStatus.InProgress || x.Status == SessionStatus.Paused || x.Status == SessionStatus.Collecting, stoppingToken);
                 var address = options.Value.Server.PreferredIp ?? GetLanIp();
-                var response = JsonSerializer.SerializeToUtf8Bytes(new
-                {
-                    protocol = "ExamTransfer/1", serverName = Environment.MachineName, address, port = options.Value.Server.Port,
-                    fingerprint = MachineFingerprint(), activeRoomCount = rooms, version = typeof(UdpDiscoveryService).Assembly.GetName().Version?.ToString() ?? "1.0.0",
-                    serverNowUtc = DateTimeOffset.UtcNow
-                });
+                var response = JsonSerializer.SerializeToUtf8Bytes(new DiscoveryServerDto(
+                    DiscoveryProtocol.ProtocolVersion,
+                    Environment.MachineName,
+                    address,
+                    options.Value.Server.Port,
+                    MachineFingerprint(),
+                    rooms,
+                    typeof(UdpDiscoveryService).Assembly.GetName().Version?.ToString() ?? "1.0.0",
+                    DateTimeOffset.UtcNow));
                 await udp.SendAsync(response, received.RemoteEndPoint, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }

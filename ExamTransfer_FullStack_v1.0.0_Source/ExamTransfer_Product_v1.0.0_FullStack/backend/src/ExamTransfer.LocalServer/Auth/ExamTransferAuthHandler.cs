@@ -16,6 +16,26 @@ public static class ExamTransferAuthSchemes
     public const string ExamParticipant = "ExamTransferParticipant";
 }
 
+public static class StudentParticipantScope
+{
+    public static bool IsValid(ClaimsPrincipal principal)
+    {
+        var account = principal.Identities.FirstOrDefault(x =>
+            x.IsAuthenticated && x.AuthenticationType == ExamTransferAuthSchemes.Account);
+        var participant = principal.Identities.FirstOrDefault(x =>
+            x.IsAuthenticated && x.AuthenticationType == ExamTransferAuthSchemes.ExamParticipant);
+        if (account is null || participant is null) return false;
+        if (!account.HasClaim(ClaimTypes.Role, UserRole.Student.ToString())
+            || !account.HasClaim("password_change_required", "false")) return false;
+        if (!Guid.TryParse(account.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var accountUserId)
+            || !Guid.TryParse(participant.FindFirst("user_id")?.Value, out var participantUserId)
+            || accountUserId == Guid.Empty
+            || accountUserId != participantUserId) return false;
+        return Guid.TryParse(participant.FindFirst("session_id")?.Value, out _)
+            && Guid.TryParse(participant.FindFirst("participant_id")?.Value, out _);
+    }
+}
+
 public sealed class AccountAuthHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> schemeOptions,
     ILoggerFactory logger,

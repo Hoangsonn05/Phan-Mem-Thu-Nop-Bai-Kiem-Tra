@@ -38,3 +38,21 @@
 - Không còn route sản phẩm chính trỏ tới `FeaturePageView` hoặc `WorkflowPageView`.
 - Không còn endpoint `/mock` trong ViewModel production.
 - Môi trường đóng gói không có .NET SDK/Windows, vì vậy build WPF và smoke test runtime phải chạy bằng `scripts/verify.ps1` trên máy Windows trước khi phát hành binary.
+# Bản vá luồng thi 2026-07-22
+
+Đã triển khai và kiểm thử tự động:
+
+- Địa chỉ IP/cổng sinh viên nhập được dùng làm endpoint thật; token không được gửi sang origin khác. Quét LAN dùng UDP discovery có magic/protocol validation và deduplicate.
+- Heartbeat sinh viên chạy nền một vòng duy nhất, retry theo backoff và không xóa phiên khi server tạm mất. SignalR sinh viên kết nối bằng participant token và làm mới deadline/trạng thái từ event.
+- Tải đề dùng HTTP Range với file `.partial`, xác minh SHA-256 và chỉ thay file đích khi hash đúng.
+- Hàng đợi nộp file lưu tại LocalAppData, token được bảo vệ bằng Windows DPAPI, giữ idempotency key, tiếp tục theo `MissingChunks`, rồi xóa queue sau receipt.
+- Deadline được trả riêng cho participant và bộ đếm sinh viên ưu tiên deadline đã cộng giờ.
+- Endpoint kết quả sinh viên yêu cầu đồng thời account token và participant token cùng user, đúng session/participant, mật khẩu đã đổi và grade đã được trả.
+- `FileSubmission` được giữ nguyên. `MultipleChoice` có bảng/domain/API riêng, import JSON/CSV/XLSX cấu trúc chính thức, snapshot không chứa answer key, local answer outbox theo revision, finalize idempotent và chấm trên server.
+- Có migration SQLite schema version 4 và Supabase migration/RLS/grant/index cho quiz.
+
+Đã xác nhận bằng build và test trong repository; chưa xác nhận trong môi trường ngoài repository:
+
+- UDP broadcast, SignalR reconnect, HTTP Range và DPAPI cần smoke test trên ít nhất hai máy Windows thật cùng LAN.
+- Migration Supabase đã được viết cùng pgTAP test nhưng chưa được push vào project Supabase từ lượt vá này.
+- Script `backend/scripts/test-multiple-choice-flow.ps1` cần token và exam/session thật để chạy acceptance HTTP đầu-cuối.

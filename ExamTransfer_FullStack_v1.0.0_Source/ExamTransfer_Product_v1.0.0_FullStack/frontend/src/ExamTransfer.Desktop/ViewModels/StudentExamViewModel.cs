@@ -12,9 +12,12 @@ public sealed class StudentExamViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
     private readonly StudentSessionState state;
+    private readonly IStudentHeartbeatService heartbeat;
+    private readonly IStudentRealtimeService realtime;
     private readonly DispatcherTimer timer;
     private FileSystemWatcher? watcher;
     private SessionDetailDto? session;
+    private ParticipantDto? participant;
     private TimeSpan remaining;
     private string connection = "Chưa kết nối phiên";
     private string workspaceFolder;
@@ -23,6 +26,10 @@ public sealed class StudentExamViewModel : ProductPageBase
     {
         this.api = api ?? throw new ArgumentNullException(nameof(api));
         this.state = state ?? throw new ArgumentNullException(nameof(state));
+        heartbeat = AppServices.StudentHeartbeat;
+        heartbeat.StateChanged += OnHeartbeatStateChanged;
+        realtime = AppServices.StudentRealtime;
+        realtime.EventReceived += OnRealtimeEvent;
         workspaceFolder = AppServices.Preferences.Get("exam.workspace")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ExamTransfer", "Working");
 
@@ -54,10 +61,12 @@ public sealed class StudentExamViewModel : ProductPageBase
     public string RoomCode => state.RoomCode;
     public string CandidateCount => Session is null ? "0" : Session.Participants.Count.ToString();
     public string TimeLeft => $"{(int)Math.Max(0, remaining.TotalHours):00}:{Math.Max(0, remaining.Minutes):00}:{Math.Max(0, remaining.Seconds):00}";
-    public double TimeProgress => Session?.Summary.StartTimeUtc is null || Session.Summary.EffectiveDeadlineUtc is null
+    private DateTimeOffset? EffectiveDeadlineUtc => Participant?.EffectiveDeadlineUtc ?? Session?.Summary.EffectiveDeadlineUtc;
+    public double TimeProgress => Session?.Summary.StartTimeUtc is null || EffectiveDeadlineUtc is null
         ? 0
-        : Math.Clamp(remaining.TotalSeconds / Math.Max(1, (Session.Summary.EffectiveDeadlineUtc.Value - Session.Summary.StartTimeUtc.Value).TotalSeconds) * 100, 0, 100);
+        : Math.Clamp(remaining.TotalSeconds / Math.Max(1, (EffectiveDeadlineUtc.Value - Session.Summary.StartTimeUtc.Value).TotalSeconds) * 100, 0, 100);
     public SessionDetailDto? Session { get => session; private set { if (Set(ref session, value)) { Raise(nameof(Title)); Raise(nameof(Subject)); Raise(nameof(RoomCode)); Raise(nameof(CandidateCount)); } } }
+    public ParticipantDto? Participant { get => participant; private set => Set(ref participant, value); }
     public string Connection { get => connection; private set => Set(ref connection, value); }
     public string WorkspaceFolder { get => workspaceFolder; set { if (Set(ref workspaceFolder, value)) AppServices.Preferences.Set("exam.workspace", value); } }
     public ICommand RefreshCommand { get; }
@@ -81,9 +90,11 @@ public sealed class StudentExamViewModel : ProductPageBase
         {
             api.SetParticipantToken(state.AccessToken);
             Session = ApiGuard.Require(await api.GetSessionAsync(state.SessionId!.Value, token));
+            Participant = ApiGuard.Require(await api.GetAsync<ParticipantDto>(
+                $"api/v1/sessions/{state.SessionId}/participants/{state.ParticipantId}", token));
             state.ExamId = Session.Summary.ExamId;
-            remaining = Session.Summary.EffectiveDeadlineUtc.HasValue
-                ? Session.Summary.EffectiveDeadlineUtc.Value - DateTimeOffset.UtcNow
+            remaining = EffectiveDeadlineUtc.HasValue
+                ? EffectiveDeadlineUtc.Value - DateTimeOffset.UtcNow
                 : TimeSpan.Zero;
             Connection = $"Đã xác thực · {Session.Summary.Status}";
             UpdateSteps();
@@ -94,12 +105,31 @@ public sealed class StudentExamViewModel : ProductPageBase
     private Task HeartbeatAsync() => RunAsync("Đang kiểm tra kết nối", "Kết nối phòng thi ổn định", async ct =>
     {
         if (!state.SessionId.HasValue || !state.ParticipantId.HasValue) return;
-        api.SetParticipantToken(state.AccessToken);
-        ApiGuard.Require(await api.PostAsync<HeartbeatRequest, object>(
-            $"api/v1/sessions/{state.SessionId}/participants/{state.ParticipantId}/heartbeat",
-            new HeartbeatRequest("Ready", DateTimeOffset.UtcNow, 0), ct));
+        if (!await heartbeat.ProbeNowAsync(ct))
+            throw new InvalidOperationException("Máy chủ chưa phản hồi; vòng kết nối nền sẽ tự thử lại.");
         Connection = "Đã kết nối máy chủ";
     });
+
+    private void OnHeartbeatStateChanged(object? sender, StudentConnectionState value)
+    {
+        if (IsDisposed) return;
+        System.Windows.Application.Current.Dispatcher.InvokeAsync(() => Connection = value switch
+        {
+            StudentConnectionState.Online => "Đã kết nối máy chủ",
+            StudentConnectionState.Connecting => "Đang kết nối máy chủ",
+            StudentConnectionState.Reconnecting => "Mất kết nối tạm thời · đang thử lại",
+            StudentConnectionState.Offline => "Ngoại tuyến · vẫn giữ phiên thi",
+            StudentConnectionState.AuthenticationExpired => "Token phiên thi đã hết hạn",
+            _ => "Chưa kết nối phiên"
+        });
+    }
+
+    private void OnRealtimeEvent(object? sender, string eventName)
+    {
+        if (IsDisposed) return;
+        if (eventName is RealtimeEvents.TimeExtended or RealtimeEvents.SessionStateChanged or RealtimeEvents.ParticipantApproved)
+            System.Windows.Application.Current.Dispatcher.InvokeAsync(() => LoadAsync(DisposeToken).SafeFireAndForget("StudentExam.RealtimeRefresh"));
+    }
 
     private async Task LoadWorkspaceAsync()
     {
@@ -140,8 +170,8 @@ public sealed class StudentExamViewModel : ProductPageBase
 
     private void OnTick(object? sender, EventArgs e)
     {
-        if (IsDisposed || Session?.Summary.EffectiveDeadlineUtc is null) return;
-        remaining = Session.Summary.EffectiveDeadlineUtc.Value - DateTimeOffset.UtcNow;
+        if (IsDisposed || EffectiveDeadlineUtc is null) return;
+        remaining = EffectiveDeadlineUtc.Value - DateTimeOffset.UtcNow;
         if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
         RaiseTime();
         UpdateSteps();
@@ -198,6 +228,8 @@ public sealed class StudentExamViewModel : ProductPageBase
         timer.Stop();
         timer.Tick -= OnTick;
         watcher?.Dispose();
+        heartbeat.StateChanged -= OnHeartbeatStateChanged;
+        realtime.EventReceived -= OnRealtimeEvent;
         base.Dispose();
     }
 }

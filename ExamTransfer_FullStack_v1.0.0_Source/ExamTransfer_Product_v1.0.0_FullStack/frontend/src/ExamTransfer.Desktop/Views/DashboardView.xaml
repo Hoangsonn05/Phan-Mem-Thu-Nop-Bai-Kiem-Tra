@@ -4,7 +4,7 @@
              xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
              beh:EntranceAnimation.IsEnabled="True">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <Grid Margin="30">
+        <Grid Margin="28,24,28,20">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -12,24 +12,27 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
+            <!-- Header: title + refresh -->
             <Grid Grid.Row="0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel>
-                    <TextBlock Text="Tổng quan hệ thống" Style="{StaticResource DisplayTitleText}" />
-                    <TextBlock Text="Theo dõi lớp học, kỳ thi và các cảnh báo cần xử lý trong một nơi." Style="{StaticResource BodyText}" Margin="0,5,0,0" />
+                    <TextBlock Text="Tổng quan hệ thống" Style="{StaticResource PageTitleText}" />
+                    <TextBlock Text="Theo dõi lớp học, kỳ thi và các cảnh báo cần xử lý trong một nơi."
+                               Style="{StaticResource BodyText}" Margin="0,4,0,0" />
                 </StackPanel>
                 <Button Grid.Column="1" Command="{Binding RefreshCommand}" Style="{StaticResource SecondaryButton}" VerticalAlignment="Center">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="&#xE72C;" Style="{StaticResource IconText}" FontSize="16" />
-                        <TextBlock Text="Làm mới" Margin="8,0,0,0" />
+                        <TextBlock Text="&#xE72C;" Style="{StaticResource IconText}" FontSize="15" />
+                        <TextBlock Text="Làm mới" Margin="7,0,0,0" />
                     </StackPanel>
                 </Button>
             </Grid>
 
-            <ItemsControl Grid.Row="1" ItemsSource="{Binding Metrics}" Margin="0,24,0,0">
+            <!-- Metrics row: tighter spacing, icon tinh gọn -->
+            <ItemsControl Grid.Row="1" ItemsSource="{Binding Metrics}" Margin="0,20,0,0">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
                         <UniformGrid Columns="4" />
@@ -37,7 +40,7 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <Border Style="{StaticResource Card}" Margin="0,0,14,0" Padding="18">
+                        <Border Style="{StaticResource Card}" Margin="0,0,12,0" Padding="16">
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -49,18 +52,20 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{Binding Title}" Style="{StaticResource CaptionText}" FontWeight="SemiBold" />
-                                    <Border Grid.Column="1" Width="38" Height="38" CornerRadius="11"
+                                    <TextBlock Text="{Binding Title}"
+                                               Style="{StaticResource LabelText}"
+                                               TextWrapping="NoWrap" />
+                                    <Border Grid.Column="1" Width="36" Height="36" CornerRadius="10"
                                             Background="{Binding Tone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-                                        <TextBlock Text="{Binding Glyph}" Style="{StaticResource IconText}" FontSize="18"
+                                        <TextBlock Text="{Binding Glyph}" Style="{StaticResource IconText}" FontSize="17"
                                                    Foreground="{Binding Tone, Converter={StaticResource ToneBrushConverter}}" />
                                     </Border>
                                 </Grid>
-                                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,12,0,0">
-                                    <TextBlock Text="{Binding Value}" FontSize="28" FontWeight="SemiBold" />
-                                    <TextBlock Text="{Binding Subtitle}" Style="{StaticResource CaptionText}" Margin="8,10,0,0" />
+                                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,10,0,0">
+                                    <TextBlock Text="{Binding Value}" FontSize="26" FontWeight="Bold" />
+                                    <TextBlock Text="{Binding Subtitle}" Style="{StaticResource CaptionText}" Margin="7,9,0,0" />
                                 </StackPanel>
-                                <TextBlock Grid.Row="2" Text="{Binding Trend}" Margin="0,9,0,0" FontSize="11" FontWeight="SemiBold"
+                                <TextBlock Grid.Row="2" Text="{Binding Trend}" Margin="0,7,0,0" FontSize="11" FontWeight="SemiBold"
                                            Foreground="{Binding Tone, Converter={StaticResource ToneBrushConverter}}" />
                             </Grid>
                         </Border>
@@ -68,23 +73,38 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
 
-            <Grid Grid.Row="2" Margin="0,24,0,0">
+            <!-- Active session + Alerts -->
+            <Grid Grid.Row="2" Margin="0,20,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1.55*" />
+                    <ColumnDefinition Width="12" />
                     <ColumnDefinition Width="1*" />
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,14,0" Padding="0">
+                <!-- Active session card -->
+                <Border Grid.Column="0" Padding="0">
+                    <Border.Style>
+                        <Style TargetType="Border" BasedOn="{StaticResource Card}">
+                            <Setter Property="Visibility" Value="Visible" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HasActiveSession}" Value="False">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <Border Padding="22" CornerRadius="14,14,0,0">
+
+                        <!-- Hero header – Teal gradient thay blue -->
+                        <Border Padding="22,18" CornerRadius="12,12,0,0">
                             <Border.Background>
-                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                                    <GradientStop Color="#1D4ED8" Offset="0" />
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                    <GradientStop Color="#0D9488" Offset="0" />
                                     <GradientStop Color="#0891B2" Offset="1" />
                                 </LinearGradientBrush>
                             </Border.Background>
@@ -94,26 +114,40 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
-                                    <TextBlock Text="PHÒNG THI ĐANG HOẠT ĐỘNG" Foreground="{DynamicResource HeroMutedBrush}" FontSize="10" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding ActiveSession.Title}" Foreground="{DynamicResource HeroTextBrush}" FontSize="21" FontWeight="SemiBold" Margin="0,7,0,0" />
+                                    <TextBlock Text="PHIÊN THI GẦN ĐÂY"
+                                               Foreground="{DynamicResource HeroMutedBrush}"
+                                               FontSize="10" FontWeight="Bold" />
+                                    <TextBlock Text="{Binding ActiveSession.Title}"
+                                               Foreground="{DynamicResource HeroTextBrush}"
+                                               FontSize="20" FontWeight="SemiBold" Margin="0,6,0,0" />
                                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                         <Border Padding="8,3" CornerRadius="999" Background="{DynamicResource OverlaySoftBrush}">
-                                            <TextBlock Text="{Binding ActiveSession.RoomCode}" Foreground="{DynamicResource HeroTextBrush}" FontSize="11" FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding ActiveSession.RoomCode}"
+                                                       Foreground="{DynamicResource HeroTextBrush}"
+                                                       FontSize="11" FontWeight="SemiBold" />
                                         </Border>
-                                        <TextBlock Text="{Binding ActiveSession.Status}" Foreground="{DynamicResource HeroMutedBrush}" FontSize="12" Margin="10,3,0,0" />
+                                        <TextBlock Text="{Binding ActiveSession.Status}"
+                                                   Foreground="{DynamicResource HeroMutedBrush}"
+                                                   FontSize="12" Margin="10,3,0,0" />
                                     </StackPanel>
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
-                                    <TextBlock Text="THỜI GIAN CÒN LẠI" Foreground="{DynamicResource HeroMutedBrush}" FontSize="10" FontWeight="Bold" HorizontalAlignment="Right" />
-                                    <TextBlock Text="{Binding ActiveSession.TimeLeft}" Foreground="{DynamicResource HeroTextBrush}" FontSize="30" FontWeight="SemiBold" FontFamily="Consolas" Margin="0,4,0,0" />
+                                    <TextBlock Text="THỜI GIAN CÒN LẠI"
+                                               Foreground="{DynamicResource HeroMutedBrush}"
+                                               FontSize="10" FontWeight="Bold" HorizontalAlignment="Right" />
+                                    <TextBlock Text="{Binding ActiveSession.TimeLeft}"
+                                               Foreground="{DynamicResource HeroTextBrush}"
+                                               FontSize="28" FontWeight="Bold" FontFamily="Consolas"
+                                               Margin="0,4,0,0" />
                                 </StackPanel>
                             </Grid>
                         </Border>
 
-                        <Grid Grid.Row="1" Margin="22,20">
+                        <!-- Progress stats -->
+                        <Grid Grid.Row="1" Margin="22,18">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition />
-                                <ColumnDefinition Width="22" />
+                                <ColumnDefinition Width="20" />
                                 <ColumnDefinition />
                             </Grid.ColumnDefinitions>
                             <StackPanel>
@@ -121,93 +155,135 @@
                                     <TextBlock Text="Thiết bị đang kết nối" Style="{StaticResource CardTitleText}" />
                                     <TextBlock Text="{Binding ActiveSession.Connected}" HorizontalAlignment="Right" FontWeight="SemiBold" />
                                 </Grid>
-                                <ProgressBar Value="{Binding ActiveSession.ConnectedPercent, Mode=OneWay}" Margin="0,10,0,0" Foreground="{DynamicResource AccentBrush}" />
-                                <TextBlock Text="{Binding ActiveSession.Total, StringFormat='Tổng {0} thiết bị'}" Style="{StaticResource CaptionText}" Margin="0,7,0,0" />
+                                <ProgressBar Value="{Binding ActiveSession.ConnectedPercent, Mode=OneWay}"
+                                             Margin="0,9,0,0" Foreground="{DynamicResource AccentBrush}" />
+                                <TextBlock Text="{Binding ActiveSession.Total, StringFormat='Tổng {0} thiết bị'}"
+                                           Style="{StaticResource CaptionText}" Margin="0,6,0,0" />
                             </StackPanel>
                             <StackPanel Grid.Column="2">
                                 <Grid>
                                     <TextBlock Text="Bài đã nộp" Style="{StaticResource CardTitleText}" />
                                     <TextBlock Text="{Binding ActiveSession.Submitted}" HorizontalAlignment="Right" FontWeight="SemiBold" />
                                 </Grid>
-                                <ProgressBar Value="{Binding ActiveSession.SubmittedPercent, Mode=OneWay}" Margin="0,10,0,0" Foreground="{DynamicResource SuccessBrush}" />
-                                <TextBlock Text="Được máy chủ xác nhận" Style="{StaticResource CaptionText}" Margin="0,7,0,0" />
+                                <ProgressBar Value="{Binding ActiveSession.SubmittedPercent, Mode=OneWay}"
+                                             Margin="0,9,0,0" Foreground="{DynamicResource SuccessBrush}" />
+                                <TextBlock Text="Được máy chủ xác nhận" Style="{StaticResource CaptionText}" Margin="0,6,0,0" />
                             </StackPanel>
                         </Grid>
 
-                        <Border Grid.Row="2" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="22,15">
+                        <!-- Footer action -->
+                        <Border Grid.Row="2" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="22,13">
                             <Grid>
-                                <TextBlock Text="Theo dõi realtime, upload và cảnh báo thiết bị" Style="{StaticResource CaptionText}" VerticalAlignment="Center" />
-                                <Button Content="Mở giám sát" HorizontalAlignment="Right" Style="{StaticResource PrimaryButton}" MinHeight="38" />
+                                <TextBlock Text="Theo dõi realtime, upload và cảnh báo thiết bị"
+                                           Style="{StaticResource CaptionText}" VerticalAlignment="Center" />
+                                <Button Content="Mở giám sát" HorizontalAlignment="Right"
+                                        Style="{StaticResource PrimaryButton}" MinHeight="36" />
                             </Grid>
                         </Border>
                     </Grid>
                 </Border>
 
-                <Border Grid.Column="1" Style="{StaticResource Card}" Padding="0">
+                <Border Grid.Column="0" Padding="22,18">
+                    <Border.Style>
+                        <Style TargetType="Border" BasedOn="{StaticResource Card}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HasActiveSession}" Value="False">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Chưa có phiên thi gần đây" Style="{StaticResource SectionTitleText}" />
+                        <TextBlock Text="Phiên thi sẽ xuất hiện tại đây khi máy chủ trả về dữ liệu."
+                                   Style="{StaticResource BodyText}" Margin="0,6,0,0" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Alerts -->
+                <Border Grid.Column="2" Style="{StaticResource Card}" Padding="0">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <Grid Margin="20,18,20,12">
+                        <Grid Margin="18,16,18,12">
                             <TextBlock Text="Cảnh báo cần chú ý" Style="{StaticResource SectionTitleText}" />
-                            <Border HorizontalAlignment="Right" Style="{StaticResource StatusPill}" Background="{DynamicResource WarningSoftBrush}">
-                                <TextBlock Text="{Binding Alerts.Count, StringFormat={}{0} mục}" Foreground="{DynamicResource WarningBrush}" FontSize="11" FontWeight="SemiBold" />
+                            <Border HorizontalAlignment="Right" Style="{StaticResource StatusPill}"
+                                    Background="{DynamicResource WarningSoftBrush}">
+                                <TextBlock Text="{Binding Alerts.Count, StringFormat={}{0} mục}"
+                                           Foreground="{DynamicResource WarningBrush}" FontSize="11" FontWeight="SemiBold" />
                             </Border>
                         </Grid>
-                        <ItemsControl Grid.Row="1" ItemsSource="{Binding Alerts}" Margin="12,0,12,12">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Style="{StaticResource SubtleCard}" Margin="0,0,0,8" Padding="14">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="34" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <Border Width="30" Height="30" CornerRadius="9"
-                                                    Background="{Binding Tone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-                                                <TextBlock Text="{Binding Glyph}" Style="{StaticResource IconText}" FontSize="14"
-                                                           Foreground="{Binding Tone, Converter={StaticResource ToneBrushConverter}}" />
-                                            </Border>
-                                            <StackPanel Grid.Column="1" Margin="10,0,0,0">
-                                                <TextBlock Text="{Binding Title}" Style="{StaticResource CardTitleText}" FontSize="13" />
-                                                <TextBlock Text="{Binding Description}" Style="{StaticResource CaptionText}" Margin="0,3,0,0" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding Alerts}" Margin="10,0,10,12">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Style="{StaticResource SubtleCard}" Margin="0,0,0,7" Padding="13">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="32" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Width="28" Height="28" CornerRadius="8"
+                                                        Background="{Binding Tone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
+                                                    <TextBlock Text="{Binding Glyph}" Style="{StaticResource IconText}" FontSize="13"
+                                                               Foreground="{Binding Tone, Converter={StaticResource ToneBrushConverter}}" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1" Margin="9,0,0,0">
+                                                    <TextBlock Text="{Binding Title}" Style="{StaticResource CardTitleText}" FontSize="13" />
+                                                    <TextBlock Text="{Binding Description}" Style="{StaticResource CaptionText}" Margin="0,3,0,0" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
                     </Grid>
                 </Border>
             </Grid>
 
-            <Border Grid.Row="3" Style="{StaticResource Card}" Margin="0,24,0,4" Padding="0">
+            <!-- Recent activities -->
+            <Border Grid.Row="3" Style="{StaticResource Card}" Margin="0,20,0,4" Padding="0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <Grid Margin="22,18,22,12">
+                    <Grid Margin="20,16,20,12">
                         <TextBlock Text="Hoạt động gần đây" Style="{StaticResource SectionTitleText}" />
-                        <TextBlock Text="{Binding Status}" Style="{StaticResource CaptionText}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding Status}" Style="{StaticResource CaptionText}"
+                                   HorizontalAlignment="Right" VerticalAlignment="Center" />
                     </Grid>
-                    <ItemsControl Grid.Row="1" ItemsSource="{Binding Activities}" Margin="18,0,18,14">
+                    <ItemsControl Grid.Row="1" ItemsSource="{Binding Activities}" Margin="16,0,16,14">
+                        <ItemsControl.Style>
+                            <Style TargetType="ItemsControl">
+                                <Setter Property="Visibility" Value="Visible" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasActivities}" Value="False">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ItemsControl.Style>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="4,7">
+                                <Grid Margin="4,6">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="68" />
-                                        <ColumnDefinition Width="38" />
+                                        <ColumnDefinition Width="64" />
+                                        <ColumnDefinition Width="36" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{Binding Time}" Style="{StaticResource CaptionText}" VerticalAlignment="Center" FontFamily="Consolas" />
-                                    <Border Grid.Column="1" Width="30" Height="30" CornerRadius="15"
+                                    <TextBlock Text="{Binding Time}" Style="{StaticResource CaptionText}"
+                                               VerticalAlignment="Center" FontFamily="Consolas" />
+                                    <Border Grid.Column="1" Width="28" Height="28" CornerRadius="14"
                                             Background="{Binding Tone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-                                        <TextBlock Text="{Binding Glyph}" Style="{StaticResource IconText}" FontSize="14"
+                                        <TextBlock Text="{Binding Glyph}" Style="{StaticResource IconText}" FontSize="13"
                                                    Foreground="{Binding Tone, Converter={StaticResource ToneBrushConverter}}" />
                                     </Border>
-                                    <StackPanel Grid.Column="2" Margin="10,0,0,0">
+                                    <StackPanel Grid.Column="2" Margin="9,0,0,0">
                                         <TextBlock Text="{Binding Title}" Style="{StaticResource CardTitleText}" FontSize="13" />
                                         <TextBlock Text="{Binding Description}" Style="{StaticResource CaptionText}" Margin="0,2,0,0" />
                                     </StackPanel>
@@ -215,6 +291,18 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
+                    <TextBlock Grid.Row="1" Text="Chưa có hoạt động" Margin="20,2,20,16">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource BodyText}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasActivities}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </Grid>
             </Border>
         </Grid>

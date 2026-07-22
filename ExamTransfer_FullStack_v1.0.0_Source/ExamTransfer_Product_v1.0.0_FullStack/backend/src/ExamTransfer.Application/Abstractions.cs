@@ -359,6 +359,14 @@ public interface ISystemService
     Task TriggerCloudSyncAsync(CancellationToken cancellationToken);
 }
 
+public interface IQuizService
+{
+    Task<QuizImportResultDto> ImportAsync(Guid examId, QuizImportFileRequest request, CancellationToken cancellationToken);
+    Task<QuizAttemptDto> StartOrGetAttemptAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken);
+    Task<SyncQuizAnswersResultDto> SyncAnswersAsync(Guid attemptId, Guid participantId, SyncQuizAnswersRequest request, CancellationToken cancellationToken);
+    Task<QuizAttemptDto> FinalizeAsync(Guid attemptId, Guid participantId, FinalizeQuizAttemptRequest request, CancellationToken cancellationToken);
+}
+
 public sealed class ApiException(string code, string message, int statusCode = 400, IReadOnlyDictionary<string, string[]>? fieldErrors = null, object? details = null) : Exception(message)
 {
     public string Code { get; } = code;

@@ -983,7 +983,9 @@ public sealed class SupabaseCloudAdapter(
                      "policy_json",
                      "payload_json",
                      "before_json",
-                     "after_json"
+                     "after_json",
+                     "snapshot_json",
+                     "choice_ids"
                  })
         {
             if (payload[key] is not JsonValue value
@@ -1304,6 +1306,10 @@ public sealed class SupabaseCloudAdapter(
             "export_job" or "export_jobs" => "export_jobs",
             "backup" or "backups" => "backups",
             "audit" or "audit_log" or "audit_logs" => "audit_logs",
+            "quiz_question" or "quiz_questions" => "quiz_questions",
+            "quiz_choice" or "quiz_choices" => "quiz_choices",
+            "quiz_attempt" or "quiz_attempts" => "quiz_attempts",
+            "quiz_answer" or "quiz_answers" => "quiz_answers",
             _ => null
         };
 

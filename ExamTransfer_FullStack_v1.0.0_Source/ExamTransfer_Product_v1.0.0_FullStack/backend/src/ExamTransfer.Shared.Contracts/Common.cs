@@ -4,7 +4,7 @@ namespace ExamTransfer.Shared.Contracts;
 
 public static class ContractInfo
 {
-    public const string SchemaVersion = "1.3.0";
+    public const string SchemaVersion = "1.4.0";
     public const string ApiVersion = "v1";
     public const string HubPath = "/hubs/exam";
 }
@@ -92,6 +92,7 @@ public static class ErrorCodes
     public const string ChunkMismatch = "CHUNK_MISMATCH";
     public const string HashMismatch = "HASH_MISMATCH";
     public const string TransferExpired = "TRANSFER_EXPIRED";
+    public const string DeadlinePassed = "DEADLINE_PASSED";
     public const string StorageFull = "STORAGE_FULL";
     public const string StaleSequence = "STALE_SEQUENCE";
     public const string AgentUnavailable = "AGENT_UNAVAILABLE";

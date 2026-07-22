@@ -1,0 +1,18 @@
+{
+  "questions": [
+    {
+      "text": "2 + 2 bằng bao nhiêu?",
+      "points": 2,
+      "multiple": false,
+      "choices": ["3", "4", "5"],
+      "correctChoiceIndexes": [1]
+    },
+    {
+      "text": "Chọn các số chẵn.",
+      "points": 3,
+      "multiple": true,
+      "choices": ["2", "3", "4"],
+      "correctChoiceIndexes": [0, 2]
+    }
+  ]
+}

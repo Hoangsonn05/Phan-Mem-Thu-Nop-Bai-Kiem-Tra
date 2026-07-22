@@ -218,6 +218,7 @@ public sealed class MainViewModel : ObservableObject
         accountHeartbeatCts?.Dispose();
         accountHeartbeatCts = null;
         authState.Clear();
+        AppServices.StudentRealtime.StopAsync().SafeFireAndForget("StudentRealtime.Logout");
         AppServices.StudentState.Reset();
         api.SetAccountToken(null);
         api.SetParticipantToken(null);
@@ -334,6 +335,7 @@ public sealed class MainViewModel : ObservableObject
             "S-03" => new StudentWaitingViewModel(api, AppServices.StudentState),
             "S-04" => new StudentExamViewModel(api, AppServices.StudentState),
             "S-05" => new StudentDownloadViewModel(api, AppServices.StudentState),
+            "S-06" => new StudentQuizViewModel(api, AppServices.StudentState),
             "S-07" => new StudentSubmissionViewModel(api, AppServices.StudentState),
             "S-08" => new StudentReceiptViewModel(api, AppServices.StudentState),
             "S-09" => new StudentHistoryViewModel(AppServices.StudentState),
@@ -457,6 +459,7 @@ public sealed class MainViewModel : ObservableObject
             new("S-03", "Phòng chờ", "Tham gia", "Chờ duyệt và kiểm tra sẵn sàng", "\uE823"),
             new("S-04", "Kỳ thi hiện tại", "Làm bài", "Đồng hồ server và tiến trình làm bài", "\uE916"),
             new("S-05", "Nhận đề", "Làm bài", "Tải file, resume và xác minh SHA-256", "\uE896"),
+            new("S-06", "Thi trắc nghiệm", "Làm bài", "Lưu cục bộ, đồng bộ và chấm tự động", "\uE8D4"),
             new("S-07", "Nộp bài", "Làm bài", "Chunk upload, resume, finalize và xác nhận", "\uE898"),
             new("S-08", "Biên nhận", "Kết quả", "Mã biên nhận, thời gian server và hash", "\uF0E3"),
             new("S-09", "Lịch sử cục bộ", "Kết quả", "Các phiên và bài đã nộp trên máy", "\uE81C"),
@@ -477,7 +480,13 @@ public static class AppServices
     public static ILocalPreferenceService Preferences { get; } = new LocalPreferenceService();
     public static AppAuthSessionState AuthState { get; } = new();
     public static StudentSessionState StudentState { get; } = new();
+    public static ILanDiscoveryService LanDiscovery { get; } =
+        new ExamTransfer.Desktop.Infrastructure.LanDiscoveryService();
 
     public static IBackendClient Backend { get; } =
         new ExamTransfer.Desktop.Infrastructure.BackendClient(BaseUrl);
+    public static IStudentHeartbeatService StudentHeartbeat { get; } =
+        new ExamTransfer.Desktop.Infrastructure.StudentHeartbeatService(Backend, StudentState);
+    public static IStudentRealtimeService StudentRealtime { get; } =
+        new ExamTransfer.Desktop.Infrastructure.StudentRealtimeService(Backend, StudentState);
 }

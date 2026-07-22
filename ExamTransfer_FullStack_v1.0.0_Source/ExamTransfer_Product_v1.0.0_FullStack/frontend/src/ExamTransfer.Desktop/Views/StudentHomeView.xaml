@@ -5,18 +5,18 @@
              beh:EntranceAnimation.IsEnabled="True">
     <ScrollViewer VerticalScrollBarVisibility="Auto"
                   HorizontalScrollBarVisibility="Disabled">
-        <Grid Margin="32">
+        <Grid Margin="28,24,28,20">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Border Grid.Row="0" CornerRadius="22" Padding="30" Effect="{StaticResource FloatingShadow}">
+            <!-- Hero identity card – teal/cyan gradient -->
+            <Border Grid.Row="0" CornerRadius="16" Padding="26,22" Effect="{StaticResource FloatingShadow}">
                 <Border.Background>
                     <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                        <GradientStop Color="#1D4ED8" Offset="0" />
-                        <GradientStop Color="#2563EB" Offset="0.52" />
+                        <GradientStop Color="#0D9488" Offset="0" />
                         <GradientStop Color="#0891B2" Offset="1" />
                     </LinearGradientBrush>
                 </Border.Background>
@@ -28,33 +28,33 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <Border Width="82"
-                            Height="82"
-                            CornerRadius="24"
+                    <!-- Avatar -->
+                    <Border Width="72" Height="72" CornerRadius="20"
                             Background="{DynamicResource HeroAvatarBrush}"
                             VerticalAlignment="Center">
                         <TextBlock Text="{Binding Initials}"
                                    HorizontalAlignment="Center"
                                    VerticalAlignment="Center"
-                                   FontSize="26"
+                                   FontSize="24"
                                    FontWeight="Bold"
                                    Foreground="{DynamicResource HeroAvatarForegroundBrush}" />
                     </Border>
 
-                    <StackPanel Grid.Column="1" Margin="22,0" VerticalAlignment="Center">
+                    <!-- Info inline -->
+                    <StackPanel Grid.Column="1" Margin="20,0" VerticalAlignment="Center">
                         <TextBlock Text="{Binding Greeting}"
-                                   FontSize="28"
+                                   FontSize="24"
                                    FontWeight="SemiBold"
                                    Foreground="{DynamicResource HeroTextBrush}" />
                         <TextBlock Text="Hồ sơ sinh viên đã được xác thực từ hệ thống."
-                                   Margin="0,5,0,0"
-                                   FontSize="14"
+                                   Margin="0,4,0,0"
+                                   FontSize="13"
                                    Foreground="{DynamicResource HeroMutedBrush}" />
-                        <StackPanel Orientation="Horizontal" Margin="0,13,0,0">
-                            <Border Padding="10,5" CornerRadius="999" Background="{DynamicResource OverlaySoftBrush}">
+                        <StackPanel Orientation="Horizontal" Margin="0,11,0,0">
+                            <Border Padding="9,4" CornerRadius="999" Background="{DynamicResource OverlaySoftBrush}">
                                 <TextBlock Text="{Binding RoleLabel}" Foreground="{DynamicResource HeroTextBrush}" FontWeight="SemiBold" FontSize="11" />
                             </Border>
-                            <Border Margin="8,0,0,0" Padding="10,5" CornerRadius="999" Background="{DynamicResource OverlaySoftBrush}">
+                            <Border Margin="7,0,0,0" Padding="9,4" CornerRadius="999" Background="{DynamicResource OverlaySoftBrush}">
                                 <TextBlock Text="{Binding StudentCode, StringFormat=Mã sinh viên: {0}}"
                                            Foreground="{DynamicResource HeroTextBrush}"
                                            FontWeight="SemiBold"
@@ -63,14 +63,15 @@
                         </StackPanel>
                     </StackPanel>
 
+                    <!-- Status badge -->
                     <Border Grid.Column="2"
                             Style="{StaticResource StatusPill}"
                             Background="{DynamicResource SuccessSoftBrush}"
                             VerticalAlignment="Top">
                         <StackPanel Orientation="Horizontal">
-                            <Ellipse Width="7" Height="7" Fill="{DynamicResource SuccessOnSoftBrush}" VerticalAlignment="Center" />
+                            <Ellipse Width="6" Height="6" Fill="{DynamicResource SuccessOnSoftBrush}" VerticalAlignment="Center" />
                             <TextBlock Text="{Binding AccountStatus}"
-                                       Margin="7,0,0,0"
+                                       Margin="6,0,0,0"
                                        Foreground="{DynamicResource SuccessOnSoftBrush}"
                                        FontWeight="SemiBold" />
                         </StackPanel>
@@ -78,65 +79,68 @@
                 </Grid>
             </Border>
 
-            <Grid Grid.Row="1" Margin="0,24,0,0">
+            <!-- Info panels -->
+            <Grid Grid.Row="1" Margin="0,20,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1.25*" />
-                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="14" />
                     <ColumnDefinition Width="0.75*" />
                 </Grid.ColumnDefinitions>
 
+                <!-- Student info grid -->
                 <Border Style="{StaticResource Card}">
                     <StackPanel>
                         <TextBlock Text="Thông tin sinh viên" Style="{StaticResource SectionTitleText}" />
                         <TextBlock Text="Dữ liệu được lấy từ hồ sơ tài khoản trên máy chủ và không chỉnh sửa trực tiếp tại đây."
                                    Style="{StaticResource BodyText}"
-                                   Margin="0,5,0,18" />
+                                   Margin="0,4,0,16" />
 
                         <UniformGrid Columns="2">
-                            <Border Style="{StaticResource SubtleCard}" Margin="0,0,8,8">
+                            <Border Style="{StaticResource SubtleCard}" Margin="0,0,6,6">
                                 <StackPanel>
                                     <TextBlock Text="Họ và tên" Style="{StaticResource CaptionText}" />
-                                    <TextBlock Text="{Binding DisplayName}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding DisplayName}" FontSize="15" FontWeight="SemiBold" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
-                            <Border Style="{StaticResource SubtleCard}" Margin="8,0,0,8">
+                            <Border Style="{StaticResource SubtleCard}" Margin="6,0,0,6">
                                 <StackPanel>
                                     <TextBlock Text="Mã sinh viên" Style="{StaticResource CaptionText}" />
-                                    <TextBlock Text="{Binding StudentCode}" FontSize="16" FontWeight="SemiBold" FontFamily="Consolas" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding StudentCode}" FontSize="15" FontWeight="SemiBold" FontFamily="Consolas" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
-                            <Border Style="{StaticResource SubtleCard}" Margin="0,8,8,0">
+                            <Border Style="{StaticResource SubtleCard}" Margin="0,6,6,0">
                                 <StackPanel>
                                     <TextBlock Text="Ngày sinh" Style="{StaticResource CaptionText}" />
-                                    <TextBlock Text="{Binding DateOfBirthText}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding DateOfBirthText}" FontSize="15" FontWeight="SemiBold" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
-                            <Border Style="{StaticResource SubtleCard}" Margin="8,8,0,0">
+                            <Border Style="{StaticResource SubtleCard}" Margin="6,6,0,0">
                                 <StackPanel>
                                     <TextBlock Text="Vai trò" Style="{StaticResource CaptionText}" />
-                                    <TextBlock Text="{Binding RoleLabel}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding RoleLabel}" FontSize="15" FontWeight="SemiBold" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
                         </UniformGrid>
                     </StackPanel>
                 </Border>
 
+                <!-- Session info -->
                 <Border Grid.Column="2" Style="{StaticResource Card}">
                     <StackPanel>
                         <TextBlock Text="Phiên đăng nhập" Style="{StaticResource SectionTitleText}" />
 
-                        <TextBlock Text="Tài khoản" Style="{StaticResource CaptionText}" Margin="0,16,0,4" />
+                        <TextBlock Text="Tài khoản" Style="{StaticResource CaptionText}" Margin="0,14,0,4" />
                         <TextBlock Text="{Binding Username}" FontWeight="SemiBold" FontFamily="Consolas" />
 
-                        <TextBlock Text="Device ID" Style="{StaticResource CaptionText}" Margin="0,14,0,4" />
-                        <TextBlock Text="{Binding DeviceId}" FontSize="12" FontFamily="Consolas" TextWrapping="Wrap" />
+                        <TextBlock Text="Device ID" Style="{StaticResource CaptionText}" Margin="0,12,0,4" />
+                        <TextBlock Text="{Binding DeviceId}" FontSize="11" FontFamily="Consolas" TextWrapping="Wrap" />
 
-                        <TextBlock Text="Phiên hết hạn" Style="{StaticResource CaptionText}" Margin="0,14,0,4" />
+                        <TextBlock Text="Phiên hết hạn" Style="{StaticResource CaptionText}" Margin="0,12,0,4" />
                         <TextBlock Text="{Binding SessionExpiresAt}" FontWeight="SemiBold" />
 
                         <Border Style="{StaticResource StatusPill}"
                                 HorizontalAlignment="Left"
-                                Margin="0,16,0,0"
+                                Margin="0,14,0,0"
                                 Background="{Binding PasswordTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
                             <TextBlock Text="{Binding PasswordStatus}"
                                        Foreground="{Binding PasswordTone, Converter={StaticResource ToneBrushConverter}}"
@@ -146,8 +150,8 @@
                 </Border>
             </Grid>
 
-            <Border Grid.Row="2"
-                    Margin="0,20,0,0">
+            <!-- Must change password warning -->
+            <Border Grid.Row="2" Margin="0,16,0,0">
                 <Border.Style>
                     <Style TargetType="Border" BasedOn="{StaticResource SubtleCard}">
                         <Setter Property="Visibility" Value="Collapsed" />
@@ -167,7 +171,7 @@
                     <TextBlock Text="&#xE7BA;"
                                Style="{StaticResource IconText}"
                                Foreground="{DynamicResource WarningBrush}"
-                               FontSize="19" />
+                               FontSize="18" />
                     <StackPanel Grid.Column="1" Margin="12,0,0,0">
                         <TextBlock Text="Tài khoản đang sử dụng mật khẩu tạm"
                                    FontWeight="SemiBold"

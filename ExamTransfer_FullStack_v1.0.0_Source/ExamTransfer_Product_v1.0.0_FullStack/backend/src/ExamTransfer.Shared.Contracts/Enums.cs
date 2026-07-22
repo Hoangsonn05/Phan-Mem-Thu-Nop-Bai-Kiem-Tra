@@ -3,6 +3,8 @@ namespace ExamTransfer.Shared.Contracts;
 public enum UserRole { Admin, Teacher, Student }
 public enum ClassStatus { Active, Archived }
 public enum ExamStatus { Draft, Published, Archived, Cancelled }
+public enum ExamDeliveryType { FileSubmission, MultipleChoice }
+public enum QuizAttemptStatus { InProgress, Finalized }
 public enum SessionStatus { Draft, Waiting, Distributing, InProgress, Paused, Collecting, Finished, Archived, Cancelled }
 public enum ParticipantStatus { NotConnected, Connected, PendingApproval, Approved, Rejected, Disconnected }
 public enum DownloadStatus { NotStarted, Queued, Downloading, Verifying, Completed, Failed }

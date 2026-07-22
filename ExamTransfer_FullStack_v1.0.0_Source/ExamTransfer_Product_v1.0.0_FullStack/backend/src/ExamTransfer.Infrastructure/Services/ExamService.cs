@@ -102,7 +102,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         var detail = await InTransactionAsync(async () =>
         {
             Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
-            var exam = await db.ExamsSet.Include(x => x.Files).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+            var exam = await db.ExamsSet.Include(x => x.Files).Include(x => x.QuizQuestions).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
             EnsureRowVersion(exam.RowVersion, request.RowVersion);
             if (exam.Status == ExamStatus.Archived) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể sửa bài kiểm tra đã lưu trữ.", 409);
@@ -129,7 +129,8 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             if (exam.Status is ExamStatus.Archived or ExamStatus.Cancelled) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể phát hành bài kiểm tra ở trạng thái hiện tại.", 409);
             var rule = exam.ParseFileRule();
             var completed = exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).ToList();
-            if (rule.RequireAtLeastOneFile && completed.Count == 0) throw new ApiException(ErrorCodes.ValidationFailed, "Bài kiểm tra yêu cầu ít nhất một file đề.", 422);
+            if (exam.DeliveryType == ExamDeliveryType.FileSubmission && rule.RequireAtLeastOneFile && completed.Count == 0) throw new ApiException(ErrorCodes.ValidationFailed, "Bài kiểm tra yêu cầu ít nhất một file đề.", 422);
+            if (exam.DeliveryType == ExamDeliveryType.MultipleChoice && !exam.QuizQuestions.Any(x => x.Version == exam.Version)) throw new ApiException(ErrorCodes.ValidationFailed, "Đề trắc nghiệm phải có ít nhất một câu hỏi.", 422);
             exam.Status = ExamStatus.Published;
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamPublished", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
@@ -150,8 +151,14 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
     public async Task<ExamDetailDto> CloneAsync(Guid id, CancellationToken cancellationToken)
     {
-        var source = await db.ExamsSet.AsNoTracking().Include(x => x.Files).FirstOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
-        var clone = new Exam { ClassId = source.ClassId, Title = source.Title + " - Bản sao", Subject = source.Subject, Description = source.Description, DurationMinutes = source.DurationMinutes, FileRuleJson = source.FileRuleJson, Status = ExamStatus.Draft, Version = 1 };
+        var source = await db.ExamsSet.AsNoTracking().Include(x => x.Files).Include(x => x.QuizQuestions).ThenInclude(x => x.Choices).FirstOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
+        var clone = new Exam { ClassId = source.ClassId, Title = source.Title + " - Bản sao", Subject = source.Subject, Description = source.Description, DurationMinutes = source.DurationMinutes, DeliveryType = source.DeliveryType, FileRuleJson = source.FileRuleJson, Status = ExamStatus.Draft, Version = 1 };
+        foreach (var sourceQuestion in source.QuizQuestions.Where(x => x.Version == source.Version).OrderBy(x => x.Order))
+        {
+            var question = new QuizQuestion { Version = 1, Order = sourceQuestion.Order, Text = sourceQuestion.Text, Points = sourceQuestion.Points, Multiple = sourceQuestion.Multiple };
+            foreach (var choice in sourceQuestion.Choices.OrderBy(x => x.Order)) question.Choices.Add(new QuizChoice { Order = choice.Order, Text = choice.Text, IsCorrect = choice.IsCorrect });
+            clone.QuizQuestions.Add(question);
+        }
         db.ExamsSet.Add(clone);
         await db.SaveChangesAsync(cancellationToken);
         await audit.WriteAsync(
@@ -583,6 +590,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         subject = x.Subject,
         description = x.Description,
         duration_minutes = x.DurationMinutes,
+        delivery_type = x.DeliveryType.ToString(),
         file_rule_json = x.FileRuleJson,
         status = x.Status.ToString(),
         version = x.Version,
@@ -620,6 +628,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         subject = x.Subject,
         description = x.Description,
         duration_minutes = x.DurationMinutes,
+        delivery_type = x.DeliveryType.ToString(),
         file_rule_json = x.FileRuleJson,
         status = x.Status.ToString(),
         version = x.Version,

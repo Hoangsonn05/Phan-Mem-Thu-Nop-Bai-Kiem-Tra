@@ -41,6 +41,7 @@
         <DataTemplate DataType="{x:Type vm:StudentWaitingViewModel}"><views:StudentWaitingView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentExamViewModel}"><views:StudentExamView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentDownloadViewModel}"><views:StudentDownloadView /></DataTemplate>
+        <DataTemplate DataType="{x:Type vm:StudentQuizViewModel}"><views:StudentQuizView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentSubmissionViewModel}"><views:StudentSubmissionView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentReceiptViewModel}"><views:StudentReceiptView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentHistoryViewModel}"><views:StudentHistoryView /></DataTemplate>
@@ -50,262 +51,255 @@
 
     <Grid Background="{DynamicResource AppBackgroundBrush}">
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="264" />
+            <!-- Sidebar 240px – compact hơn 264px cũ -->
+            <ColumnDefinition Width="240" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <!-- ══════════════ SIDEBAR ══════════════ -->
-        <Border Grid.Column="0">
-            <Border.Background>
-                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                    <GradientStop Color="{DynamicResource Color.Sidebar}" Offset="0" />
-                    <GradientStop Color="{DynamicResource Color.SidebarActive}" Offset="1" />
-                </LinearGradientBrush>
-            </Border.Background>
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
+        <!-- ══════════════════════════════════════════
+             SIDEBAR – Slate dark, không phải blue gradient
+        ══════════════════════════════════════════ -->
+        <Grid Grid.Column="0" Background="{DynamicResource SidebarBrush}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-                <!-- App Brand -->
-                <Border Grid.Row="0" Margin="16,20,16,14"
-                        Padding="14,12"
-                        CornerRadius="12">
-                    <Border.Background>
-                        <SolidColorBrush Color="#14FFFFFF" />
-                    </Border.Background>
-                    <StackPanel Orientation="Horizontal">
-                        <Border Width="38" Height="38" CornerRadius="10">
-                            <Border.Background>
-                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                    <GradientStop Color="#60A5FA" Offset="0" />
-                                    <GradientStop Color="#2563EB" Offset="1" />
-                                </LinearGradientBrush>
-                            </Border.Background>
-                            <TextBlock Text="&#xE8A5;"
-                                       Style="{StaticResource IconText}"
-                                       FontSize="18"
-                                       Foreground="White" />
-                        </Border>
-                        <StackPanel Margin="10,1,0,0" VerticalAlignment="Center">
-                            <TextBlock Text="ExamTransfer"
-                                       FontSize="15"
-                                       FontWeight="SemiBold"
-                                       Foreground="{DynamicResource SidebarTextBrush}" />
-                            <TextBlock Text="LOCAL-FIRST EXAM SUITE"
-                                       FontSize="9"
-                                       FontWeight="SemiBold"
-                                       Foreground="{DynamicResource SidebarMutedBrush}" />
-                        </StackPanel>
+            <!-- Brand: compact, không có card nổi -->
+            <Border Grid.Row="0" Padding="16,18,16,14">
+                <StackPanel Orientation="Horizontal">
+                    <Border Width="34" Height="34" CornerRadius="9">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                <GradientStop Color="#0D9488" Offset="0" />
+                                <GradientStop Color="#0891B2" Offset="1" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <TextBlock Text="&#xE8A5;"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="16"
+                                   Foreground="White" />
+                    </Border>
+                    <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="ExamTransfer"
+                                   FontSize="14"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource SidebarTextBrush}" />
+                        <TextBlock Text="EXAM SUITE"
+                                   FontSize="9"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource SidebarMutedBrush}"
+                                   Margin="0,1,0,0" />
                     </StackPanel>
-                </Border>
+                </StackPanel>
+            </Border>
 
-                <!-- Account Panel -->
-                <Border Grid.Row="1" Margin="12,0,12,12"
-                        Padding="12,10"
-                        CornerRadius="11">
-                    <Border.Background>
-                        <SolidColorBrush Color="#10FFFFFF" />
-                    </Border.Background>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="{Binding AccountDisplay}"
-                                       Foreground="{DynamicResource SidebarTextBrush}"
-                                       FontWeight="SemiBold"
-                                       FontSize="13"
-                                       TextTrimming="CharacterEllipsis"
-                                       TextWrapping="NoWrap" />
-                            <TextBlock Text="{Binding AccountRole}"
-                                       Foreground="{DynamicResource SidebarMutedBrush}"
-                                       FontSize="11"
-                                       Margin="0,1,0,0" />
-                            <TextBlock Text="{Binding SessionStatusText}"
-                                       Foreground="{DynamicResource SidebarMutedBrush}"
-                                       FontSize="10"
-                                       TextTrimming="CharacterEllipsis"
-                                       TextWrapping="NoWrap" />
-                        </StackPanel>
-                        <Button Grid.Column="1"
-                                Command="{Binding LogoutCommand}"
-                                Style="{StaticResource GhostButton}"
-                                ToolTip="Đăng xuất"
-                                AutomationProperties.Name="Đăng xuất"
-                                MinWidth="34"
-                                MinHeight="34"
-                                Padding="6">
-                            <TextBlock Text="&#xF3B1;"
-                                       Style="{StaticResource IconText}"
-                                       FontSize="15"
-                                       Foreground="{DynamicResource SidebarMutedBrush}" />
-                        </Button>
-                    </Grid>
-                </Border>
+            <!-- Account panel: compact inline -->
+            <Border Grid.Row="1"
+                    Margin="10,0,10,10"
+                    Padding="10,9"
+                    CornerRadius="8"
+                    Background="#12FFFFFF">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="{Binding AccountDisplay}"
+                                   Foreground="{DynamicResource SidebarTextBrush}"
+                                   FontWeight="SemiBold"
+                                   FontSize="12"
+                                   TextTrimming="CharacterEllipsis"
+                                   TextWrapping="NoWrap" />
+                        <TextBlock Text="{Binding AccountRole}"
+                                   Foreground="{DynamicResource SidebarMutedBrush}"
+                                   FontSize="11"
+                                   Margin="0,1,0,0" />
+                        <TextBlock Text="{Binding SessionStatusText}"
+                                   Foreground="{DynamicResource SidebarMutedBrush}"
+                                   FontSize="10"
+                                   TextTrimming="CharacterEllipsis"
+                                   TextWrapping="NoWrap"
+                                   Margin="0,1,0,0" />
+                    </StackPanel>
+                    <Button Grid.Column="1"
+                            Command="{Binding LogoutCommand}"
+                            Style="{StaticResource GhostButton}"
+                            ToolTip="Đăng xuất"
+                            AutomationProperties.Name="Đăng xuất"
+                            MinWidth="30"
+                            MinHeight="30"
+                            Padding="5">
+                        <TextBlock Text="&#xF3B1;"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="14"
+                                   Foreground="{DynamicResource SidebarMutedBrush}" />
+                    </Button>
+                </Grid>
+            </Border>
 
-                <!-- Navigation List -->
-                <ListBox Grid.Row="2"
-                         Style="{StaticResource SidebarListBox}"
-                         ItemContainerStyle="{StaticResource SidebarItem}"
-                         ItemsSource="{Binding Source={StaticResource GroupedNavigation}}"
-                         SelectedItem="{Binding Selected, Mode=TwoWay}">
-                    <ListBox.GroupStyle>
-                        <GroupStyle>
-                            <GroupStyle.HeaderTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding Name}"
-                                               Margin="20,14,12,5"
-                                               FontSize="10"
-                                               FontWeight="SemiBold"
-                                               Foreground="{DynamicResource SidebarMutedBrush}"
-                                               TextWrapping="NoWrap" />
-                                </DataTemplate>
-                            </GroupStyle.HeaderTemplate>
-                        </GroupStyle>
-                    </ListBox.GroupStyle>
-                    <ListBox.ItemTemplate>
-                        <DataTemplate DataType="{x:Type models:NavigationItem}">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="24" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="{Binding Glyph}"
-                                           Style="{StaticResource IconText}"
-                                           Width="22" Height="22"
-                                           FontSize="15"
-                                           Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" />
-                                <TextBlock Grid.Column="1"
-                                           Text="{Binding Title}"
-                                           Margin="9,0,6,0"
-                                           VerticalAlignment="Center"
-                                           FontSize="13"
+            <!-- Navigation List -->
+            <ListBox Grid.Row="2"
+                     Style="{StaticResource SidebarListBox}"
+                     ItemContainerStyle="{StaticResource SidebarItem}"
+                     ItemsSource="{Binding Source={StaticResource GroupedNavigation}}"
+                     SelectedItem="{Binding Selected, Mode=TwoWay}">
+                <ListBox.GroupStyle>
+                    <GroupStyle>
+                        <GroupStyle.HeaderTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name}"
+                                           Margin="16,12,12,4"
+                                           FontSize="10"
                                            FontWeight="SemiBold"
-                                           TextWrapping="NoWrap"
-                                           Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" />
-                                <Border Grid.Column="2"
-                                        CornerRadius="999"
-                                        Padding="6,2"
-                                        Background="{DynamicResource SidebarBadgeBrush}">
-                                    <Border.Style>
-                                        <Style TargetType="Border">
-                                            <Setter Property="Visibility" Value="Visible" />
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding Badge}" Value="{x:Null}">
-                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                </DataTrigger>
-                                                <DataTrigger Binding="{Binding Badge}" Value="">
-                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </Border.Style>
-                                    <TextBlock Text="{Binding Badge}"
-                                               FontSize="9"
-                                               FontWeight="Bold"
-                                               Foreground="{DynamicResource SidebarTextBrush}"
-                                               TextWrapping="NoWrap" />
-                                </Border>
-                            </Grid>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
-
-                <!-- Bottom: Mode + Theme toggle -->
-                <Border Grid.Row="3"
-                        Margin="12,8,12,16"
-                        Padding="12,10"
-                        CornerRadius="11">
-                    <Border.Background>
-                        <SolidColorBrush Color="#10FFFFFF" />
-                    </Border.Background>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <Border Width="32" Height="32" CornerRadius="8">
-                            <Border.Background>
-                                <SolidColorBrush Color="#20FFFFFF" />
-                            </Border.Background>
-                            <TextBlock Text="ET"
-                                       Foreground="{DynamicResource SidebarTextBrush}"
-                                       FontSize="11"
-                                       FontWeight="Bold"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center" />
-                        </Border>
-                        <StackPanel Grid.Column="1" Margin="10,0" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding ModeTitle}"
-                                       Foreground="{DynamicResource SidebarTextBrush}"
-                                       FontWeight="SemiBold"
-                                       FontSize="12"
-                                       TextTrimming="CharacterEllipsis"
-                                       TextWrapping="NoWrap" />
-                            <TextBlock Text="{Binding EnvironmentLabel}"
-                                       Foreground="{DynamicResource SidebarMutedBrush}"
-                                       FontSize="10" />
-                        </StackPanel>
-                        <Button Grid.Column="2"
-                                Command="{Binding ToggleThemeCommand}"
-                                Style="{StaticResource GhostButton}"
-                                ToolTip="{Binding ThemeLabel}"
-                                MinWidth="34" MinHeight="34"
-                                Padding="6">
-                            <TextBlock Text="&#xE706;"
+                                           Foreground="{DynamicResource SidebarMutedBrush}"
+                                           TextWrapping="NoWrap" />
+                            </DataTemplate>
+                        </GroupStyle.HeaderTemplate>
+                    </GroupStyle>
+                </ListBox.GroupStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate DataType="{x:Type models:NavigationItem}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="22" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding Glyph}"
                                        Style="{StaticResource IconText}"
+                                       Width="20" Height="20"
                                        FontSize="14"
-                                       Foreground="{DynamicResource SidebarMutedBrush}" />
-                        </Button>
-                    </Grid>
-                </Border>
-            </Grid>
-        </Border>
+                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" />
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding Title}"
+                                       Margin="8,0,5,0"
+                                       VerticalAlignment="Center"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       TextWrapping="NoWrap"
+                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" />
+                            <Border Grid.Column="2"
+                                    CornerRadius="999"
+                                    Padding="5,2"
+                                    Background="{DynamicResource SidebarBadgeBrush}">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Badge}" Value="{x:Null}">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Badge}" Value="">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <TextBlock Text="{Binding Badge}"
+                                           FontSize="9"
+                                           FontWeight="Bold"
+                                           Foreground="{DynamicResource SidebarTextBrush}"
+                                           TextWrapping="NoWrap" />
+                            </Border>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
 
-        <!-- ══════════════ MAIN CONTENT ══════════════ -->
+            <!-- Bottom: Mode + Theme toggle – compact -->
+            <Border Grid.Row="3"
+                    Margin="10,6,10,14"
+                    Padding="10,8"
+                    CornerRadius="8"
+                    Background="#0EFFFFFF">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <!-- Mode icon -->
+                    <Border Width="28" Height="28" CornerRadius="7">
+                        <Border.Background>
+                            <SolidColorBrush Color="#1AFFFFFF" />
+                        </Border.Background>
+                        <TextBlock Text="ET"
+                                   Foreground="{DynamicResource SidebarTextBrush}"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                    </Border>
+                    <StackPanel Grid.Column="1" Margin="9,0,6,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding ModeTitle}"
+                                   Foreground="{DynamicResource SidebarTextBrush}"
+                                   FontWeight="SemiBold"
+                                   FontSize="11"
+                                   TextTrimming="CharacterEllipsis"
+                                   TextWrapping="NoWrap" />
+                        <TextBlock Text="{Binding EnvironmentLabel}"
+                                   Foreground="{DynamicResource SidebarMutedBrush}"
+                                   FontSize="9" />
+                    </StackPanel>
+                    <!-- Theme toggle -->
+                    <Button Grid.Column="2"
+                            Command="{Binding ToggleThemeCommand}"
+                            Style="{StaticResource GhostButton}"
+                            ToolTip="{Binding ThemeLabel}"
+                            MinWidth="30" MinHeight="30"
+                            Padding="5">
+                        <TextBlock Text="&#xE706;"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="13"
+                                   Foreground="{DynamicResource SidebarMutedBrush}" />
+                    </Button>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- ══════════════════════════════════════════
+             MAIN CONTENT AREA
+        ══════════════════════════════════════════ -->
         <Grid Grid.Column="1">
             <Grid.RowDefinitions>
-                <RowDefinition Height="68" />
+                <!-- Header compact 56px thay vì 68px -->
+                <RowDefinition Height="56" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <!-- Header bar -->
+            <!-- Header bar: phân cách bằng border đáy, không shadow -->
             <Border Grid.Row="0"
                     Background="{DynamicResource SurfaceBrush}"
                     BorderBrush="{DynamicResource BorderBrush}"
                     BorderThickness="0,0,0,1">
-                <Grid Margin="28,0">
+                <Grid Margin="24,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <!-- Page title + description -->
-                    <StackPanel VerticalAlignment="Center">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding PageGlyph}"
-                                       Style="{StaticResource IconText}"
-                                       FontSize="17"
-                                       Foreground="{DynamicResource PrimaryBrush}"
-                                       Margin="0,0,10,0" />
+                    <!-- Page identity: icon + title + description inline -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding PageGlyph}"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="16"
+                                   Foreground="{DynamicResource PrimaryBrush}"
+                                   Margin="0,0,10,0" />
+                        <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="{Binding PageTitle}"
-                                       FontSize="18"
+                                       FontSize="15"
                                        FontWeight="SemiBold"
                                        VerticalAlignment="Center"
                                        TextWrapping="NoWrap" />
+                            <TextBlock Text="{Binding PageDescription}"
+                                       Style="{StaticResource CaptionText}"
+                                       TextWrapping="NoWrap"
+                                       TextTrimming="CharacterEllipsis" />
                         </StackPanel>
-                        <TextBlock Text="{Binding PageDescription}"
-                                   Style="{StaticResource CaptionText}"
-                                   Margin="27,2,0,0"
-                                   TextWrapping="NoWrap"
-                                   TextTrimming="CharacterEllipsis" />
                     </StackPanel>
 
                     <!-- Connection status + refresh -->
@@ -315,11 +309,11 @@
                         <Border Style="{StaticResource StatusPill}"
                                 Background="{Binding ConnectionTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
                             <StackPanel Orientation="Horizontal">
-                                <Ellipse Width="7" Height="7"
+                                <Ellipse Width="6" Height="6"
                                          Fill="{Binding ConnectionTone, Converter={StaticResource ToneBrushConverter}}"
                                          VerticalAlignment="Center" />
                                 <TextBlock Text="{Binding Connection}"
-                                           Margin="7,0,0,0"
+                                           Margin="6,0,0,0"
                                            FontSize="12"
                                            FontWeight="SemiBold"
                                            Foreground="{Binding ConnectionTone, Converter={StaticResource ToneBrushConverter}}" />
@@ -327,10 +321,10 @@
                         </Border>
                         <Button Command="{Binding RefreshCommand}"
                                 Style="{StaticResource GhostButton}"
-                                Margin="6,0,0,0"
+                                Margin="5,0,0,0"
                                 ToolTip="Kiểm tra lại kết nối"
                                 AutomationProperties.Name="Kiểm tra lại kết nối">
-                            <TextBlock Text="&#xE72C;" Style="{StaticResource IconText}" FontSize="15" />
+                            <TextBlock Text="&#xE72C;" Style="{StaticResource IconText}" FontSize="14" />
                         </Button>
                     </StackPanel>
                 </Grid>

@@ -24,8 +24,8 @@ public sealed record ClassSummaryDto(Guid Id, string Name, string Code, string S
 public sealed record ClassDetailDto(Guid Id, string Name, string Code, string SchoolYear, string? Description, ClassStatus Status, IReadOnlyList<StudentDto> Students, string RowVersion);
 public sealed record StudentDto(Guid Id, string StudentCode, string DisplayName, string? Email, string? MetadataJson);
 
-public sealed record ExamSummaryDto(Guid Id, Guid? ClassId, string Title, string Subject, int DurationMinutes, ExamStatus Status, int Version, int FileCount, string RowVersion);
-public sealed record ExamDetailDto(Guid Id, Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, ExamStatus Status, int Version, FileRuleDto FileRule, IReadOnlyList<FileDescriptorDto> Files, string RowVersion);
+public sealed record ExamSummaryDto(Guid Id, Guid? ClassId, string Title, string Subject, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, int FileCount, string RowVersion);
+public sealed record ExamDetailDto(Guid Id, Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, FileRuleDto FileRule, IReadOnlyList<FileDescriptorDto> Files, string RowVersion);
 public sealed record ExamManifestDto(Guid ExamId, int Version, DateTimeOffset GeneratedAtUtc, IReadOnlyList<FileDescriptorDto> Files);
 
 public sealed record SessionCountsDto(int Total, int Pending, int Approved, int Connected, int Submitted, int Uploading, int Disconnected);
@@ -46,6 +46,7 @@ public sealed record ParticipantDto(
     DownloadStatus DownloadStatus,
     SubmissionStatus SubmissionStatus,
     int ExtraTimeMinutes,
+    DateTimeOffset? EffectiveDeadlineUtc,
     ConnectionState ConnectionState);
 
 public sealed record SubmissionFileDto(Guid Id, string Name, long SizeBytes, string Sha256, string MimeType, int TotalChunks, IReadOnlyList<int> ReceivedChunks, TransferStatus TransferStatus, string? DownloadUrl);

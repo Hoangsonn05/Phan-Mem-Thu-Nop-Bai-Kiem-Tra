@@ -67,6 +67,12 @@ builder.Services.AddAuthorization(options =>
         p.AuthenticationSchemes.Add(ExamTransferAuthSchemes.ExamParticipant);
         p.RequireRole("Student");
     });
+    options.AddPolicy("StudentWithParticipant", p =>
+    {
+        p.AuthenticationSchemes.Add(ExamTransferAuthSchemes.Account);
+        p.AuthenticationSchemes.Add(ExamTransferAuthSchemes.ExamParticipant);
+        p.RequireAssertion(context => StudentParticipantScope.IsValid(context.User));
+    });
 });
 
 builder.Services.AddHostedService<HeartbeatMonitorWorker>();

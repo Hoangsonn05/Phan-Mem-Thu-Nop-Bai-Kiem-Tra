@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "3";
+    public const string SchemaVersion = "4";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -67,6 +67,45 @@ public static class DbInitializer
         await EnsureColumnAsync(db, "users", "MustChangePassword", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "user_login_sessions", "OrganizationId", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "user_login_sessions", "EncryptedRefreshToken", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "exams", "DeliveryType", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureQuizTablesAsync(db, cancellationToken);
+    }
+
+    private static async Task EnsureQuizTablesAsync(AppDbContext db, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            CREATE TABLE IF NOT EXISTS "quiz_questions" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_questions" PRIMARY KEY,
+                "ExamId" TEXT NOT NULL, "Version" INTEGER NOT NULL, "Order" INTEGER NOT NULL,
+                "Text" TEXT NOT NULL, "Points" TEXT NOT NULL, "Multiple" INTEGER NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL,
+                CONSTRAINT "FK_quiz_questions_exams_ExamId" FOREIGN KEY ("ExamId") REFERENCES "exams" ("Id") ON DELETE CASCADE);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_quiz_questions_ExamId_Version_Order" ON "quiz_questions" ("ExamId", "Version", "Order");
+            CREATE TABLE IF NOT EXISTS "quiz_choices" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_choices" PRIMARY KEY,
+                "QuestionId" TEXT NOT NULL, "Order" INTEGER NOT NULL, "Text" TEXT NOT NULL, "IsCorrect" INTEGER NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL,
+                CONSTRAINT "FK_quiz_choices_quiz_questions_QuestionId" FOREIGN KEY ("QuestionId") REFERENCES "quiz_questions" ("Id") ON DELETE CASCADE);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_quiz_choices_QuestionId_Order" ON "quiz_choices" ("QuestionId", "Order");
+            CREATE TABLE IF NOT EXISTS "quiz_attempts" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_attempts" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL, "ParticipantId" TEXT NOT NULL, "ExamVersion" INTEGER NOT NULL, "Status" INTEGER NOT NULL,
+                "StartedAtUtc" TEXT NOT NULL, "DeadlineUtc" TEXT NOT NULL, "FinalizedAtUtc" TEXT NULL,
+                "Score" TEXT NULL, "MaxScore" TEXT NOT NULL, "SnapshotJson" TEXT NOT NULL, "FinalizeIdempotencyKey" TEXT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL,
+                CONSTRAINT "FK_quiz_attempts_exam_sessions_SessionId" FOREIGN KEY ("SessionId") REFERENCES "exam_sessions" ("Id") ON DELETE RESTRICT,
+                CONSTRAINT "FK_quiz_attempts_session_participants_ParticipantId" FOREIGN KEY ("ParticipantId") REFERENCES "session_participants" ("Id") ON DELETE RESTRICT);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_quiz_attempts_SessionId_ParticipantId" ON "quiz_attempts" ("SessionId", "ParticipantId");
+            CREATE TABLE IF NOT EXISTS "quiz_answers" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_answers" PRIMARY KEY,
+                "AttemptId" TEXT NOT NULL, "QuestionId" TEXT NOT NULL, "ChoiceIdsJson" TEXT NOT NULL,
+                "Revision" INTEGER NOT NULL, "ClientUpdatedAtUtc" TEXT NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL,
+                CONSTRAINT "FK_quiz_answers_quiz_attempts_AttemptId" FOREIGN KEY ("AttemptId") REFERENCES "quiz_attempts" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_quiz_answers_quiz_questions_QuestionId" FOREIGN KEY ("QuestionId") REFERENCES "quiz_questions" ("Id") ON DELETE RESTRICT);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_quiz_answers_AttemptId_QuestionId" ON "quiz_answers" ("AttemptId", "QuestionId");
+            """;
+        await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
     }
 
     private static async Task EnsureColumnAsync(

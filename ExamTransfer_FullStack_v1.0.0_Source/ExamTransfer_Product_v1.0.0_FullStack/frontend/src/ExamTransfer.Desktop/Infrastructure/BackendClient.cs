@@ -1,6 +1,7 @@
 ﻿using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
@@ -14,16 +15,58 @@ public sealed class BackendClient : IBackendClient
     private static readonly JsonSerializerOptions Json = CreateJsonOptions();
 
     private readonly HttpClient http;
+    private readonly object endpointGate = new();
+    private Uri baseAddress;
     private string? accountToken;
+    private Uri? accountTokenOrigin;
     private string? participantToken;
+    private Uri? participantTokenOrigin;
 
     public BackendClient(string baseUrl)
     {
+        baseAddress = NormalizeBaseAddress(baseUrl, null);
         http = new HttpClient
         {
-            BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromMinutes(10)
         };
+    }
+
+    public Uri BaseAddress
+    {
+        get { lock (endpointGate) return baseAddress; }
+    }
+
+    public bool HasTrustedAccountToken
+    {
+        get
+        {
+            lock (endpointGate)
+                return !string.IsNullOrWhiteSpace(accountToken) && SameOrigin(accountTokenOrigin, baseAddress);
+        }
+    }
+
+    public bool TrySetBaseAddress(string hostOrUrl, int port, out string? error)
+    {
+        try
+        {
+            var next = NormalizeBaseAddress(hostOrUrl, port);
+            lock (endpointGate)
+            {
+                if (!SameOrigin(baseAddress, next))
+                {
+                    participantToken = null;
+                    participantTokenOrigin = null;
+                }
+                baseAddress = next;
+            }
+            error = null;
+            return true;
+        }
+        catch (ArgumentException ex)
+        {
+            error = ex.Message;
+            return false;
+        }
     }
 
     public void SetBearerToken(string? token)
@@ -33,12 +76,20 @@ public sealed class BackendClient : IBackendClient
 
     public void SetAccountToken(string? token)
     {
-        accountToken = string.IsNullOrWhiteSpace(token) ? null : token.Trim();
+        lock (endpointGate)
+        {
+            accountToken = string.IsNullOrWhiteSpace(token) ? null : token.Trim();
+            accountTokenOrigin = accountToken is null ? null : baseAddress;
+        }
     }
 
     public void SetParticipantToken(string? token)
     {
-        participantToken = string.IsNullOrWhiteSpace(token) ? null : token.Trim();
+        lock (endpointGate)
+        {
+            participantToken = string.IsNullOrWhiteSpace(token) ? null : token.Trim();
+            participantTokenOrigin = participantToken is null ? null : baseAddress;
+        }
     }
 
     public Task<ApiResponse<SystemStatusDto>?> GetSystemStatusAsync(CancellationToken ct = default) => GetAsync<SystemStatusDto>("api/v1/system/status", ct);
@@ -103,6 +154,80 @@ public sealed class BackendClient : IBackendClient
         await SaveResponseAsync(response, destinationPath, progress, ct);
     }
 
+    public async Task DownloadVerifiedFileAsync(
+        string path,
+        string destinationPath,
+        string expectedSha256,
+        IProgress<double>? progress = null,
+        CancellationToken ct = default)
+    {
+        var expected = expectedSha256?.Trim().ToLowerInvariant();
+        if (expected?.Length != 64 || expected.Any(x => !Uri.IsHexDigit(x)))
+            throw new ArgumentException("SHA-256 của file đề không hợp lệ.", nameof(expectedSha256));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath) ?? AppContext.BaseDirectory);
+        if (File.Exists(destinationPath) && await HashFileAsync(destinationPath, ct) == expected)
+        {
+            progress?.Report(100);
+            return;
+        }
+
+        var partialPath = destinationPath + ".partial";
+        for (var verificationAttempt = 0; verificationAttempt < 2; verificationAttempt++)
+        {
+            var offset = File.Exists(partialPath) ? new FileInfo(partialPath).Length : 0;
+            if (offset > 0 && await HashFileAsync(partialPath, ct) == expected)
+            {
+                File.Move(partialPath, destinationPath, true);
+                progress?.Report(100);
+                return;
+            }
+
+            using var request = CreateRequest(HttpMethod.Get, path);
+            if (offset > 0) request.Headers.Range = new RangeHeaderValue(offset, null);
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            response.EnsureSuccessStatusCode();
+
+            var canAppend = offset > 0
+                && response.StatusCode == System.Net.HttpStatusCode.PartialContent
+                && response.Content.Headers.ContentRange?.From == offset;
+            if (!canAppend) offset = 0;
+            var total = response.Content.Headers.ContentRange?.Length
+                ?? (response.Content.Headers.ContentLength.HasValue ? offset + response.Content.Headers.ContentLength.Value : null);
+            await using (var source = await response.Content.ReadAsStreamAsync(ct))
+            await using (var target = new FileStream(
+                partialPath,
+                canAppend ? FileMode.Append : FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                81920,
+                true))
+            {
+                var buffer = new byte[81920];
+                var received = offset;
+                while (true)
+                {
+                    var read = await source.ReadAsync(buffer.AsMemory(), ct);
+                    if (read == 0) break;
+                    await target.WriteAsync(buffer.AsMemory(0, read), ct);
+                    received += read;
+                    if (total is > 0) progress?.Report(received * 100d / total.Value);
+                }
+            }
+
+            if (await HashFileAsync(partialPath, ct) == expected)
+            {
+                File.Move(partialPath, destinationPath, true);
+                progress?.Report(100);
+                return;
+            }
+
+            File.Delete(partialPath);
+        }
+
+        throw new InvalidDataException("File tải về không khớp SHA-256 sau khi đã tải lại từ đầu.");
+    }
+
     public async Task PostDownloadFileAsync<TRequest>(string path, TRequest request, string destinationPath, IProgress<double>? progress = null, CancellationToken ct = default)
     {
         using var message = CreateRequest(HttpMethod.Post, path);
@@ -113,19 +238,59 @@ public sealed class BackendClient : IBackendClient
 
     private HttpRequestMessage CreateRequest(HttpMethod method, string path)
     {
-        var request = new HttpRequestMessage(method, path);
-        if (!string.IsNullOrWhiteSpace(accountToken))
+        Uri endpoint;
+        string? trustedAccountToken;
+        string? trustedParticipantToken;
+        lock (endpointGate)
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accountToken);
+            endpoint = new Uri(baseAddress, path.TrimStart('/'));
+            trustedAccountToken = SameOrigin(accountTokenOrigin, baseAddress) ? accountToken : null;
+            trustedParticipantToken = SameOrigin(participantTokenOrigin, baseAddress) ? participantToken : null;
         }
 
-        if (!string.IsNullOrWhiteSpace(participantToken))
+        var request = new HttpRequestMessage(method, endpoint);
+        if (!string.IsNullOrWhiteSpace(trustedAccountToken))
         {
-            request.Headers.TryAddWithoutValidation("X-Exam-Session-Token", participantToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", trustedAccountToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(trustedParticipantToken))
+        {
+            request.Headers.TryAddWithoutValidation("X-Exam-Session-Token", trustedParticipantToken);
         }
 
         return request;
     }
+
+    private static Uri NormalizeBaseAddress(string hostOrUrl, int? port)
+    {
+        var value = hostOrUrl?.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException("Địa chỉ máy chủ không được để trống.");
+
+        if (!value.Contains("://", StringComparison.Ordinal))
+            value = "http://" + value;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var parsed)
+            || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+            || string.IsNullOrWhiteSpace(parsed.Host)
+            || !string.IsNullOrEmpty(parsed.UserInfo)
+            || (parsed.AbsolutePath != "" && parsed.AbsolutePath != "/")
+            || !string.IsNullOrEmpty(parsed.Query)
+            || !string.IsNullOrEmpty(parsed.Fragment))
+            throw new ArgumentException("Địa chỉ máy chủ phải là IP hoặc URL HTTP/HTTPS hợp lệ, không kèm đường dẫn.");
+
+        var effectivePort = port ?? (parsed.IsDefaultPort ? (parsed.Scheme == Uri.UriSchemeHttps ? 443 : 80) : parsed.Port);
+        if (effectivePort is <= 0 or > 65535)
+            throw new ArgumentException("Cổng máy chủ phải nằm trong khoảng 1-65535.");
+
+        return new UriBuilder(parsed.Scheme, parsed.Host, effectivePort).Uri;
+    }
+
+    private static bool SameOrigin(Uri? left, Uri? right) => left is not null
+        && right is not null
+        && string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase)
+        && left.Port == right.Port;
 
     private static async Task SaveResponseAsync(HttpResponseMessage response, string destinationPath, IProgress<double>? progress, CancellationToken ct)
     {
@@ -145,6 +310,13 @@ public sealed class BackendClient : IBackendClient
             if (total is > 0) progress?.Report(readTotal * 100d / total.Value);
         }
         progress?.Report(100);
+    }
+
+    private static async Task<string> HashFileAsync(string path, CancellationToken ct)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
+        var hash = await SHA256.HashDataAsync(stream, ct);
+        return Convert.ToHexStringLower(hash);
     }
 
     private static async Task<ApiResponse<T>?> Read<T>(HttpResponseMessage response, CancellationToken ct)

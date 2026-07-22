@@ -214,6 +214,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         CloneCommand = new AsyncRelayCommand(CloneAsync, () => !IsBusy && SelectedExam is not null);
         ArchiveCommand = new AsyncRelayCommand(ArchiveAsync, () => !IsBusy && SelectedExam is not null);
         UploadCommand = new AsyncRelayCommand(UploadFileAsync, () => !IsBusy && SelectedExam is not null);
+        ImportQuizCommand = new AsyncRelayCommand(ImportQuizAsync, () => !IsBusy && SelectedExam?.Status == ExamStatus.Draft);
         SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsBusy && SelectedExam is not null);
         DeleteFileCommand = new AsyncRelayCommand(DeleteFileAsync, () => !IsBusy && SelectedExam is not null && SelectedFile is not null);
         DownloadFileCommand = new AsyncRelayCommand(DownloadFileAsync, () => !IsBusy && SelectedExam is not null && SelectedFile is not null);
@@ -232,8 +233,10 @@ public sealed class ExamManagementViewModel : ProductPageBase
     public string AllowedExtensions { get => allowedExtensions; set => Set(ref allowedExtensions, value); }
     public bool CanPublish => SelectedExam is not null
         && SelectedExam.Status is not (ExamStatus.Archived or ExamStatus.Cancelled)
-        && (!currentRequireAtLeastOneFile || Files.Count > 0);
-    public string PublishHint => currentRequireAtLeastOneFile && Files.Count == 0
+        && (SelectedExam.DeliveryType == ExamDeliveryType.MultipleChoice || !currentRequireAtLeastOneFile || Files.Count > 0);
+    public string PublishHint => SelectedExam?.DeliveryType == ExamDeliveryType.MultipleChoice
+        ? "Đề trắc nghiệm sẽ được kiểm tra câu hỏi và đáp án trên máy chủ khi phát hành."
+        : currentRequireAtLeastOneFile && Files.Count == 0
         ? "Cần tải lên và hoàn tất ít nhất một file đề trước khi phát hành."
         : "Bài kiểm tra đã đáp ứng quy tắc file để phát hành.";
     public ICommand RefreshCommand { get; }
@@ -242,6 +245,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
     public ICommand CloneCommand { get; }
     public ICommand ArchiveCommand { get; }
     public ICommand UploadCommand { get; }
+    public ICommand ImportQuizCommand { get; }
     public ICommand SaveCommand { get; }
     public ICommand DeleteFileCommand { get; }
     public ICommand DownloadFileCommand { get; }
@@ -417,6 +421,19 @@ public sealed class ExamManagementViewModel : ProductPageBase
         await RefreshExamsCoreAsync(SelectedExam.Id, ct);
     });
 
+    private Task ImportQuizAsync() => RunAsync("Đang nhập đề trắc nghiệm", "Đề trắc nghiệm đã được kiểm tra và lưu", async ct =>
+    {
+        if (SelectedExam is null) return;
+        var path = AppServices.Files.PickFile("Đề trắc nghiệm có cấu trúc|*.json;*.csv;*.xlsx");
+        if (path is null) return;
+        var bytes = await File.ReadAllBytesAsync(path, ct);
+        var result = ApiGuard.Require(await api.PostAsync<QuizImportFileRequest, QuizImportResultDto>(
+            $"api/v1/exams/{SelectedExam.Id}/quiz/import",
+            new(Path.GetFileName(path), Convert.ToBase64String(bytes)), ct));
+        Status = $"Đã nhập {result.QuestionCount} câu · tổng {result.MaxScore:0.##} điểm";
+        await RefreshExamsCoreAsync(SelectedExam.Id, ct);
+    });
+
     private static async Task<string> ComputeShaAsync(string path, CancellationToken ct)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
@@ -426,7 +443,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, PublishCommand, CloneCommand, ArchiveCommand, UploadCommand, SaveCommand, DeleteFileCommand, DownloadFileCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, PublishCommand, CloneCommand, ArchiveCommand, UploadCommand, ImportQuizCommand, SaveCommand, DeleteFileCommand, DownloadFileCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
     }
 
     public override void Dispose()
@@ -1589,6 +1606,7 @@ public sealed class StudentWaitingViewModel : ProductPageBase
     {
         if (AppServices.Dialogs.Confirm("Rời phòng", "Rời phòng chờ và xóa thông tin phiên hiện tại?"))
         {
+            AppServices.StudentRealtime.StopAsync().SafeFireAndForget("StudentRealtime.Leave");
             state.Reset();
             api.SetParticipantToken(null);
             Participant = null;
@@ -1657,7 +1675,7 @@ public sealed class StudentDownloadViewModel : ProductPageBase
     {
         if (SelectedFile is null || !state.ExamId.HasValue) return;
         var reporter = new Progress<double>(x => Progress = x);
-        await api.DownloadFileAsync($"api/v1/exams/{state.ExamId}/files/{SelectedFile.Id}/content", Path.Combine(Destination, SelectedFile.Name), reporter, ct);
+        await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{SelectedFile.Id}/content", Path.Combine(Destination, SelectedFile.Name), SelectedFile.Sha256, reporter, ct);
     });
 
     private Task DownloadAllAsync() => RunAsync("Đang tải toàn bộ đề", "Tất cả file đề đã được tải về", async ct =>
@@ -1668,7 +1686,7 @@ public sealed class StudentDownloadViewModel : ProductPageBase
         foreach (var file in Files)
         {
             index++;
-            await api.DownloadFileAsync($"api/v1/exams/{state.ExamId}/files/{file.Id}/content", Path.Combine(Destination, file.Name), null, ct);
+            await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{file.Id}/content", Path.Combine(Destination, file.Name), file.Sha256, null, ct);
             Progress = index * 100d / Files.Count;
         }
     });
@@ -1701,11 +1719,23 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
     public ICommand PickCommand { get; }
     public ICommand SubmitCommand { get; }
 
-    protected override Task LoadAsync(CancellationToken ct)
+    protected override async Task LoadAsync(CancellationToken ct)
     {
         Status = state.HasSession ? "Chọn file bài làm để nộp" : "Hãy tham gia phòng trước khi nộp bài";
         StatusTone = state.HasSession ? "info" : "warning";
-        return Task.CompletedTask;
+        if (state.HasSession)
+        {
+            var pending = (await Infrastructure.SubmissionQueueStore.LoadAsync(ct))
+                .FirstOrDefault(x => x.SessionId == state.SessionId && x.ParticipantId == state.ParticipantId
+                    && string.Equals(x.Endpoint, api.BaseAddress.ToString(), StringComparison.OrdinalIgnoreCase)
+                    && File.Exists(x.FilePath));
+            if (pending is not null)
+            {
+                SelectedPath = pending.FilePath;
+                Status = "Đã tìm thấy bài nộp dở; hệ thống sẽ tiếp tục từ chunk còn thiếu.";
+                SubmitAsync().SafeFireAndForget("Submission.AutoResume");
+            }
+        }
     }
 
     private void Pick()
@@ -1719,21 +1749,39 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
         api.SetParticipantToken(state.AccessToken);
         var info = new FileInfo(SelectedPath);
         var sha = await ComputeShaAsync(SelectedPath, ct);
-        var init = ApiGuard.Require(await api.PostAsync<InitSubmissionRequest, InitSubmissionResponse>("api/v1/submissions/init", new(state.SessionId.Value, state.ParticipantId.Value, Guid.NewGuid().ToString("N"), new[] { new InitSubmissionFileRequest("local-1", info.Name, info.Length, sha, "application/octet-stream") }, DateTimeOffset.UtcNow), ct));
+        var fullPath = Path.GetFullPath(SelectedPath);
+        var queued = (await Infrastructure.SubmissionQueueStore.LoadAsync(ct)).FirstOrDefault(x =>
+            x.SessionId == state.SessionId && x.ParticipantId == state.ParticipantId
+            && string.Equals(x.Endpoint, api.BaseAddress.ToString(), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.FilePath, fullPath, StringComparison.OrdinalIgnoreCase) && x.Sha256 == sha);
+        queued ??= new Infrastructure.PendingSubmission(
+            Guid.NewGuid(), api.BaseAddress.ToString(), state.SessionId.Value, state.ParticipantId.Value,
+            Infrastructure.SubmissionQueueStore.ProtectToken(state.AccessToken), fullPath, info.Name, info.Length, sha,
+            Guid.NewGuid().ToString("N"), null, null, 0, [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        await Infrastructure.SubmissionQueueStore.SaveAsync(queued, ct);
+        var init = ApiGuard.Require(await api.PostAsync<InitSubmissionRequest, InitSubmissionResponse>("api/v1/submissions/init", new(state.SessionId.Value, state.ParticipantId.Value, queued.IdempotencyKey, new[] { new InitSubmissionFileRequest("local-1", info.Name, info.Length, sha, "application/octet-stream") }, DateTimeOffset.UtcNow), ct));
         var plan = init.FilePlans.Single();
+        queued = queued with { SubmissionId = init.SubmissionId, ServerFileId = plan.FileId, ChunkSizeBytes = init.ChunkSizeBytes, MissingChunks = plan.MissingChunks };
+        await Infrastructure.SubmissionQueueStore.SaveAsync(queued, ct);
         await using var stream = new FileStream(SelectedPath, FileMode.Open, FileAccess.Read, FileShare.Read, init.ChunkSizeBytes, true);
         var buffer = new byte[init.ChunkSizeBytes];
-        for (var index = 0; index < plan.TotalChunks; index++)
+        var missing = plan.MissingChunks.ToList();
+        foreach (var index in plan.MissingChunks)
         {
+            stream.Position = (long)index * init.ChunkSizeBytes;
             var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
             await using var chunk = new MemoryStream(buffer, 0, read, false, true);
-            _ = await api.UploadChunkAsync($"api/v1/submissions/{init.SubmissionId}/files/{plan.FileId}/chunks/{index}", chunk, read, null, ct);
-            Progress = (index + 1) * 90d / plan.TotalChunks;
-            Status = $"Đang gửi phần {index + 1}/{plan.TotalChunks}";
+            ApiGuard.Require(await api.UploadChunkAsync($"api/v1/submissions/{init.SubmissionId}/files/{plan.FileId}/chunks/{index}", chunk, read, null, ct));
+            missing.Remove(index);
+            queued = queued with { MissingChunks = missing.ToList() };
+            await Infrastructure.SubmissionQueueStore.SaveAsync(queued, ct);
+            Progress = (plan.TotalChunks - missing.Count) * 90d / plan.TotalChunks;
+            Status = $"Đang gửi phần {plan.TotalChunks - missing.Count}/{plan.TotalChunks}";
         }
         _ = ApiGuard.Require(await api.PostAsync<FinalizeSubmissionRequest, FinalizeSubmissionResponse>($"api/v1/submissions/{init.SubmissionId}/finalize", new(null), ct));
         state.LastSubmissionId = init.SubmissionId;
         state.LastReceipt = ApiGuard.Require(await api.GetAsync<ReceiptDto>($"api/v1/submissions/{init.SubmissionId}/receipt", ct));
+        await Infrastructure.SubmissionQueueStore.RemoveAsync(queued.QueueId, ct);
         Progress = 100;
     });
 

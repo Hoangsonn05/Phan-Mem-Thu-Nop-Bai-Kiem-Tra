@@ -26,6 +26,7 @@ public sealed class StudentSessionState : ObservableObject
     public ReceiptDto? LastReceipt { get => lastReceipt; set => Set(ref lastReceipt, value); }
 
     public bool HasSession => SessionId.HasValue && ParticipantId.HasValue;
+    public event EventHandler? SessionChanged;
 
     public void ApplyJoin(JoinSessionResponse response, string room, string code, string name)
     {
@@ -35,6 +36,7 @@ public sealed class StudentSessionState : ObservableObject
         RoomCode = room;
         StudentCode = code;
         DisplayName = name;
+        SessionChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void Reset()
@@ -46,5 +48,6 @@ public sealed class StudentSessionState : ObservableObject
         RoomCode = string.Empty;
         LastSubmissionId = null;
         LastReceipt = null;
+        SessionChanged?.Invoke(this, EventArgs.Empty);
     }
 }

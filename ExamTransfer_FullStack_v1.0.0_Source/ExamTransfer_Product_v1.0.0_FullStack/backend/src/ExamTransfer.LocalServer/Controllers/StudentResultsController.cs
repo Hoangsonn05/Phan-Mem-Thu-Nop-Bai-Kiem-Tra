@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 namespace ExamTransfer.LocalServer.Controllers;
 
 [Route("api/v1/student")]
-[Authorize(Policy = "Student")]
+[Authorize(Policy = "StudentWithParticipant")]
 public sealed class StudentResultsController(IGradeService grades, ISubmissionService submissions, AppDbContext db, IStoragePaths paths) : ApiControllerBase
 {
     [HttpGet("submissions/{submissionId:guid}/grade")]

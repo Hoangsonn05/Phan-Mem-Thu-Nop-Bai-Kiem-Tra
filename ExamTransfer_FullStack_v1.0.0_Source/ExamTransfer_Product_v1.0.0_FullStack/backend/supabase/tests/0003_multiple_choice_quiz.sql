@@ -1,0 +1,12 @@
+begin;
+select plan(8);
+select has_column('public', 'exams', 'delivery_type', 'exams delivery type exists');
+select has_table('public', 'quiz_questions', 'quiz questions exists');
+select has_table('public', 'quiz_choices', 'quiz choices exists');
+select has_table('public', 'quiz_attempts', 'quiz attempts exists');
+select has_table('public', 'quiz_answers', 'quiz answers exists');
+select col_is_pk('public', 'quiz_questions', 'id', 'quiz question primary key');
+select fk_ok('public', 'quiz_answers', 'attempt_id', 'public', 'quiz_attempts', 'id', 'answer attempt foreign key');
+select policies_are('public', 'quiz_choices', array['quiz_choices_staff_all'], 'answer key is staff-only');
+select * from finish();
+rollback;

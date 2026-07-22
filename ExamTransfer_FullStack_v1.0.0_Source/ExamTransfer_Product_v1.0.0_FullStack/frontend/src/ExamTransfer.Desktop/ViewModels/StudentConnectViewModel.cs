@@ -11,6 +11,7 @@ public sealed class StudentConnectViewModel : ProductPageBase
     private readonly IBackendClient api;
     private readonly StudentSessionState state;
     private readonly AppAuthSessionState authState;
+    private readonly ILanDiscoveryService discovery;
     private string ip = "127.0.0.1";
     private string port = "5048";
     private string roomCode = string.Empty;
@@ -20,14 +21,17 @@ public sealed class StudentConnectViewModel : ProductPageBase
     private bool isScanning;
     private ServerCard? selectedServer;
 
-    public StudentConnectViewModel(IBackendClient api, StudentSessionState state, AppAuthSessionState authState)
+    public StudentConnectViewModel(IBackendClient api, StudentSessionState state, AppAuthSessionState authState, ILanDiscoveryService? discovery = null)
     {
         this.api = api;
         this.state = state;
         this.authState = authState;
+        this.discovery = discovery ?? AppServices.LanDiscovery;
+        ip = api.BaseAddress.Host;
+        port = api.BaseAddress.Port.ToString();
         displayName = authState.CurrentAccount?.DisplayName ?? string.Empty;
         studentCode = authState.CurrentAccount?.StudentCode ?? string.Empty;
-        ScanCommand = new AsyncRelayCommand(ScanAsync, () => !IsScanning && !IsBusy);
+        ScanCommand = new AsyncRelayCommand(() => ScanAsync(DisposeToken), () => !IsScanning && !IsBusy);
         JoinCommand = new AsyncRelayCommand(JoinAsync, CanJoin);
     }
 
@@ -56,7 +60,6 @@ public sealed class StudentConnectViewModel : ProductPageBase
             {
                 Ip = value.Ip;
                 Port = value.Port.ToString();
-                RoomCode = value.RoomCode;
                 Status = $"Đã chọn {value.Name}";
                 StatusTone = "primary";
             }
@@ -66,9 +69,9 @@ public sealed class StudentConnectViewModel : ProductPageBase
     public ICommand ScanCommand { get; }
     public ICommand JoinCommand { get; }
 
-    protected override Task LoadAsync(CancellationToken ct) => ScanAsync();
+    protected override Task LoadAsync(CancellationToken ct) => ScanAsync(ct);
 
-    private async Task ScanAsync()
+    private async Task ScanAsync(CancellationToken ct)
     {
         if (IsScanning) return;
         try
@@ -77,12 +80,27 @@ public sealed class StudentConnectViewModel : ProductPageBase
             Status = "Đang kiểm tra máy chủ trong mạng LAN";
             StatusTone = "primary";
             Servers.Clear();
-            var health = await api.GetSystemStatusAsync(DisposeToken);
-            if (health?.Success == true)
+            var discovered = await discovery.DiscoverAsync(TimeSpan.FromSeconds(2), ct);
+            foreach (var server in discovered)
             {
-                Servers.Add(new("Máy chủ ExamTransfer", "Giáo viên", Ip, int.TryParse(Port, out var p) ? p : 5048, 1, RoomCode, "Sẵn sàng", "success", 0, 0));
+                Servers.Add(new(
+                    server.ServerName,
+                    "Máy giáo viên",
+                    server.Address,
+                    server.Port,
+                    0,
+                    "Sẵn sàng",
+                    "success",
+                    server.ActiveRoomCount,
+                    0,
+                    server.Fingerprint,
+                    server.Version));
+            }
+
+            if (Servers.Count > 0)
+            {
                 SelectedServer = Servers[0];
-                Status = "Đã tìm thấy máy chủ ExamTransfer";
+                Status = $"Đã tìm thấy {Servers.Count} máy chủ ExamTransfer";
                 StatusTone = "success";
             }
             else
@@ -90,6 +108,9 @@ public sealed class StudentConnectViewModel : ProductPageBase
                 Status = "Chưa tìm thấy máy chủ tự động; có thể nhập IP và cổng thủ công";
                 StatusTone = "warning";
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -107,10 +128,20 @@ public sealed class StudentConnectViewModel : ProductPageBase
 
     private Task JoinAsync() => RunAsync("Đang gửi yêu cầu tham gia", "Yêu cầu tham gia đã được gửi; hãy mở mục Phòng chờ", async ct =>
     {
+        if (!int.TryParse(Port, out var parsedPort))
+            throw new InvalidOperationException("Cổng máy chủ không hợp lệ.");
+        if (!api.TrySetBaseAddress(Ip, parsedPort, out var endpointError))
+            throw new InvalidOperationException(endpointError ?? "Địa chỉ máy chủ không hợp lệ.");
+        state.Reset();
+        api.SetParticipantToken(null);
+        if (!api.HasTrustedAccountToken)
+            throw new InvalidOperationException("Máy chủ đã thay đổi. Hãy đăng xuất và đăng nhập lại trên đúng máy chủ giáo viên trước khi tham gia phòng.");
+
         var request = new JoinSessionRequest(RoomCode.Trim().ToUpperInvariant(), StudentCode.Trim(), DisplayName.Trim(), string.IsNullOrWhiteSpace(ClassName) ? null : ClassName.Trim(), Environment.MachineName + "-" + Environment.UserName, Environment.MachineName, "1.0.0", Guid.NewGuid().ToString("N"));
         var response = ApiGuard.Require(await api.PostAsync<JoinSessionRequest, JoinSessionResponse>("api/v1/sessions/join", request, ct));
         state.ApplyJoin(response, request.RoomCode, request.StudentCode, request.DisplayName);
         api.SetParticipantToken(response.AccessToken);
+        await AppServices.StudentRealtime.StartAsync(ct);
     });
 
     protected override void RaiseCommands()
@@ -120,7 +151,7 @@ public sealed class StudentConnectViewModel : ProductPageBase
     }
 }
 
-public sealed record ServerCard(string Name, string Teacher, string Ip, int Port, int LatencyMs, string RoomCode, string Status, string Tone, int Connected, int Capacity)
+public sealed record ServerCard(string Name, string Teacher, string Ip, int Port, int LatencyMs, string Status, string Tone, int Connected, int Capacity, string Fingerprint, string Version)
 {
     public string Address => $"{Ip}:{Port}";
     public string CapacityText => Capacity <= 0 ? "Sẵn sàng kết nối" : $"{Connected}/{Capacity} thiết bị";

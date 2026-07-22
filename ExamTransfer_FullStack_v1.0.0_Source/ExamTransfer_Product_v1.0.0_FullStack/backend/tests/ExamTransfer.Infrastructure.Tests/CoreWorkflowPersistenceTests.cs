@@ -18,6 +18,50 @@ namespace ExamTransfer.Infrastructure.Tests;
 public sealed class CoreWorkflowPersistenceTests
 {
     [Fact]
+    public async Task Dashboard_AfterClassCreation_ReturnsUpdatedRealClassCount()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+
+        int initialClassCount;
+        await using (var initialContext = database.CreateContext())
+        {
+            initialClassCount = (await DashboardService(initialContext).GetDashboardAsync(CancellationToken.None)).ClassCount;
+        }
+
+        Guid classId;
+        await using (var createContext = database.CreateContext())
+        {
+            var created = await Services(createContext).Classes.CreateAsync(
+                new("Dashboard refresh", "DASH-REFRESH", "2026-2027", "Physical SQLite test"),
+                CancellationToken.None);
+            classId = created.Id;
+        }
+
+        await using (var refreshedContext = database.CreateContext())
+        {
+            var refreshed = await DashboardService(refreshedContext).GetDashboardAsync(CancellationToken.None);
+            Assert.Equal(initialClassCount + 1, refreshed.ClassCount);
+        }
+
+        await using (var reopenedContext = database.CreateContext())
+        {
+            var reopened = await DashboardService(reopenedContext).GetDashboardAsync(CancellationToken.None);
+            Assert.Equal(initialClassCount + 1, reopened.ClassCount);
+        }
+
+        await using (var archiveContext = database.CreateContext())
+        {
+            await Services(archiveContext).Classes.ArchiveAsync(classId, CancellationToken.None);
+        }
+
+        await using (var archivedContext = database.CreateContext())
+        {
+            var archived = await DashboardService(archivedContext).GetDashboardAsync(CancellationToken.None);
+            Assert.Equal(initialClassCount, archived.ClassCount);
+        }
+    }
+
+    [Fact]
     public async Task Class_Create_PersistsAcrossNewDbContext()
     {
         await using var database = await FileDatabase.CreateAsync();
@@ -233,6 +277,13 @@ public sealed class CoreWorkflowPersistenceTests
             new SessionService(db, new SessionTokenService(options), audit, outbox, realtime, options, NullLogger<SessionService>.Instance));
     }
 
+    private static SystemService DashboardService(AppDbContext db)
+    {
+        var options = Options.Create(new ExamTransferOptions());
+        var paths = new TestStoragePaths(Path.Combine(Path.GetDirectoryName(db.Database.GetDbConnection().DataSource)!, "storage"));
+        return new SystemService(db, paths, new OfflineCloudAdapter(), options, new NoOpRealtimePublisher());
+    }
+
     private sealed record ServiceSet(ClassService Classes, ExamService Exams, SessionService Sessions);
 
     private sealed class NoOpRealtimePublisher : IRealtimePublisher
@@ -245,6 +296,31 @@ public sealed class CoreWorkflowPersistenceTests
     {
         public Task PublishSessionAsync<T>(Guid sessionId, string eventName, long sequence, T payload, CancellationToken cancellationToken = default) => throw new IOException("Simulated realtime outage");
         public Task PublishParticipantAsync<T>(Guid sessionId, Guid participantId, string eventName, long sequence, T payload, CancellationToken cancellationToken = default) => throw new IOException("Simulated realtime outage");
+    }
+
+    private sealed class OfflineCloudAdapter : ICloudAdapter
+    {
+        public bool Enabled => false;
+        public bool Configured => false;
+        public bool Authenticated => false;
+        public bool CanSynchronize => false;
+        public CloudLoginResult? CurrentSession => null;
+
+        public Task<bool> CheckHealthAsync(CancellationToken cancellationToken) => Task.FromResult(false);
+
+        public Task<CloudPreflightResult> PreflightAsync(CancellationToken cancellationToken) => Task.FromResult(
+            new CloudPreflightResult(false, false, false, false, "None", null, "Disabled", [], [], CloudAccessModes.UserSession, false, null, false));
+
+        public Task<CloudPushResult> PushAsync(SyncQueueItem item, Func<CancellationToken, Task>? checkpoint, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<CloudLoginResult> LoginAsync(string email, string password, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<CloudLoginResult?> RefreshSessionAsync(CancellationToken cancellationToken) => Task.FromResult<CloudLoginResult?>(null);
+        public Task LogoutAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<IReadOnlyList<CloudBackupDescriptor>> ListBackupsAsync(CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<CloudBackupDescriptor>>([]);
+        public Task DownloadObjectAsync(string cloudObjectPath, string destinationPath, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class TestStoragePaths(string root) : IStoragePaths

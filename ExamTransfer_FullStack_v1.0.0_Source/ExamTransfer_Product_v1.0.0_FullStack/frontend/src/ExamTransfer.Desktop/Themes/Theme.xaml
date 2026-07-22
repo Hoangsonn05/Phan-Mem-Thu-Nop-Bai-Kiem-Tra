@@ -4,17 +4,17 @@
     <conv:ToneBrushConverter x:Key="ToneBrushConverter" />
 
     <!-- ═══════════════════════════════════════════════════════
-         SHADOW TOKENS – chỉ dùng cho hero/popup, không dùng trên card thường
+         SHADOW TOKENS – chỉ cho hero/popup
     ═══════════════════════════════════════════════════════ -->
     <DropShadowEffect x:Key="CardShadow"
-                      BlurRadius="18" ShadowDepth="2" Opacity="0.08"
-                      Color="#0F172A" />
+                      BlurRadius="16" ShadowDepth="1" Opacity="0.07"
+                      Color="#111827" />
     <DropShadowEffect x:Key="FloatingShadow"
-                      BlurRadius="32" ShadowDepth="6" Opacity="0.18"
-                      Color="#0F172A" />
+                      BlurRadius="28" ShadowDepth="4" Opacity="0.15"
+                      Color="#111827" />
     <DropShadowEffect x:Key="TooltipShadow"
-                      BlurRadius="12" ShadowDepth="3" Opacity="0.14"
-                      Color="#0F172A" />
+                      BlurRadius="10" ShadowDepth="2" Opacity="0.12"
+                      Color="#111827" />
 
     <!-- ═══════════════════════════════════════════════════════
          WINDOW
@@ -31,7 +31,7 @@
     </Style>
 
     <!-- ═══════════════════════════════════════════════════════
-         FOCUS VISUAL (global) – tắt default WPF dotted rect
+         FOCUS VISUAL – custom rounded ring thay dotted WPF default
     ═══════════════════════════════════════════════════════ -->
     <Style x:Key="{x:Static SystemParameters.FocusVisualStyleKey}">
         <Setter Property="Control.Template">
@@ -40,7 +40,7 @@
                     <Rectangle Margin="-2"
                                Stroke="{DynamicResource FocusRingBrush}"
                                StrokeThickness="2"
-                               RadiusX="10" RadiusY="10"
+                               RadiusX="9" RadiusY="9"
                                IsHitTestVisible="False"
                                SnapsToDevicePixels="True" />
                 </ControlTemplate>
@@ -54,33 +54,37 @@
     <Style TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="TextWrapping" Value="Wrap" />
-        <Setter Property="LineHeight" Value="22" />
+        <Setter Property="LineHeight" Value="21" />
     </Style>
 
+    <!-- Display: màn hình trung tâm như Login -->
     <Style x:Key="DisplayTitleText" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
-        <Setter Property="FontSize" Value="30" />
-        <Setter Property="FontWeight" Value="SemiBold" />
-        <Setter Property="LineHeight" Value="38" />
+        <Setter Property="FontSize" Value="28" />
+        <Setter Property="FontWeight" Value="Bold" />
+        <Setter Property="LineHeight" Value="36" />
         <Setter Property="TextWrapping" Value="NoWrap" />
     </Style>
 
+    <!-- Page title trong main content area -->
     <Style x:Key="PageTitleText" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
-        <Setter Property="FontSize" Value="24" />
+        <Setter Property="FontSize" Value="22" />
         <Setter Property="FontWeight" Value="SemiBold" />
-        <Setter Property="LineHeight" Value="32" />
+        <Setter Property="LineHeight" Value="30" />
         <Setter Property="TextWrapping" Value="NoWrap" />
     </Style>
 
+    <!-- Section title trong card -->
     <Style x:Key="SectionTitleText" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
-        <Setter Property="FontSize" Value="16" />
+        <Setter Property="FontSize" Value="15" />
         <Setter Property="FontWeight" Value="SemiBold" />
-        <Setter Property="LineHeight" Value="24" />
+        <Setter Property="LineHeight" Value="22" />
         <Setter Property="TextWrapping" Value="NoWrap" />
     </Style>
 
+    <!-- Card title / item title -->
     <Style x:Key="CardTitleText" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="FontSize" Value="14" />
@@ -88,18 +92,21 @@
         <Setter Property="TextWrapping" Value="NoWrap" />
     </Style>
 
+    <!-- Body text -->
     <Style x:Key="BodyText" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="LineHeight" Value="22" />
     </Style>
 
+    <!-- Caption / helper / muted -->
     <Style x:Key="CaptionText" TargetType="TextBlock">
         <Setter Property="FontSize" Value="12" />
         <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
         <Setter Property="LineHeight" Value="18" />
     </Style>
 
+    <!-- Label trên field -->
     <Style x:Key="LabelText" TargetType="TextBlock">
         <Setter Property="FontSize" Value="12" />
         <Setter Property="FontWeight" Value="SemiBold" />
@@ -107,6 +114,7 @@
         <Setter Property="TextWrapping" Value="NoWrap" />
     </Style>
 
+    <!-- Segoe Fluent Icon -->
     <Style x:Key="IconText" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
@@ -123,42 +131,45 @@
     <!-- ═══════════════════════════════════════════════════════
          SURFACE / CARD
     ═══════════════════════════════════════════════════════ -->
+    <!-- Card chính – border thay shadow -->
     <Style x:Key="Card" TargetType="Border">
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="14" />
+        <Setter Property="CornerRadius" Value="12" />
         <Setter Property="Padding" Value="20" />
         <Setter Property="SnapsToDevicePixels" Value="True" />
         <Setter Property="UseLayoutRounding" Value="True" />
     </Style>
 
+    <!-- Card phụ / in-card container -->
     <Style x:Key="SubtleCard" TargetType="Border">
         <Setter Property="Background" Value="{DynamicResource SurfaceSubtleBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="CornerRadius" Value="8" />
         <Setter Property="Padding" Value="14" />
         <Setter Property="SnapsToDevicePixels" Value="True" />
     </Style>
 
+    <!-- Status pill / badge -->
     <Style x:Key="StatusPill" TargetType="Border">
         <Setter Property="CornerRadius" Value="999" />
-        <Setter Property="Padding" Value="10,5" />
+        <Setter Property="Padding" Value="10,4" />
         <Setter Property="Background" Value="{DynamicResource SurfaceSubtleBrush}" />
         <Setter Property="SnapsToDevicePixels" Value="True" />
     </Style>
 
     <!-- ═══════════════════════════════════════════════════════
-         BUTTON BASE – background-shift hover/pressed (không chỉ opacity)
+         BUTTON BASE
     ═══════════════════════════════════════════════════════ -->
     <Style x:Key="BaseButton" TargetType="Button">
-        <Setter Property="MinHeight" Value="42" />
-        <Setter Property="MinWidth" Value="96" />
-        <Setter Property="Padding" Value="16,9" />
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="MinWidth" Value="92" />
+        <Setter Property="Padding" Value="16,8" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="FontWeight" Value="SemiBold" />
-        <Setter Property="FontSize" Value="14" />
+        <Setter Property="FontSize" Value="13" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -170,7 +181,7 @@
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="9"
+                            CornerRadius="8"
                             Padding="{TemplateBinding Padding}"
                             SnapsToDevicePixels="True">
                         <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
@@ -178,10 +189,10 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.92" />
+                            <Setter TargetName="Root" Property="Opacity" Value="0.88" />
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.78" />
+                            <Setter TargetName="Root" Property="Opacity" Value="0.72" />
                         </Trigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">
                             <Setter TargetName="Root" Property="BorderBrush"
@@ -189,7 +200,7 @@
                             <Setter TargetName="Root" Property="BorderThickness" Value="2" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.40" />
+                            <Setter TargetName="Root" Property="Opacity" Value="0.38" />
                             <Setter Property="Cursor" Value="Arrow" />
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -214,8 +225,8 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
-        <Setter Property="MinWidth" Value="42" />
-        <Setter Property="Padding" Value="10" />
+        <Setter Property="MinWidth" Value="38" />
+        <Setter Property="Padding" Value="8" />
     </Style>
 
     <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
@@ -228,8 +239,8 @@
          INPUT BASE
     ═══════════════════════════════════════════════════════ -->
     <Style x:Key="InputControlBase" TargetType="Control">
-        <Setter Property="MinHeight" Value="42" />
-        <Setter Property="Padding" Value="12,9" />
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="Padding" Value="12,8" />
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}" />
@@ -252,7 +263,7 @@
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="9"
+                            CornerRadius="8"
                             SnapsToDevicePixels="True">
                         <ScrollViewer x:Name="PART_ContentHost"
                                       Margin="{TemplateBinding Padding}"
@@ -293,7 +304,7 @@
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="9"
+                            CornerRadius="8"
                             SnapsToDevicePixels="True">
                         <ScrollViewer x:Name="PART_ContentHost"
                                       Margin="{TemplateBinding Padding}"
@@ -320,7 +331,7 @@
 
     <!-- COMBOBOX -->
     <Style TargetType="ComboBox" BasedOn="{StaticResource InputControlBase}">
-        <Setter Property="MinHeight" Value="42" />
+        <Setter Property="MinHeight" Value="40" />
         <Setter Property="Padding" Value="10,7" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="Template">
@@ -338,13 +349,13 @@
                                             Background="{Binding Background, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
                                             BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
                                             BorderThickness="{Binding BorderThickness, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
-                                            CornerRadius="9"
+                                            CornerRadius="8"
                                             Padding="{Binding Padding, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
                                             SnapsToDevicePixels="True">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="26" />
+                                                <ColumnDefinition Width="24" />
                                             </Grid.ColumnDefinitions>
                                             <ContentPresenter Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
                                                               ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
@@ -352,12 +363,12 @@
                                                               VerticalAlignment="Center"
                                                               TextElement.Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}" />
                                             <Path Grid.Column="1"
-                                                  Width="9" Height="5"
+                                                  Width="8" Height="5"
                                                   HorizontalAlignment="Center"
                                                   VerticalAlignment="Center"
                                                   Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
-                                                  Data="M 0 0 L 9 0 L 4.5 5 Z"
-                                                  Opacity="0.7" />
+                                                  Data="M 0 0 L 8 0 L 4 5 Z"
+                                                  Opacity="0.6" />
                                         </Grid>
                                     </Border>
                                     <ControlTemplate.Triggers>
@@ -405,8 +416,8 @@
     </Style>
 
     <Style TargetType="ComboBoxItem">
-        <Setter Property="MinHeight" Value="36" />
-        <Setter Property="Padding" Value="12,8" />
+        <Setter Property="MinHeight" Value="34" />
+        <Setter Property="Padding" Value="12,7" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -455,16 +466,16 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <Border x:Name="CheckBorder"
-                                Width="18" Height="18"
+                                Width="17" Height="17"
                                 Background="{DynamicResource SurfaceBrush}"
                                 BorderBrush="{DynamicResource BorderStrongBrush}"
                                 BorderThickness="1.5"
-                                CornerRadius="5"
+                                CornerRadius="4"
                                 VerticalAlignment="Center"
                                 SnapsToDevicePixels="True">
                             <Path x:Name="CheckMark"
-                                  Width="10" Height="8"
-                                  Data="M 0 4 L 3 7 L 9 0"
+                                  Width="9" Height="7"
+                                  Data="M 0 3.5 L 2.8 6.5 L 8.5 0"
                                   Stroke="{DynamicResource OnPrimaryBrush}"
                                   StrokeThickness="2"
                                   StrokeStartLineCap="Round"
@@ -502,7 +513,7 @@
     </Style>
 
     <!-- ═══════════════════════════════════════════════════════
-         LISTBOX / LISTBOXITEM
+         LISTBOX / LISTBOXITEM (generic, không phải sidebar)
     ═══════════════════════════════════════════════════════ -->
     <Style TargetType="ListBox">
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
@@ -512,7 +523,7 @@
     </Style>
 
     <Style TargetType="ListBoxItem">
-        <Setter Property="Padding" Value="10,8" />
+        <Setter Property="Padding" Value="10,7" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
@@ -531,7 +542,7 @@
     </Style>
 
     <!-- ═══════════════════════════════════════════════════════
-         SIDEBAR
+         SIDEBAR – thiết kế lại compact, không border card nổi bên trong
     ═══════════════════════════════════════════════════════ -->
     <Style x:Key="SidebarListBox" TargetType="ListBox">
         <Setter Property="Background" Value="Transparent" />
@@ -545,7 +556,7 @@
 
     <Style x:Key="SidebarItem" TargetType="ListBoxItem">
         <Setter Property="Padding" Value="0" />
-        <Setter Property="Margin" Value="8,2" />
+        <Setter Property="Margin" Value="6,1" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource SidebarMutedBrush}" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -559,7 +570,7 @@
                             <ColumnDefinition Width="3" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <!-- Left active indicator bar -->
+                        <!-- Indicator bar trái -->
                         <Border x:Name="ActiveIndicator"
                                 Grid.Column="0"
                                 CornerRadius="2,0,0,2"
@@ -568,8 +579,9 @@
                         <Border x:Name="ItemRoot"
                                 Grid.Column="1"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="9"
-                                Padding="11,10">
+                                CornerRadius="7"
+                                Padding="10,8"
+                                Margin="0,0,6,0">
                             <ContentPresenter />
                         </Border>
                     </Grid>
@@ -625,11 +637,11 @@
     </Style>
 
     <Style TargetType="DataGridColumnHeader">
-        <Setter Property="Background" Value="{DynamicResource SurfaceSubtleBrush}" />
+        <Setter Property="Background" Value="{DynamicResource AppBackgroundBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="FontSize" Value="11" />
-        <Setter Property="Padding" Value="12,10" />
+        <Setter Property="Padding" Value="12,9" />
         <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="0,0,0,2" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
@@ -654,7 +666,7 @@
     </Style>
 
     <Style TargetType="DataGridRow">
-        <Setter Property="MinHeight" Value="46" />
+        <Setter Property="MinHeight" Value="44" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
         <Style.Triggers>
@@ -672,7 +684,7 @@
          PROGRESSBAR
     ═══════════════════════════════════════════════════════ -->
     <Style TargetType="ProgressBar">
-        <Setter Property="Height" Value="8" />
+        <Setter Property="Height" Value="6" />
         <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
         <Setter Property="Background" Value="{DynamicResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="0" />
@@ -692,10 +704,10 @@
     </Style>
 
     <!-- ═══════════════════════════════════════════════════════
-         SCROLLBAR – thumb tròn, 6px idle / 10px hover
+         SCROLLBAR – slim thumb
     ═══════════════════════════════════════════════════════ -->
     <Style TargetType="ScrollBar">
-        <Setter Property="Width" Value="8" />
+        <Setter Property="Width" Value="7" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Template">
             <Setter.Value>
@@ -740,11 +752,11 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
-        <!-- Horizontal scrollbar – thin -->
+        <!-- Horizontal -->
         <Style.Triggers>
             <Trigger Property="Orientation" Value="Horizontal">
                 <Setter Property="Width" Value="Auto" />
-                <Setter Property="Height" Value="8" />
+                <Setter Property="Height" Value="7" />
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="ScrollBar">
@@ -802,7 +814,7 @@
                     <Border Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="8"
+                            CornerRadius="7"
                             Padding="{TemplateBinding Padding}"
                             Effect="{StaticResource TooltipShadow}">
                         <ContentPresenter />

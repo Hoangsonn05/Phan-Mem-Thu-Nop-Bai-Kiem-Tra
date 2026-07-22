@@ -3,43 +3,48 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
              beh:EntranceAnimation.IsEnabled="True">
+    <!-- Centered login – dùng toàn bộ vùng content, nền app background -->
     <Grid Background="{DynamicResource AppBackgroundBrush}">
-        <Border Style="{StaticResource Card}"
-                MaxWidth="520"
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Login card – căn giữa, shadow nhẹ -->
+        <Border Grid.Row="1"
+                Style="{StaticResource Card}"
+                MaxWidth="460"
                 HorizontalAlignment="Center"
-                VerticalAlignment="Center"
                 Padding="36,32"
                 Effect="{StaticResource FloatingShadow}">
             <StackPanel>
 
                 <!-- Brand icon -->
-                <Border Width="56"
-                        Height="56"
-                        CornerRadius="16"
-                        HorizontalAlignment="Left">
+                <Border Width="52" Height="52" CornerRadius="14" HorizontalAlignment="Left">
                     <Border.Background>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                            <GradientStop Color="#2563EB" Offset="0" />
+                            <GradientStop Color="#0D9488" Offset="0" />
                             <GradientStop Color="#0891B2" Offset="1" />
                         </LinearGradientBrush>
                     </Border.Background>
                     <TextBlock Text="&#xE8D7;"
                                Style="{StaticResource IconText}"
-                               FontSize="24"
+                               FontSize="22"
                                Foreground="White" />
                 </Border>
 
                 <!-- Title -->
                 <TextBlock Text="Đăng nhập ExamTransfer"
                            Style="{StaticResource DisplayTitleText}"
-                           Margin="0,18,0,6" />
+                           Margin="0,16,0,5" />
                 <TextBlock Text="Hệ thống tự xác định giao diện phù hợp theo vai trò của tài khoản."
                            Style="{StaticResource BodyText}" />
 
                 <!-- Info box -->
                 <Border Style="{StaticResource SubtleCard}"
-                        Margin="0,20,0,0"
-                        Padding="14,12">
+                        Margin="0,18,0,0"
+                        Padding="13,11">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -47,7 +52,7 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="&#xE77B;"
                                    Style="{StaticResource IconText}"
-                                   FontSize="16"
+                                   FontSize="15"
                                    Foreground="{DynamicResource InfoBrush}"
                                    VerticalAlignment="Top"
                                    Margin="0,2,10,0" />
@@ -61,7 +66,7 @@
                             <TextBlock Text="Giáo viên / Quản trị viên"
                                        FontWeight="SemiBold"
                                        FontSize="13"
-                                       Margin="0,10,0,0" />
+                                       Margin="0,9,0,0" />
                             <TextBlock Text="Nhập email tài khoản và mật khẩu."
                                        Style="{StaticResource CaptionText}"
                                        Margin="0,2,0,0" />
@@ -72,10 +77,10 @@
                 <!-- Username field -->
                 <TextBlock Text="Mã sinh viên hoặc email"
                            Style="{StaticResource LabelText}"
-                           Margin="0,22,0,6" />
+                           Margin="0,20,0,6" />
                 <TextBox Text="{Binding Account, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="Ví dụ: 23174800110 hoặc admin@domain.com"
-                         Margin="0,0,0,16" />
+                         Margin="0,0,0,14" />
 
                 <!-- Password field -->
                 <TextBlock Text="Mật khẩu"
@@ -87,14 +92,14 @@
                 <!-- Login button -->
                 <Button Command="{Binding LoginCommand}"
                         Style="{StaticResource PrimaryButton}"
-                        Margin="0,20,0,0"
-                        MinHeight="44"
+                        Margin="0,18,0,0"
+                        MinHeight="42"
                         Content="Đăng nhập" />
 
                 <!-- Status feedback -->
                 <Border Style="{StaticResource StatusPill}"
                         HorizontalAlignment="Left"
-                        Margin="0,18,0,0"
+                        Margin="0,16,0,0"
                         Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
                     <TextBlock Text="{Binding Status}"
                                Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"
@@ -105,7 +110,7 @@
                 <!-- Device ID -->
                 <TextBlock Text="{Binding DeviceId, StringFormat=Device ID: {0}}"
                            Style="{StaticResource CaptionText}"
-                           Margin="0,14,0,0"
+                           Margin="0,13,0,0"
                            FontFamily="Consolas" />
             </StackPanel>
         </Border>

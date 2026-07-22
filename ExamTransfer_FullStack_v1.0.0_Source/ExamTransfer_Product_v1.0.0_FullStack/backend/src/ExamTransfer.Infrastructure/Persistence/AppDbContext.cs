@@ -13,6 +13,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<ClassMember> ClassMembersSet => Set<ClassMember>();
     public DbSet<Exam> ExamsSet => Set<Exam>();
     public DbSet<ExamFile> ExamFilesSet => Set<ExamFile>();
+    public DbSet<QuizQuestion> QuizQuestionsSet => Set<QuizQuestion>();
+    public DbSet<QuizChoice> QuizChoicesSet => Set<QuizChoice>();
+    public DbSet<QuizAttempt> QuizAttemptsSet => Set<QuizAttempt>();
+    public DbSet<QuizAnswer> QuizAnswersSet => Set<QuizAnswer>();
     public DbSet<ExamSession> ExamSessionsSet => Set<ExamSession>();
     public DbSet<SessionParticipant> SessionParticipantsSet => Set<SessionParticipant>();
     public DbSet<ParticipantExtraTime> ParticipantExtraTimesSet => Set<ParticipantExtraTime>();
@@ -89,6 +93,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureEntity<ClassMember>(modelBuilder, "class_members");
         ConfigureEntity<Exam>(modelBuilder, "exams");
         ConfigureEntity<ExamFile>(modelBuilder, "exam_files");
+        ConfigureEntity<QuizQuestion>(modelBuilder, "quiz_questions");
+        ConfigureEntity<QuizChoice>(modelBuilder, "quiz_choices");
+        ConfigureEntity<QuizAttempt>(modelBuilder, "quiz_attempts");
+        ConfigureEntity<QuizAnswer>(modelBuilder, "quiz_answers");
         ConfigureEntity<ExamSession>(modelBuilder, "exam_sessions");
         ConfigureEntity<SessionParticipant>(modelBuilder, "session_participants");
         ConfigureEntity<ParticipantExtraTime>(modelBuilder, "participant_extra_time");
@@ -119,6 +127,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<ClassMember>().HasIndex(x => new { x.ClassId, x.StudentCode }).IsUnique();
         modelBuilder.Entity<Exam>().HasIndex(x => new { x.Status, x.ClassId });
         modelBuilder.Entity<ExamFile>().HasIndex(x => new { x.ExamId, x.Version, x.StoredName }).IsUnique();
+        modelBuilder.Entity<QuizQuestion>().HasIndex(x => new { x.ExamId, x.Version, x.Order }).IsUnique();
+        modelBuilder.Entity<QuizChoice>().HasIndex(x => new { x.QuestionId, x.Order }).IsUnique();
+        modelBuilder.Entity<QuizAttempt>().HasIndex(x => new { x.SessionId, x.ParticipantId }).IsUnique();
+        modelBuilder.Entity<QuizAnswer>().HasIndex(x => new { x.AttemptId, x.QuestionId }).IsUnique();
         modelBuilder.Entity<ExamSession>().HasIndex(x => x.RoomCode);
         modelBuilder.Entity<SessionParticipant>().HasIndex(x => new { x.SessionId, x.StudentCode }).IsUnique();
         modelBuilder.Entity<SessionParticipant>().HasIndex(x => x.LastSeenUtc);
@@ -138,6 +150,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<ClassMember>().HasOne(x => x.Class).WithMany(x => x.Members).HasForeignKey(x => x.ClassId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<Exam>().HasOne(x => x.Class).WithMany().HasForeignKey(x => x.ClassId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<ExamFile>().HasOne(x => x.Exam).WithMany(x => x.Files).HasForeignKey(x => x.ExamId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<QuizQuestion>().HasOne(x => x.Exam).WithMany(x => x.QuizQuestions).HasForeignKey(x => x.ExamId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<QuizChoice>().HasOne(x => x.Question).WithMany(x => x.Choices).HasForeignKey(x => x.QuestionId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<QuizAttempt>().HasOne(x => x.Session).WithMany().HasForeignKey(x => x.SessionId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<QuizAttempt>().HasOne(x => x.Participant).WithMany().HasForeignKey(x => x.ParticipantId).OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<QuizAnswer>().HasOne(x => x.Attempt).WithMany(x => x.Answers).HasForeignKey(x => x.AttemptId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<QuizAnswer>().HasOne(x => x.Question).WithMany().HasForeignKey(x => x.QuestionId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<ExamSession>().HasOne(x => x.Exam).WithMany().HasForeignKey(x => x.ExamId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<SessionParticipant>().HasOne(x => x.Session).WithMany(x => x.Participants).HasForeignKey(x => x.SessionId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<ParticipantExtraTime>().HasOne(x => x.Participant).WithMany().HasForeignKey(x => x.ParticipantId).OnDelete(DeleteBehavior.Cascade);

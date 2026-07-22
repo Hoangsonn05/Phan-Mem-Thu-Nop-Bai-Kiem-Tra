@@ -214,7 +214,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             ToCloud(participant),
             cancellationToken: cancellationToken);
         await realtime.PublishParticipantAsync(sessionId, participantId, RealtimeEvents.ParticipantApproved, participant.Session.Sequence, new ParticipantApprovedEvent(participant.Id, issued.ExpiresAtUtc), cancellationToken);
-        return participant.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds);
+        return participant.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds, ParticipantDeadline(participant));
     }
 
     public async Task RejectAsync(Guid sessionId, Guid participantId, string? reason, CancellationToken cancellationToken)
@@ -343,7 +343,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             ToCloud(participant),
             cancellationToken: cancellationToken);
         await realtime.PublishSessionAsync(sessionId, RealtimeEvents.TimeExtended, participant.Session.Sequence, new TimeExtendedEvent(participantId, request.Minutes, deadline), cancellationToken);
-        return participant.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds);
+        return participant.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds, deadline);
     }
 
     public async Task<MessageDto> SendMessageAsync(Guid sessionId, SendMessageRequest request, CancellationToken cancellationToken)
@@ -376,9 +376,15 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
 
     public async Task<ParticipantDto> GetParticipantAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken)
     {
-        var entity = await db.SessionParticipantsSet.AsNoTracking().FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
+        var entity = await db.SessionParticipantsSet.AsNoTracking()
+            .Include(x => x.Session)
+            .ThenInclude(x => x.Exam)
+            .FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
-        return entity.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds);
+        return entity.ToDto(
+            DateTimeOffset.UtcNow,
+            _options.Session.DisconnectAfterSeconds,
+            ParticipantDeadline(entity));
     }
 
     private JoinSessionResponse CreateJoinResponse(ExamSession session, SessionParticipant participant)
@@ -393,7 +399,13 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         return new JoinSessionResponse(session.Id, participant.Id, participant.Status, issued.Token, issued.ExpiresAtUtc, participant.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds));
     }
 
-    private SessionDetailDto ToDetail(ExamSession session) => new(ToSummary(session), session.Participants.OrderBy(x => x.StudentCode).Select(x => x.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds)).ToList(), session.SettingsJson);
+    private SessionDetailDto ToDetail(ExamSession session) => new(
+        ToSummary(session),
+        session.Participants
+            .OrderBy(x => x.StudentCode)
+            .Select(x => x.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds, ParticipantDeadline(x)))
+            .ToList(),
+        session.SettingsJson);
     private SessionSummaryDto ToSummary(ExamSession s)
     {
         var p = s.Participants; var now = DateTimeOffset.UtcNow;
@@ -401,6 +413,8 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion);
     }
     private static DateTimeOffset? EffectiveDeadline(ExamSession s) => s.StartedAtUtc?.AddMinutes(s.Exam.DurationMinutes);
+    private static DateTimeOffset? ParticipantDeadline(SessionParticipant participant) =>
+        participant.Session.StartedAtUtc?.AddMinutes(participant.Session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
     private async Task<string> GenerateRoomCodeAsync(CancellationToken cancellationToken)
     {
         const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";

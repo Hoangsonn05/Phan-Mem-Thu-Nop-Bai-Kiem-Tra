@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Windows;
 using System.Windows.Input;
 using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
@@ -9,15 +10,17 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
 {
     private readonly IBackendClient api;
     private readonly CancellationTokenSource disposeCts = new();
-    private string status = "Đang đồng bộ số liệu";
+    private string status = "Chưa có dữ liệu tổng quan";
     private bool isBusy;
     private bool initialized;
+    private bool hasSuccessfulLoad;
     private bool disposed;
 
     public DashboardViewModel(IBackendClient api)
     {
         this.api = api;
         RefreshCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
+        ShowEmptyMetrics();
     }
 
     public ObservableCollection<MetricCard> Metrics { get; } = new();
@@ -26,8 +29,11 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
 
     public ObservableCollection<AlertItem> Alerts { get; } = new();
 
-    public ActiveSessionCard ActiveSession { get; private set; } =
-        new("Kiểm tra Lập trình Java", "JAVA-2407", "Đang diễn ra", 36, 31, 28, "00:42:18");
+    public ActiveSessionCard? ActiveSession { get; private set; }
+
+    public bool HasActiveSession => ActiveSession is not null;
+
+    public bool HasActivities => Activities.Count > 0;
 
     public string Status
     {
@@ -49,15 +55,23 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
 
     public ICommand RefreshCommand { get; }
 
-    public Task InitializeAsync(CancellationToken cancellationToken)
+    public async Task InitializeAsync(CancellationToken cancellationToken)
     {
-        if (initialized)
+        if (initialized || disposed)
         {
-            return Task.CompletedTask;
+            return;
         }
 
-        initialized = true;
-        return LoadAsync(cancellationToken);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, disposeCts.Token);
+        try
+        {
+            await LoadAsync(linked.Token);
+            linked.Token.ThrowIfCancellationRequested();
+            initialized = true;
+        }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested)
+        {
+        }
     }
 
     public void Dispose()
@@ -76,83 +90,122 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
             return;
         }
 
-        IsBusy = true;
-        Status = "Đang tải dữ liệu tổng quan";
+        await RunOnUiAsync(() =>
+        {
+            IsBusy = true;
+            Status = "Đang tải dữ liệu tổng quan";
+        });
         try
         {
-            var response = await api.GetDashboardAsync();
+            var response = await api.GetDashboardAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-
-            Metrics.Clear();
-            Alerts.Clear();
-            Activities.Clear();
 
             if (response?.Success == true && response.Data is not null)
             {
-                var data = response.Data;
-                Metrics.Add(new("Lớp học", data.ClassCount.ToString("N0"), "đang quản lý", "\uE716", "primary", "+2 tháng này"));
-                Metrics.Add(new("Bài kiểm tra", data.ExamCount.ToString("N0"), "đã tạo", "\uE8A5", "accent", "6 bản nháp"));
-                Metrics.Add(new("Phòng đang chạy", data.ActiveSessionCount.ToString("N0"), "phiên trực tiếp", "\uE9D2", "success", "ổn định"));
-                Metrics.Add(new("Chưa chấm", data.PendingGradingCount.ToString("N0"), "bài cần xử lý", "\uE70B", "warning", "ưu tiên hôm nay"));
-
-                foreach (var warning in data.Warnings)
-                {
-                    Alerts.Add(new("Cảnh báo hệ thống", warning, "warning", "\uE7BA"));
-                }
-
-                if (data.RecentSessions.FirstOrDefault() is { } session)
-                {
-                    ActiveSession = new(
-                        session.Title,
-                        session.RoomCode,
-                        session.Status.ToString(),
-                        session.Counts.Total,
-                        session.Counts.Connected,
-                        session.Counts.Submitted,
-                        FormatRemaining(session.EffectiveDeadlineUtc, session.ServerNowUtc));
-                    Raise(nameof(ActiveSession));
-                }
-
-                Status = data.Warnings.Count == 0 ? "Hệ thống vận hành ổn định" : $"Có {data.Warnings.Count} cảnh báo cần xem";
+                await RunOnUiAsync(() => ApplyDashboard(response.Data));
             }
             else
             {
-                LoadFallbackMetrics();
-                Alerts.Add(new("Dữ liệu tạm thời", response?.Error?.Message ?? "Không lấy được số liệu mới; ứng dụng giữ trạng thái gần nhất để tiếp tục thao tác.", "info", "\uE946"));
-                Status = "Đang giữ trạng thái cục bộ";
+                var message = response?.Error?.Message ?? "Máy chủ không trả về dữ liệu tổng quan hợp lệ.";
+                await RunOnUiAsync(() => ApplyLoadFailure(message));
             }
-
-            Activities.Add(new("21:08", "Học sinh Nguyễn Minh Anh đã nộp bài", "Phòng JAVA-2407 - đúng hạn", "success", "\uE8FB"));
-            Activities.Add(new("21:03", "Đã xác minh 3 file đề", "SHA-256 khớp hoàn toàn", "primary", "\uE73E"));
-            Activities.Add(new("20:56", "Thiết bị SV-018 mất kết nối", "Đã tự động kết nối lại sau 8 giây", "warning", "\uE968"));
-            Activities.Add(new("20:45", "Phòng thi bắt đầu", "36 học sinh được duyệt", "accent", "\uE768"));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
         catch (Exception ex)
         {
-            FrontendLogger.Log(ex, "DashboardViewModel.LoadAsync");
-            LoadFallbackMetrics();
-            Alerts.Add(new("Không tải được dữ liệu", ex.Message, "danger", "\uE783"));
-            Status = "Không thể đồng bộ tổng quan";
+            var traceId = FrontendLogger.Log(ex, "DashboardViewModel.LoadAsync");
+            await RunOnUiAsync(() => ApplyLoadFailure($"{ex.Message} Mã tra cứu: {traceId}."));
         }
         finally
         {
             if (!disposed)
             {
-                IsBusy = false;
+                await RunOnUiAsync(() => IsBusy = false);
             }
         }
     }
 
-    private void LoadFallbackMetrics()
+    private void ApplyDashboard(ExamTransfer.Shared.Contracts.DashboardSummaryDto data)
     {
         Metrics.Clear();
-        Metrics.Add(new("Lớp học", "12", "đang quản lý", "\uE716", "primary", "+2 tháng này"));
-        Metrics.Add(new("Bài kiểm tra", "28", "đã tạo", "\uE8A5", "accent", "6 bản nháp"));
-        Metrics.Add(new("Phòng đang chạy", "1", "phiên trực tiếp", "\uE9D2", "success", "ổn định"));
-        Metrics.Add(new("Chưa chấm", "24", "bài cần xử lý", "\uE70B", "warning", "ưu tiên hôm nay"));
+        Metrics.Add(new("Lớp học", data.ClassCount.ToString("N0"), "đang hoạt động", "\uE716", "primary", "Dữ liệu từ máy chủ"));
+        Metrics.Add(new("Bài kiểm tra", data.ExamCount.ToString("N0"), "chưa lưu trữ", "\uE8A5", "accent", "Dữ liệu từ máy chủ"));
+        Metrics.Add(new("Phòng đang chạy", data.ActiveSessionCount.ToString("N0"), "phiên hoạt động", "\uE9D2", "success", "Dữ liệu từ máy chủ"));
+        Metrics.Add(new("Chưa chấm", data.PendingGradingCount.ToString("N0"), "bài cần xử lý", "\uE70B", "warning", "Dữ liệu từ máy chủ"));
+
+        Alerts.Clear();
+        foreach (var warning in data.Warnings)
+        {
+            Alerts.Add(new("Cảnh báo hệ thống", warning, "warning", "\uE7BA"));
+        }
+
+        Activities.Clear();
+        Raise(nameof(HasActivities));
+
+        ActiveSession = data.RecentSessions.FirstOrDefault() is { } session
+            ? new ActiveSessionCard(
+                session.Title,
+                session.RoomCode,
+                session.Status.ToString(),
+                session.Counts.Total,
+                session.Counts.Connected,
+                session.Counts.Submitted,
+                FormatRemaining(session.EffectiveDeadlineUtc, session.ServerNowUtc))
+            : null;
+        Raise(nameof(ActiveSession));
+        Raise(nameof(HasActiveSession));
+
+        hasSuccessfulLoad = true;
+        Status = data.Warnings.Count == 0
+            ? "Đã đồng bộ dữ liệu thật từ máy chủ"
+            : $"Đã đồng bộ; có {data.Warnings.Count} cảnh báo cần xem";
+    }
+
+    private void ApplyLoadFailure(string message)
+    {
+        foreach (var existing in Alerts.Where(x => x.Title == "Không thể làm mới dữ liệu").ToList())
+        {
+            Alerts.Remove(existing);
+        }
+
+        if (!hasSuccessfulLoad)
+        {
+            ShowEmptyMetrics();
+            ActiveSession = null;
+            Activities.Clear();
+            Alerts.Clear();
+            Raise(nameof(ActiveSession));
+            Raise(nameof(HasActiveSession));
+            Raise(nameof(HasActivities));
+        }
+
+        Alerts.Add(new("Không thể làm mới dữ liệu", message, "danger", "\uE783"));
+        Status = hasSuccessfulLoad
+            ? "Mất kết nối; đang giữ dữ liệu thật tải thành công gần nhất"
+            : "Không có dữ liệu tổng quan vì máy chủ chưa phản hồi";
+    }
+
+    private void ShowEmptyMetrics()
+    {
+        Metrics.Clear();
+        Metrics.Add(new("Lớp học", "--", "chưa có dữ liệu", "\uE716", "primary", "Chờ máy chủ phản hồi"));
+        Metrics.Add(new("Bài kiểm tra", "--", "chưa có dữ liệu", "\uE8A5", "accent", "Chờ máy chủ phản hồi"));
+        Metrics.Add(new("Phòng đang chạy", "--", "chưa có dữ liệu", "\uE9D2", "success", "Chờ máy chủ phản hồi"));
+        Metrics.Add(new("Chưa chấm", "--", "chưa có dữ liệu", "\uE70B", "warning", "Chờ máy chủ phản hồi"));
+    }
+
+    private static Task RunOnUiAsync(Action action)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            action();
+            return Task.CompletedTask;
+        }
+
+        return dispatcher.InvokeAsync(action).Task;
     }
 
     private static string FormatRemaining(DateTimeOffset? deadline, DateTimeOffset now)

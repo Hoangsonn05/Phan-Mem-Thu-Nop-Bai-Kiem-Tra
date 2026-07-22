@@ -60,8 +60,31 @@ public sealed class SystemService(AppDbContext db, IStoragePaths paths, ICloudAd
         var exams = await db.ExamsSet.CountAsync(x => x.Status != ExamStatus.Archived, cancellationToken);
         var active = await db.ExamSessionsSet.CountAsync(x => x.Status == SessionStatus.Waiting || x.Status == SessionStatus.InProgress || x.Status == SessionStatus.Paused || x.Status == SessionStatus.Collecting, cancellationToken);
         var pending = await db.SubmissionsSet.CountAsync(x => x.IsOfficial && (x.Status == SubmissionStatus.Submitted || x.Status == SubmissionStatus.LateSubmitted) && !db.GradesSet.Any(g => g.SubmissionId == x.Id), cancellationToken);
-        var recentEntities = await db.ExamSessionsSet.AsNoTracking().Include(x => x.Exam).Include(x => x.Participants).OrderByDescending(x => x.UpdatedAtUtc).Take(5).ToListAsync(cancellationToken);
-        var recent = recentEntities.Select(x => new SessionSummaryDto(x.Id, x.ExamId, x.Exam.Title, x.RoomCode, x.Status, DateTimeOffset.UtcNow, x.StartedAtUtc, x.EndedAtUtc, x.StartedAtUtc?.AddMinutes(x.Exam.DurationMinutes), new SessionCountsDto(x.Participants.Count, x.Participants.Count(p => p.Status == ParticipantStatus.PendingApproval), x.Participants.Count(p => p.Status == ParticipantStatus.Approved), x.Participants.Count(p => p.LastSeenUtc > DateTimeOffset.UtcNow.AddSeconds(-_options.Session.DisconnectAfterSeconds)), x.Participants.Count(p => p.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted), x.Participants.Count(p => p.SubmissionStatus == SubmissionStatus.Uploading), x.Participants.Count(p => p.Status == ParticipantStatus.Disconnected)), x.Sequence, x.RowVersion)).ToList();
+        var recentKeys = await db.ExamSessionsSet
+            .AsNoTracking()
+            .Select(x => new { x.Id, x.UpdatedAtUtc })
+            .ToListAsync(cancellationToken);
+        var recentIds = recentKeys
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Take(5)
+            .Select(x => x.Id)
+            .ToList();
+        var recentEntities = recentIds.Count == 0
+            ? []
+            : await db.ExamSessionsSet
+                .AsNoTracking()
+                .Include(x => x.Exam)
+                .Include(x => x.Participants)
+                .Where(x => recentIds.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+        var recentPositions = recentIds
+            .Select((id, index) => new { id, index })
+            .ToDictionary(x => x.id, x => x.index);
+        var recent = recentEntities
+            .OrderBy(x => recentPositions[x.Id])
+            .Select(x => new SessionSummaryDto(x.Id, x.ExamId, x.Exam.Title, x.RoomCode, x.Status, DateTimeOffset.UtcNow, x.StartedAtUtc, x.EndedAtUtc, x.StartedAtUtc?.AddMinutes(x.Exam.DurationMinutes), new SessionCountsDto(x.Participants.Count, x.Participants.Count(p => p.Status == ParticipantStatus.PendingApproval), x.Participants.Count(p => p.Status == ParticipantStatus.Approved), x.Participants.Count(p => p.LastSeenUtc > DateTimeOffset.UtcNow.AddSeconds(-_options.Session.DisconnectAfterSeconds)), x.Participants.Count(p => p.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted), x.Participants.Count(p => p.SubmissionStatus == SubmissionStatus.Uploading), x.Participants.Count(p => p.Status == ParticipantStatus.Disconnected)), x.Sequence, x.RowVersion))
+            .ToList();
         long storage = 0; try { storage = Directory.EnumerateFiles(paths.RootPath, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length); } catch { }
         var status = await GetStatusAsync(cancellationToken);
         return new DashboardSummaryDto(classes, exams, active, pending, storage, recent, status.Warnings);

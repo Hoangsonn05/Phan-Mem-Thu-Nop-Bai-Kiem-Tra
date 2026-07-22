@@ -33,6 +33,10 @@
                         Command="{Binding UploadCommand}"
                         Style="{StaticResource SecondaryButton}"
                         Margin="8,0,0,0" />
+                <Button Content="Nhập trắc nghiệm"
+                        Command="{Binding ImportQuizCommand}"
+                        Style="{StaticResource SecondaryButton}"
+                        Margin="8,0,0,0" />
                 <Button Content="Tạo bài kiểm tra"
                         Command="{Binding CreateCommand}"
                         Style="{StaticResource PrimaryButton}"

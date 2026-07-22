@@ -67,11 +67,63 @@ public sealed class Exam : EntityBase
     public string Subject { get; set; } = string.Empty;
     public string? Description { get; set; }
     public int DurationMinutes { get; set; }
+    public ExamDeliveryType DeliveryType { get; set; } = ExamDeliveryType.FileSubmission;
     public string FileRuleJson { get; set; } = "{}";
     public ExamStatus Status { get; set; } = ExamStatus.Draft;
     public int Version { get; set; } = 1;
     public Guid? CreatedBy { get; set; }
     public ICollection<ExamFile> Files { get; set; } = new List<ExamFile>();
+    public ICollection<QuizQuestion> QuizQuestions { get; set; } = new List<QuizQuestion>();
+}
+
+public sealed class QuizQuestion : EntityBase
+{
+    public Guid ExamId { get; set; }
+    public Exam Exam { get; set; } = null!;
+    public int Version { get; set; }
+    public int Order { get; set; }
+    public string Text { get; set; } = string.Empty;
+    public decimal Points { get; set; }
+    public bool Multiple { get; set; }
+    public ICollection<QuizChoice> Choices { get; set; } = new List<QuizChoice>();
+}
+
+public sealed class QuizChoice : EntityBase
+{
+    public Guid QuestionId { get; set; }
+    public QuizQuestion Question { get; set; } = null!;
+    public int Order { get; set; }
+    public string Text { get; set; } = string.Empty;
+    public bool IsCorrect { get; set; }
+}
+
+public sealed class QuizAttempt : EntityBase
+{
+    public Guid SessionId { get; set; }
+    public ExamSession Session { get; set; } = null!;
+    public Guid ParticipantId { get; set; }
+    public SessionParticipant Participant { get; set; } = null!;
+    public int ExamVersion { get; set; }
+    public QuizAttemptStatus Status { get; set; } = QuizAttemptStatus.InProgress;
+    public DateTimeOffset StartedAtUtc { get; set; }
+    public DateTimeOffset DeadlineUtc { get; set; }
+    public DateTimeOffset? FinalizedAtUtc { get; set; }
+    public decimal? Score { get; set; }
+    public decimal MaxScore { get; set; }
+    public string SnapshotJson { get; set; } = "{}";
+    public string? FinalizeIdempotencyKey { get; set; }
+    public ICollection<QuizAnswer> Answers { get; set; } = new List<QuizAnswer>();
+}
+
+public sealed class QuizAnswer : EntityBase
+{
+    public Guid AttemptId { get; set; }
+    public QuizAttempt Attempt { get; set; } = null!;
+    public Guid QuestionId { get; set; }
+    public QuizQuestion Question { get; set; } = null!;
+    public string ChoiceIdsJson { get; set; } = "[]";
+    public long Revision { get; set; }
+    public DateTimeOffset ClientUpdatedAtUtc { get; set; }
 }
 
 public sealed class ExamFile : EntityBase
