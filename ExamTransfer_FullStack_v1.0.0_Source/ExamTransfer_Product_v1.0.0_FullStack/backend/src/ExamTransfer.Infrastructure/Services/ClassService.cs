@@ -69,7 +69,7 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
             var entity = new ClassRoom
             {
                 Name = request.Name.Trim(), Code = request.Code.Trim(), SchoolYear = request.SchoolYear.Trim(),
-                Description = request.Description?.Trim(), Status = ClassStatus.Active
+                Description = request.Description?.Trim(), Status = ClassStatus.Active, AccessMode = request.AccessMode
             };
             db.ClassesSet.Add(entity);
             await db.SaveChangesAsync(cancellationToken);
@@ -94,6 +94,7 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
             entity.Code = request.Code.Trim();
             entity.SchoolYear = request.SchoolYear.Trim();
             entity.Description = request.Description?.Trim();
+            if (request.AccessMode.HasValue) entity.AccessMode = request.AccessMode.Value;
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ClassUpdated", nameof(ClassRoom), entity.Id.ToString(), null, before, entity, cancellationToken);
             await outbox.EnqueueAsync("classes", entity.Id.ToString(), "upsert", ToCloud(entity), cancellationToken: cancellationToken);
@@ -125,7 +126,8 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
         };
         db.ClassMembersSet.Add(entity);
         await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("StudentAdded", nameof(ClassMember), entity.Id.ToString(), null, null, entity, cancellationToken);
+        await audit.WriteAsync("StudentAdded", nameof(ClassMember), entity.Id.ToString(), null, null,
+            new { entity.Id, entity.ClassId, entity.UserId, entity.StudentCode, entity.DisplayName, entity.Email, entity.MetadataJson }, cancellationToken);
         await outbox.EnqueueAsync(
             "class_members",
             entity.Id.ToString(),
@@ -406,6 +408,13 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
         school_year = x.SchoolYear,
         description = x.Description,
         status = x.Status.ToString(),
+        access_mode = x.AccessMode.ToString(),
+        enrollment_open = x.EnrollmentOpen,
+        require_enrollment_approval = x.RequireEnrollmentApproval,
+        enrollment_code_hash = x.EnrollmentCodeHash,
+        enrollment_opened_at = x.EnrollmentOpenedAtUtc,
+        enrollment_closed_at = x.EnrollmentClosedAtUtc,
+        public_version = x.PublicVersion,
         created_by = x.CreatedBy,
         created_at = x.CreatedAtUtc,
         updated_at = x.UpdatedAtUtc

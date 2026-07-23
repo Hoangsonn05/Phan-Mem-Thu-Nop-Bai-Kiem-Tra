@@ -9,8 +9,8 @@ public sealed record AccountHeartbeatRequest(string DeviceId, string MachineName
 public sealed record AccountHeartbeatResponse(bool Active, DateTimeOffset ServerNowUtc, DateTimeOffset LeaseExpiresAtUtc, int NextHeartbeatSeconds);
 public sealed record LogoutRequest(string? DeviceId = null, string? Reason = null);
 
-public sealed record CreateClassRequest(string Name, string Code, string SchoolYear, string? Description);
-public sealed record UpdateClassRequest(string Name, string Code, string SchoolYear, string? Description, string RowVersion);
+public sealed record CreateClassRequest(string Name, string Code, string SchoolYear, string? Description, ClassAccessMode AccessMode = ClassAccessMode.Private);
+public sealed record UpdateClassRequest(string Name, string Code, string SchoolYear, string? Description, string RowVersion, ClassAccessMode? AccessMode = null);
 public sealed record CreateStudentRequest(string StudentCode, string DisplayName, string? Email, string? MetadataJson);
 public sealed record UpdateStudentRequest(string StudentCode, string DisplayName, string? Email, string? MetadataJson);
 public sealed record ImportPreviewRequest(string FileName, string ContentBase64, IReadOnlyDictionary<string, string>? ColumnMapping);
@@ -25,8 +25,8 @@ public sealed record InitFileUploadRequest(string FileName, long SizeBytes, stri
 public sealed record InitFileUploadResponse(Guid FileId, int ChunkSizeBytes, int TotalChunks, IReadOnlyList<int> MissingChunks);
 public sealed record FinalizeFileUploadRequest(string Sha256);
 
-public sealed record CreateSessionRequest(Guid ExamId, Guid? ClassId, DateTimeOffset? PlannedStartUtc, string SettingsJson, bool AutoApprove, int? Capacity, string? CustomRoomCode);
-public sealed record UpdateSessionRequest(DateTimeOffset? PlannedStartUtc, string SettingsJson, bool AutoApprove, int? Capacity, string RowVersion);
+public sealed record CreateSessionRequest(Guid ExamId, Guid? ClassId, DateTimeOffset? PlannedStartUtc, string SettingsJson, bool AutoApprove, int? Capacity, string? CustomRoomCode, SessionAccessMode AccessMode = SessionAccessMode.LanOnly);
+public sealed record UpdateSessionRequest(DateTimeOffset? PlannedStartUtc, string SettingsJson, bool AutoApprove, int? Capacity, string RowVersion, bool ApprovePendingParticipants = false);
 public sealed record JoinSessionRequest(string RoomCode, string StudentCode, string DisplayName, string? ClassName, string DeviceId, string MachineName, string AppVersion, string Nonce);
 public sealed record JoinSessionResponse(Guid SessionId, Guid ParticipantId, ParticipantStatus Status, string AccessToken, DateTimeOffset TokenExpiresAtUtc, ParticipantDto Participant);
 public sealed record ExtraTimeRequest(int Minutes, string Reason);

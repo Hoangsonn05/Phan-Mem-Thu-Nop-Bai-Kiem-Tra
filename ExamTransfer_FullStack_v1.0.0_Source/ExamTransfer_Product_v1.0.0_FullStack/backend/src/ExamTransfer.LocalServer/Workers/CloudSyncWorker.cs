@@ -33,7 +33,7 @@ public sealed class CloudSyncWorker(
                 var cloud = scope.ServiceProvider
                     .GetRequiredService<ICloudAdapter>();
 
-                if (!cloud.CanSynchronize)
+                if (!cloud.CanSynchronize || !await cloud.CheckHealthAsync(stoppingToken))
                     continue;
 
                 var now = DateTimeOffset.UtcNow;
@@ -54,6 +54,24 @@ public sealed class CloudSyncWorker(
 
                 foreach (var item in items)
                 {
+                    if (!CloudEntityOwnershipRegistry.MayPushToCloud(item.EntityType, item.PayloadJson)
+                        || await IsCloudOwnedSourceProjectionAsync(db, item, stoppingToken))
+                    {
+                        // PublicCloud rows are authored in Supabase through RPCs.
+                        // A cached SQLite snapshot must never merge-upsert over them.
+                        item.Status = SyncStatus.Synced;
+                        item.LastError = null;
+                        item.LeaseUntilUtc = null;
+                        item.NextRetryAtUtc = null;
+                        item.CompletedAtUtc = DateTimeOffset.UtcNow;
+                        await db.SaveChangesAsync(stoppingToken);
+                        logger.LogDebug(
+                            "Skipped LAN push for PublicCloud authority row {EntityType}/{EntityId}",
+                            item.EntityType,
+                            item.EntityId);
+                        continue;
+                    }
+
                     item.Status = SyncStatus.Syncing;
                     item.LeaseUntilUtc = now.AddMinutes(
                         Math.Max(2, cloudOptions.LeaseMinutes));
@@ -129,6 +147,34 @@ public sealed class CloudSyncWorker(
                 logger.LogError(ex, "Cloud sync worker failed");
             }
         }
+    }
+
+    private static async Task<bool> IsCloudOwnedSourceProjectionAsync(
+        AppDbContext db,
+        SyncQueueItem item,
+        CancellationToken cancellationToken)
+    {
+        if (CloudEntityOwnershipRegistry.GetAuthority(item.EntityType)
+            != CloudEntityAuthority.SourceModeDependent)
+            return false;
+        if (!Guid.TryParse(item.EntityId, out var id)) return false;
+        return item.EntityType.Trim().ToLowerInvariant() switch
+        {
+            "participant" or "session_participant" or "session_participants" =>
+                await db.SessionParticipantsSet.AnyAsync(x => x.Id == id && x.Session.AccessMode == SessionAccessMode.PublicCloud, cancellationToken),
+            "submission" or "submissions" =>
+                await db.SubmissionsSet.AnyAsync(x => x.Id == id && x.Session.AccessMode == SessionAccessMode.PublicCloud, cancellationToken),
+            "submission_file" or "submission_files" =>
+                await db.SubmissionFilesSet.AnyAsync(x => x.Id == id && x.Submission.Session.AccessMode == SessionAccessMode.PublicCloud, cancellationToken),
+            "violation" or "violations" =>
+                await db.ViolationsSet.AnyAsync(x => x.Id == id
+                    && db.ExamSessionsSet.Any(s => s.Id == x.SessionId && s.AccessMode == SessionAccessMode.PublicCloud), cancellationToken),
+            "quiz_attempt" or "quiz_attempts" =>
+                await db.QuizAttemptsSet.AnyAsync(x => x.Id == id && x.Session.AccessMode == SessionAccessMode.PublicCloud, cancellationToken),
+            "quiz_answer" or "quiz_answers" =>
+                await db.QuizAnswersSet.AnyAsync(x => x.Id == id && x.Attempt.Session.AccessMode == SessionAccessMode.PublicCloud, cancellationToken),
+            _ => false
+        };
     }
 
     private static async Task MarkProjectionStatusAsync(

@@ -78,6 +78,9 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddHostedService<HeartbeatMonitorWorker>();
 builder.Services.AddHostedService<TransferCleanupWorker>();
 builder.Services.AddHostedService<CloudSyncWorker>();
+builder.Services.AddSingleton<PublicCloudPullWorker>();
+builder.Services.AddSingleton<IPublicCloudPullWorker>(sp => sp.GetRequiredService<PublicCloudPullWorker>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PublicCloudPullWorker>());
 builder.Services.AddHostedService<CloudAuthRefreshWorker>();
 builder.Services.AddHostedService<ExportWorker>();
 builder.Services.AddHostedService<UdpDiscoveryService>();
@@ -90,6 +93,7 @@ app.UseSwaggerUI();
 app.UseAuthentication();
 app.UseMiddleware<PasswordChangeGateMiddleware>();
 app.UseAuthorization();
+app.UseMiddleware<LanAccessMiddleware>();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", serverNowUtc = DateTimeOffset.UtcNow, schemaVersion = ExamTransfer.Shared.Contracts.ContractInfo.SchemaVersion }));
 app.MapControllers();

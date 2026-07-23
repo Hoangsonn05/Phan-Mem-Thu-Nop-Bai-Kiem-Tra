@@ -20,3 +20,10 @@ Teacher: Class → Exam → Exam Files → Session → Lobby → Live Monitor
 Student: Connect/Join → Waiting → Current Exam → Download → Workspace
          → Init/Chunk/Finalize → Receipt → Local History
 ```
+
+## PublicCloud authority
+
+- SQLite/local storage is authoritative only for `LanOnly`. Supabase is authoritative for PublicCloud enrollment, participants, devices, violations, submissions, and quiz attempts.
+- Student PublicCloud writes go through the narrow Supabase RPC boundary; Student clients do not directly insert or update business tables.
+- PublicCloud Realtime subscriptions must set `private: true` and use only `exam-session:<id>` or `exam-session:<id>:device:<device-id>`. Enable **Private Channels Only** in Supabase Dashboard.
+- Cloud pull consumers checkpoint `(cloud_version, id)` in `cloud_sync_cursors`. `CloudSyncWorker` never merge-upserts a stale SQLite PublicCloud snapshot over Supabase.

@@ -15,7 +15,8 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
 
     public async Task<InitSubmissionResponse> InitAsync(InitSubmissionRequest request, CancellationToken cancellationToken)
     {
-        if (request.Files.Count == 0) throw new ApiException(ErrorCodes.ValidationFailed, "Bài nộp phải có ít nhất một file.");
+        if (request.Files.Count != StudentSubmissionPolicy.MaxFileCount)
+            throw new ApiException(ErrorCodes.SubmissionFileCountInvalid, "Bài nộp phải có đúng một file nén.");
         if (string.IsNullOrWhiteSpace(request.IdempotencyKey)) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu idempotencyKey.");
         var existing = await db.SubmissionsSet.Include(x => x.Files).FirstOrDefaultAsync(x => x.ParticipantId == request.ParticipantId && x.IdempotencyKey == request.IdempotencyKey, cancellationToken);
         if (existing is not null) return ToInitResponse(existing);
@@ -28,7 +29,9 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
         if (hasFinalizedAttempt && !participant.ResubmitAllowed)
             throw new ApiException(ErrorCodes.Conflict, "Đã có bài nộp; giáo viên chưa cho phép nộp lại.", 409);
 
-        var rule = participant.Session.Exam.ParseFileRule(); ValidateFiles(request.Files, rule);
+        if (participant.Session.Exam.DeliveryType != ExamDeliveryType.FileSubmission)
+            throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài thi trắc nghiệm không sử dụng luồng nộp file.", 409);
+        ValidateFiles(request.Files);
         var attempt = (await db.SubmissionsSet.Where(x => x.ParticipantId == request.ParticipantId).MaxAsync(x => (int?)x.AttemptNumber, cancellationToken) ?? 0) + 1;
         var deadline = participant.Session.StartedAtUtc!.Value.AddMinutes(participant.Session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
         var submission = new Submission
@@ -86,6 +89,12 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
             {
                 var finalPath = Path.Combine(finalRoot, file.StoredName);
                 await chunks.AssembleAndVerifyAsync(file.TemporaryPath, file.TotalChunks, file.SizeBytes, file.Sha256, finalPath, cancellationToken);
+                if (!await ArchiveSignatureValidator.MatchesExtensionAsync(finalPath, file.OriginalName, cancellationToken))
+                {
+                    File.Delete(finalPath);
+                    await audit.WriteAsync("SubmissionArchiveRejected", nameof(SubmissionFile), file.Id.ToString(), submission.SessionId, null, new { file.OriginalName, reason = ErrorCodes.SubmissionArchiveRequired }, cancellationToken);
+                    throw new ApiException(ErrorCodes.SubmissionArchiveRequired, "Bài làm phải là file nén hợp lệ và chữ ký file phải khớp phần mở rộng.", 422);
+                }
                 file.RelativePath = Path.GetRelativePath(paths.RootPath, finalPath); file.TransferStatus = TransferStatus.Completed;
                 completedFiles.Add(ToDescriptor(file));
             }
@@ -259,15 +268,16 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
         updated_at = x.UpdatedAtUtc
     };
 
-    private static void ValidateFiles(IReadOnlyList<InitSubmissionFileRequest> files, FileRuleDto rule)
+    private static void ValidateFiles(IReadOnlyList<InitSubmissionFileRequest> files)
     {
-        if (files.Count > rule.MaxFileCount) throw new ApiException(ErrorCodes.ValidationFailed, "Số lượng file vượt giới hạn.");
-        if (files.Sum(x => x.SizeBytes) > rule.MaxTotalSizeBytes) throw new ApiException(ErrorCodes.FileTooLarge, "Tổng dung lượng vượt giới hạn.");
+        if (files.Count != StudentSubmissionPolicy.MaxFileCount)
+            throw new ApiException(ErrorCodes.SubmissionFileCountInvalid, "Bài nộp phải có đúng một file nén.");
         foreach (var f in files)
         {
-            var ext = Path.GetExtension(f.Name).ToLowerInvariant();
-            if (rule.AllowedExtensions.Count > 0 && !rule.AllowedExtensions.Select(x => x.ToLowerInvariant()).Contains(ext)) throw new ApiException(ErrorCodes.InvalidFileType, $"Định dạng {ext} không được phép.");
-            if (f.SizeBytes <= 0 || f.SizeBytes > rule.MaxFileSizeBytes) throw new ApiException(ErrorCodes.FileTooLarge, $"File {f.Name} vượt giới hạn.");
+            if (!StudentSubmissionPolicy.IsAllowedExtension(f.Name))
+                throw new ApiException(ErrorCodes.SubmissionArchiveRequired, "Bài làm phải được nén thành một file .zip, .rar hoặc .7z trước khi nộp.");
+            if (f.SizeBytes <= 0 || f.SizeBytes > StudentSubmissionPolicy.MaxBytes)
+                throw new ApiException(ErrorCodes.SubmissionTooLarge, "File bài làm vượt quá 10 MB. Hãy xóa dữ liệu không cần thiết hoặc giảm dung lượng rồi nén lại.");
             if (f.Sha256.Length != 64 || !f.Sha256.All(Uri.IsHexDigit)) throw new ApiException(ErrorCodes.ValidationFailed, $"SHA-256 của {f.Name} không hợp lệ.");
         }
     }

@@ -20,6 +20,7 @@ public sealed class MainViewModel : ObservableObject
     private object? page;
     private bool isBuildingNavigation;
     private bool isNavigating;
+    private int pendingSubmissionCount;
 
     public MainViewModel()
     {
@@ -28,6 +29,8 @@ public sealed class MainViewModel : ObservableObject
         RefreshCommand = new AsyncRelayCommand(CheckAsync);
         ToggleThemeCommand = new RelayCommand(ToggleTheme);
         LogoutCommand = new AsyncRelayCommand(LogoutAsync, () => authState.IsAuthenticated);
+        pendingSubmissionCount = AppServices.SubmissionRecovery.PendingCount;
+        AppServices.SubmissionRecovery.PendingCountChanged += OnPendingSubmissionCountChanged;
         CurrentPage = CreateLoginPage();
         FrontendLogger.SetContext("Login", "Auth");
         RestoreAuthAsync().SafeFireAndForget("MainViewModel.RestoreAuthAsync");
@@ -56,6 +59,7 @@ public sealed class MainViewModel : ObservableObject
     public string AccountDisplay => authState.DisplayName;
     public string AccountRole => authState.RoleLabel;
     public string SessionStatusText => authState.IsAuthenticated ? "Phiên tài khoản đang hoạt động" : "Chưa đăng nhập";
+    public string PendingSubmissionText => pendingSubmissionCount > 0 ? $"{pendingSubmissionCount} bài đã lưu đang chờ gửi" : string.Empty;
 
     public string ModeTitle => !authState.IsAuthenticated
         ? "Đăng nhập"
@@ -110,6 +114,19 @@ public sealed class MainViewModel : ObservableObject
     public ICommand RefreshCommand { get; }
     public ICommand ToggleThemeCommand { get; }
     public ICommand LogoutCommand { get; }
+
+    private void OnPendingSubmissionCountChanged(object? sender, int count)
+    {
+        void Apply()
+        {
+            pendingSubmissionCount = count;
+            Raise(nameof(PendingSubmissionText));
+        }
+        if (Application.Current?.Dispatcher?.CheckAccess() == false)
+            Application.Current.Dispatcher.Invoke(Apply);
+        else
+            Apply();
+    }
 
     private async Task RestoreAuthAsync()
     {
@@ -336,7 +353,7 @@ public sealed class MainViewModel : ObservableObject
             "S-04" => new StudentExamViewModel(api, AppServices.StudentState),
             "S-05" => new StudentDownloadViewModel(api, AppServices.StudentState),
             "S-06" => new StudentQuizViewModel(api, AppServices.StudentState),
-            "S-07" => new StudentSubmissionViewModel(api, AppServices.StudentState),
+            "S-07" => new StudentSubmissionViewModel(api, AppServices.StudentState, authState),
             "S-08" => new StudentReceiptViewModel(api, AppServices.StudentState),
             "S-09" => new StudentHistoryViewModel(AppServices.StudentState),
             "S-10" => new StudentSettingsViewModel(AppServices.Preferences),
@@ -455,7 +472,7 @@ public sealed class MainViewModel : ObservableObject
         new NavigationItem[]
         {
             new("S-00", "Trang chủ", "Tài khoản", "Thông tin sinh viên và trạng thái phiên đăng nhập", "\uE80F"),
-            new("S-01", "Kết nối phòng", "Tham gia", "Quét LAN, nhập IP/cổng hoặc mã phòng", "\uE968"),
+            new("S-01", "Kết nối phòng", "Tham gia", "Tự tìm phòng đang mở trong mạng nội bộ", "\uE968"),
             new("S-03", "Phòng chờ", "Tham gia", "Chờ duyệt và kiểm tra sẵn sàng", "\uE823"),
             new("S-04", "Kỳ thi hiện tại", "Làm bài", "Đồng hồ server và tiến trình làm bài", "\uE916"),
             new("S-05", "Nhận đề", "Làm bài", "Tải file, resume và xác minh SHA-256", "\uE896"),
@@ -480,6 +497,8 @@ public static class AppServices
     public static ILocalPreferenceService Preferences { get; } = new LocalPreferenceService();
     public static AppAuthSessionState AuthState { get; } = new();
     public static StudentSessionState StudentState { get; } = new();
+    public static ExamTransfer.Desktop.Infrastructure.SupabasePublicCloudClient PublicCloud { get; } = new();
+    public static ExamTransfer.Desktop.Infrastructure.SupabaseRealtimeService PublicRealtime { get; } = new();
     public static ILanDiscoveryService LanDiscovery { get; } =
         new ExamTransfer.Desktop.Infrastructure.LanDiscoveryService();
 
@@ -489,4 +508,6 @@ public static class AppServices
         new ExamTransfer.Desktop.Infrastructure.StudentHeartbeatService(Backend, StudentState);
     public static IStudentRealtimeService StudentRealtime { get; } =
         new ExamTransfer.Desktop.Infrastructure.StudentRealtimeService(Backend, StudentState);
+    public static ISubmissionRecoveryService SubmissionRecovery { get; } =
+        new ExamTransfer.Desktop.Infrastructure.SubmissionRecoveryService(AuthState, StudentState, LanDiscovery);
 }

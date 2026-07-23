@@ -14,7 +14,13 @@
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="../../src/ExamTransfer.Agent/ExamTransfer.Agent.csproj" />
     <ProjectReference Include="../../src/ExamTransfer.Infrastructure/ExamTransfer.Infrastructure.csproj" />
     <ProjectReference Include="../../src/ExamTransfer.LocalServer/ExamTransfer.LocalServer.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../supabase/fixtures/device-command-signature.json"
+          Link="Fixtures/device-command-signature.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

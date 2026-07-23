@@ -30,10 +30,10 @@ public static class MappingExtensions
         true);
 
     public static ClassSummaryDto ToSummary(this ClassRoom entity, int studentCount) =>
-        new(entity.Id, entity.Name, entity.Code, entity.SchoolYear, entity.Status, studentCount, entity.RowVersion);
+        new(entity.Id, entity.Name, entity.Code, entity.SchoolYear, entity.Status, studentCount, entity.RowVersion, entity.AccessMode, entity.EnrollmentOpen);
 
     public static ClassDetailDto ToDetail(this ClassRoom entity, IReadOnlyList<StudentDto> students) =>
-        new(entity.Id, entity.Name, entity.Code, entity.SchoolYear, entity.Description, entity.Status, students, entity.RowVersion);
+        new(entity.Id, entity.Name, entity.Code, entity.SchoolYear, entity.Description, entity.Status, students, entity.RowVersion, entity.AccessMode, entity.EnrollmentOpen, entity.RequireEnrollmentApproval);
 
     public static StudentDto ToDto(this ClassMember entity) =>
         new(entity.Id, entity.StudentCode, entity.DisplayName, entity.Email, entity.MetadataJson);

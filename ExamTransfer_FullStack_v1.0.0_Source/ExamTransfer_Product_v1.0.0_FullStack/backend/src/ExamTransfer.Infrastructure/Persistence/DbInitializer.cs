@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "4";
+    public const string SchemaVersion = "6";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -68,7 +68,63 @@ public static class DbInitializer
         await EnsureColumnAsync(db, "user_login_sessions", "OrganizationId", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "user_login_sessions", "EncryptedRefreshToken", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "exams", "DeliveryType", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "classes", "AccessMode", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "classes", "EnrollmentOpen", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "classes", "RequireEnrollmentApproval", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
+        await EnsureColumnAsync(db, "classes", "EnrollmentCodeHash", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "classes", "EnrollmentOpenedAtUtc", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "classes", "EnrollmentClosedAtUtc", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "classes", "PublicVersion", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exam_sessions", "AccessMode", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureQuizTablesAsync(db, cancellationToken);
+        foreach (var table in new[] { "class_members", "session_participants", "submissions", "submission_files", "violations", "quiz_attempts", "quiz_answers" })
+        {
+            await EnsureColumnAsync(db, table, "SourceMode", "TEXT NOT NULL DEFAULT 'Lan'", cancellationToken);
+            await EnsureColumnAsync(db, table, "CloudVersion", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+            await EnsureColumnAsync(db, table, "CloudUpdatedAtUtc", "TEXT NULL", cancellationToken);
+            await EnsureColumnAsync(db, table, "CloudSyncState", "TEXT NOT NULL DEFAULT 'LocalOnly'", cancellationToken);
+        }
+        await EnsurePublicCloudReplicaTablesAsync(db, cancellationToken);
+    }
+
+    private static async Task EnsurePublicCloudReplicaTablesAsync(
+        AppDbContext db,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            CREATE TABLE IF NOT EXISTS "public_cloud_pull_cursors" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_public_cloud_pull_cursors" PRIMARY KEY,
+                "EntityName" TEXT NOT NULL, "LastCloudVersion" INTEGER NOT NULL,
+                "LastUpdatedAtUtc" TEXT NULL, "LastEntityId" TEXT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_public_cloud_pull_cursors_EntityName"
+                ON "public_cloud_pull_cursors" ("EntityName");
+            CREATE TABLE IF NOT EXISTS "public_cloud_replica_records" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_public_cloud_replica_records" PRIMARY KEY,
+                "EntityName" TEXT NOT NULL, "CloudEntityId" TEXT NOT NULL,
+                "CloudVersion" INTEGER NOT NULL, "CloudUpdatedAtUtc" TEXT NOT NULL,
+                "PayloadJson" TEXT NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_public_cloud_replica_records_EntityName_CloudEntityId"
+                ON "public_cloud_replica_records" ("EntityName", "CloudEntityId");
+            CREATE INDEX IF NOT EXISTS "IX_public_cloud_replica_records_EntityName_CloudVersion"
+                ON "public_cloud_replica_records" ("EntityName", "CloudVersion");
+            CREATE TABLE IF NOT EXISTS "public_cloud_id_mappings" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_public_cloud_id_mappings" PRIMARY KEY,
+                "EntityName" TEXT NOT NULL, "CloudEntityId" TEXT NOT NULL, "LocalEntityId" TEXT NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_public_cloud_id_mappings_EntityName_CloudEntityId"
+                ON "public_cloud_id_mappings" ("EntityName", "CloudEntityId");
+            CREATE TABLE IF NOT EXISTS "public_cloud_pull_failures" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_public_cloud_pull_failures" PRIMARY KEY,
+                "EntityName" TEXT NOT NULL, "CloudEntityId" TEXT NULL,
+                "ErrorClass" TEXT NOT NULL, "ErrorMessage" TEXT NOT NULL, "PayloadJson" TEXT NULL,
+                "RetryCount" INTEGER NOT NULL, "NextRetryAtUtc" TEXT NULL, "ResolvedAtUtc" TEXT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS "IX_public_cloud_pull_failures_ResolvedAtUtc_NextRetryAtUtc"
+                ON "public_cloud_pull_failures" ("ResolvedAtUtc", "NextRetryAtUtc");
+            """;
+        await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
     }
 
     private static async Task EnsureQuizTablesAsync(AppDbContext db, CancellationToken cancellationToken)

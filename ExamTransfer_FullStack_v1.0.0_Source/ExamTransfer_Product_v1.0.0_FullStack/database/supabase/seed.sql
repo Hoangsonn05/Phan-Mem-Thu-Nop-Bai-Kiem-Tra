@@ -1,1 +1,0 @@
--- Seed is intentionally minimal. Create Auth users through Supabase Auth, then assign profiles.

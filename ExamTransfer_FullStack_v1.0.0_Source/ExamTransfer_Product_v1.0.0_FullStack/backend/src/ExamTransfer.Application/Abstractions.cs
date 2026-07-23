@@ -166,6 +166,11 @@ public interface IRealtimePublisher
     Task PublishParticipantAsync<T>(Guid sessionId, Guid participantId, string eventName, long sequence, T payload, CancellationToken cancellationToken = default);
 }
 
+public interface ILanAccessPolicy
+{
+    bool IsAllowed(string? remoteAddress);
+}
+
 public interface IAuditService
 {
     Task WriteAsync(string action, string entityType, string? entityId, Guid? sessionId, object? before, object? after, CancellationToken cancellationToken = default);
@@ -189,6 +194,12 @@ public interface ICloudAdapter
         SyncQueueItem item,
         Func<CancellationToken, Task>? checkpoint,
         CancellationToken cancellationToken);
+    Task<CloudPullPage> PullAsync(
+        string entityName,
+        CloudPullCursorValue cursor,
+        int limit,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new CloudPullPage([], false));
     Task<CloudLoginResult> LoginAsync(string email, string password, CancellationToken cancellationToken);
     Task<CloudLoginResult?> RefreshSessionAsync(CancellationToken cancellationToken);
     Task LogoutAsync(CancellationToken cancellationToken);

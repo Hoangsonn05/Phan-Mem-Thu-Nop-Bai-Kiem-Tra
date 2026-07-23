@@ -4,9 +4,21 @@ namespace ExamTransfer.Shared.Contracts;
 
 public static class ContractInfo
 {
-    public const string SchemaVersion = "1.4.0";
+    public const string SchemaVersion = "1.5.0";
     public const string ApiVersion = "v1";
     public const string HubPath = "/hubs/exam";
+}
+
+public static class StudentSubmissionPolicy
+{
+    public const long MaxBytes = 10L * 1024 * 1024;
+    public const int MaxFileCount = 1;
+    public static readonly IReadOnlySet<string> AllowedExtensions =
+        new HashSet<string>([".zip", ".rar", ".7z"], StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsAllowedExtension(string? fileName) =>
+        !string.IsNullOrWhiteSpace(fileName)
+        && AllowedExtensions.Contains(Path.GetExtension(Path.GetFileName(fileName)));
 }
 
 public sealed record ApiError(
@@ -128,4 +140,12 @@ public static class ErrorCodes
     public const string PasswordChangeRequired = "PASSWORD_CHANGE_REQUIRED";
     public const string ParticipantTokenRequired = "PARTICIPANT_TOKEN_REQUIRED";
     public const string ParticipantAccountMismatch = "PARTICIPANT_ACCOUNT_MISMATCH";
+    public const string SubmissionArchiveRequired = "SUBMISSION_ARCHIVE_REQUIRED";
+    public const string SubmissionTooLarge = "SUBMISSION_TOO_LARGE";
+    public const string SubmissionFileCountInvalid = "SUBMISSION_FILE_COUNT_INVALID";
+    public const string LanAccessDenied = "LAN_ACCESS_DENIED";
+    public const string EnrollmentClosed = "ENROLLMENT_CLOSED";
+    public const string EnrollmentCodeInvalid = "ENROLLMENT_CODE_INVALID";
+    public const string EnrollmentDuplicate = "ENROLLMENT_DUPLICATE";
+    public const string DeviceCommandExpired = "DEVICE_COMMAND_EXPIRED";
 }

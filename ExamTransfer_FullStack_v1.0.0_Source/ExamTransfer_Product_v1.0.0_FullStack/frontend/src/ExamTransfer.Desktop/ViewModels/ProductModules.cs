@@ -21,6 +21,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
     private string studentCode = string.Empty;
     private string studentName = string.Empty;
     private string studentEmail = string.Empty;
+    private ClassAccessMode accessMode = ClassAccessMode.Private;
 
     public ClassManagementViewModel(IBackendClient api)
     {
@@ -64,6 +65,8 @@ public sealed class ClassManagementViewModel : ProductPageBase
     public string StudentCode { get => studentCode; set => Set(ref studentCode, value); }
     public string StudentName { get => studentName; set => Set(ref studentName, value); }
     public string StudentEmail { get => studentEmail; set => Set(ref studentEmail, value); }
+    public IReadOnlyList<ClassAccessMode> AccessModes { get; } = Enum.GetValues<ClassAccessMode>();
+    public ClassAccessMode AccessMode { get => accessMode; set => Set(ref accessMode, value); }
     public ICommand RefreshCommand { get; }
     public ICommand CreateCommand { get; }
     public ICommand OpenCommand { get; }
@@ -107,6 +110,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
         Code = detail.Code;
         SchoolYear = detail.SchoolYear;
         Description = detail.Description ?? string.Empty;
+        AccessMode = detail.AccessMode;
         currentClassRowVersion = detail.RowVersion;
         SelectedStudent = Students.FirstOrDefault();
     }
@@ -114,7 +118,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
     private Task CreateAsync() => RunAsync("Đang tạo lớp", "Lớp học đã được tạo", async ct =>
     {
         if (string.IsNullOrWhiteSpace(Name) || string.IsNullOrWhiteSpace(Code)) throw new InvalidOperationException("Tên lớp và mã lớp là bắt buộc.");
-        var created = ApiGuard.Require(await api.PostAsync<CreateClassRequest, ClassDetailDto>("api/v1/classes", new(Name.Trim(), Code.Trim(), SchoolYear.Trim(), Description.Trim()), ct));
+        var created = ApiGuard.Require(await api.PostAsync<CreateClassRequest, ClassDetailDto>("api/v1/classes", new(Name.Trim(), Code.Trim(), SchoolYear.Trim(), Description.Trim(), AccessMode), ct));
         await RefreshClassesCoreAsync(created.Id, ct);
     });
 
@@ -123,7 +127,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
     {
         if (SelectedClass is null) return;
         if (string.IsNullOrWhiteSpace(Name) || string.IsNullOrWhiteSpace(Code)) throw new InvalidOperationException("Tên lớp và mã lớp là bắt buộc.");
-        var updated = ApiGuard.Require(await api.PutAsync<UpdateClassRequest, ClassDetailDto>($"api/v1/classes/{SelectedClass.Id}", new(Name.Trim(), Code.Trim(), SchoolYear.Trim(), Description.Trim(), currentClassRowVersion), ct));
+        var updated = ApiGuard.Require(await api.PutAsync<UpdateClassRequest, ClassDetailDto>($"api/v1/classes/{SelectedClass.Id}", new(Name.Trim(), Code.Trim(), SchoolYear.Trim(), Description.Trim(), currentClassRowVersion, AccessMode), ct));
         await RefreshClassesCoreAsync(updated.Id, ct);
     });
 
@@ -463,6 +467,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
     private string roomCode = string.Empty;
     private string capacity = "36";
     private bool autoApprove;
+    private SessionAccessMode accessMode = SessionAccessMode.LanOnly;
 
     public SessionManagementViewModel(IBackendClient api)
     {
@@ -477,15 +482,31 @@ public sealed class SessionManagementViewModel : ProductPageBase
         CollectCommand = new AsyncRelayCommand(() => TransitionAsync("collect", "Hệ thống đang thu bài"), () => !IsBusy && (SelectedSession?.Status is SessionStatus.InProgress or SessionStatus.Paused));
         EndCommand = new AsyncRelayCommand(EndAsync, () => !IsBusy && (SelectedSession?.Status is SessionStatus.InProgress or SessionStatus.Paused or SessionStatus.Collecting));
         CancelCommand = new AsyncRelayCommand(CancelAsync, () => !IsBusy && SelectedSession?.Status == SessionStatus.Draft);
+        SaveSettingsCommand = new AsyncRelayCommand(SaveSettingsAsync, () => !IsBusy && SelectedSession?.Status is SessionStatus.Draft or SessionStatus.Waiting);
     }
 
     public ObservableCollection<ExamSummaryDto> Exams { get; } = new();
     public ObservableCollection<SessionSummaryDto> Sessions { get; } = new();
     public ExamSummaryDto? SelectedExam { get => selectedExam; set { if (Set(ref selectedExam, value)) RaiseCommands(); } }
-    public SessionSummaryDto? SelectedSession { get => selectedSession; set { if (Set(ref selectedSession, value)) RaiseCommands(); } }
+    public SessionSummaryDto? SelectedSession
+    {
+        get => selectedSession;
+        set
+        {
+            if (!Set(ref selectedSession, value)) return;
+            if (value is not null)
+            {
+                AutoApprove = value.AutoApprove;
+                AccessMode = value.AccessMode;
+            }
+            RaiseCommands();
+        }
+    }
     public string RoomCode { get => roomCode; set => Set(ref roomCode, value); }
     public string Capacity { get => capacity; set => Set(ref capacity, value); }
     public bool AutoApprove { get => autoApprove; set => Set(ref autoApprove, value); }
+    public IReadOnlyList<SessionAccessMode> AccessModes { get; } = Enum.GetValues<SessionAccessMode>();
+    public SessionAccessMode AccessMode { get => accessMode; set => Set(ref accessMode, value); }
     public ICommand RefreshCommand { get; }
     public ICommand CreateCommand { get; }
     public ICommand OpenCommand { get; }
@@ -496,6 +517,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
     public ICommand CollectCommand { get; }
     public ICommand EndCommand { get; }
     public ICommand CancelCommand { get; }
+    public ICommand SaveSettingsCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
@@ -523,7 +545,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
     {
         if (SelectedExam is null) return;
         if (!int.TryParse(Capacity, out var cap) || cap <= 0) throw new InvalidOperationException("Sức chứa phải lớn hơn 0.");
-        var detail = ApiGuard.Require(await api.PostAsync<CreateSessionRequest, SessionDetailDto>("api/v1/sessions", new(SelectedExam.Id, SelectedExam.ClassId, DateTimeOffset.UtcNow.AddMinutes(5), $"{{\"autoApprove\":{AutoApprove.ToString().ToLowerInvariant()}}}", AutoApprove, cap, string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim()), ct));
+        var detail = ApiGuard.Require(await api.PostAsync<CreateSessionRequest, SessionDetailDto>("api/v1/sessions", new(SelectedExam.Id, SelectedExam.ClassId, DateTimeOffset.UtcNow.AddMinutes(5), $"{{\"autoApprove\":{AutoApprove.ToString().ToLowerInvariant()}}}", AutoApprove, cap, string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim(), AccessMode), ct));
         await RefreshSessionsCoreAsync(SelectedExam.Id, detail.Summary.Id, ct);
     });
 
@@ -532,6 +554,30 @@ public sealed class SessionManagementViewModel : ProductPageBase
         if (SelectedSession is null) return;
         var detail = ApiGuard.Require(await api.PostAsync<object, SessionDetailDto>($"api/v1/sessions/{SelectedSession.Id}/{action}", new { }, ct));
         ReplaceSelected(detail.Summary);
+    });
+
+    private Task SaveSettingsAsync() => RunAsync("Đang lưu chế độ duyệt", "Chế độ duyệt học sinh đã được cập nhật", async ct =>
+    {
+        if (SelectedSession is null) return;
+        var detail = ApiGuard.Require(await api.GetSessionAsync(SelectedSession.Id, ct));
+        var approvePending = false;
+        if (!detail.Summary.AutoApprove && AutoApprove && detail.Summary.Counts.Pending > 0)
+        {
+            approvePending = AppServices.Dialogs.Confirm(
+                "Duyệt các yêu cầu đang chờ",
+                $"Có {detail.Summary.Counts.Pending} học sinh đang chờ. Bạn có muốn duyệt toàn bộ khi bật tự động duyệt không?");
+            if (!approvePending)
+            {
+                AutoApprove = false;
+                Status = "Chưa thay đổi chế độ; các yêu cầu đang chờ được giữ nguyên";
+                return;
+            }
+        }
+        var settings = $"{{\"autoApprove\":{AutoApprove.ToString().ToLowerInvariant()}}}";
+        var updated = ApiGuard.Require(await api.PutAsync<UpdateSessionRequest, SessionDetailDto>(
+            $"api/v1/sessions/{detail.Summary.Id}",
+            new(detail.PlannedStartUtc, settings, AutoApprove, detail.Capacity, detail.Summary.RowVersion, approvePending), ct));
+        ReplaceSelected(updated.Summary);
     });
 
     private Task EndAsync() => RunAsync("Đang kết thúc phiên", "Phiên thi đã kết thúc và được khóa nghiệp vụ", async ct =>
@@ -558,7 +604,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
     }
 }
 
@@ -1595,6 +1641,15 @@ public sealed class StudentWaitingViewModel : ProductPageBase
         }
         await RunAsync("Đang kiểm tra trạng thái duyệt", "Trạng thái phòng chờ đã được cập nhật", async token =>
         {
+            if (state.AccessMode == SessionAccessMode.PublicCloud)
+            {
+                var publicStatus = await AppServices.PublicCloud.GetParticipantStatusAsync(state.ParticipantId!.Value, token);
+                Participant = new ParticipantDto(state.ParticipantId.Value, state.SessionId!.Value,
+                    state.StudentCode, state.DisplayName, Environment.MachineName + "-" + Environment.UserName,
+                    Environment.MachineName, null, "1.0.0", publicStatus, DateTimeOffset.UtcNow,
+                    DownloadStatus.NotStarted, SubmissionStatus.NotStarted, 0, null, ConnectionState.Online);
+                return;
+            }
             api.SetParticipantToken(state.AccessToken);
             Session = ApiGuard.Require(await api.GetSessionAsync(state.SessionId!.Value, token));
             Participant = ApiGuard.Require(await api.GetAsync<ParticipantDto>($"api/v1/sessions/{state.SessionId}/participants/{state.ParticipantId}", token));
@@ -1656,6 +1711,13 @@ public sealed class StudentDownloadViewModel : ProductPageBase
         }
         await RunAsync("Đang tải manifest", "Manifest đề thi đã được cập nhật", async token =>
         {
+            if (state.AccessMode == SessionAccessMode.PublicCloud)
+            {
+                if (!state.ExamId.HasValue) throw new InvalidOperationException("Phiên PublicCloud chưa có ExamId.");
+                Files.ReplaceWith(await AppServices.PublicCloud.ListExamFilesAsync(state.ExamId.Value, token));
+                SelectedFile = Files.FirstOrDefault();
+                return;
+            }
             api.SetParticipantToken(state.AccessToken);
             var session = ApiGuard.Require(await api.GetSessionAsync(state.SessionId.Value, token));
             state.ExamId = session.Summary.ExamId;
@@ -1674,6 +1736,13 @@ public sealed class StudentDownloadViewModel : ProductPageBase
     private Task DownloadAsync() => RunAsync("Đang tải file đề", "File đề đã được tải về", async ct =>
     {
         if (SelectedFile is null || !state.ExamId.HasValue) return;
+        if (state.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            var signed = await AppServices.PublicCloud.GetExamFileUrlAsync(state.SessionId!.Value, SelectedFile.Id, ct);
+            await AppServices.PublicCloud.DownloadVerifiedAsync(signed, Path.Combine(Destination, SelectedFile.Name), ct);
+            Progress = 100;
+            return;
+        }
         var reporter = new Progress<double>(x => Progress = x);
         await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{SelectedFile.Id}/content", Path.Combine(Destination, SelectedFile.Name), SelectedFile.Sha256, reporter, ct);
     });
@@ -1686,7 +1755,15 @@ public sealed class StudentDownloadViewModel : ProductPageBase
         foreach (var file in Files)
         {
             index++;
-            await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{file.Id}/content", Path.Combine(Destination, file.Name), file.Sha256, null, ct);
+            if (state.AccessMode == SessionAccessMode.PublicCloud)
+            {
+                var signed = await AppServices.PublicCloud.GetExamFileUrlAsync(state.SessionId!.Value, file.Id, ct);
+                await AppServices.PublicCloud.DownloadVerifiedAsync(signed, Path.Combine(Destination, file.Name), ct);
+            }
+            else
+            {
+                await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{file.Id}/content", Path.Combine(Destination, file.Name), file.Sha256, null, ct);
+            }
             Progress = index * 100d / Files.Count;
         }
     });
@@ -1703,95 +1780,128 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
     private readonly StudentSessionState state;
+    private readonly AppAuthSessionState authState;
     private string? selectedPath;
     private double progress;
+    private string fileName = "Chưa chọn file";
+    private string fileType = "-";
+    private string fileSize = "-";
+    private string sha256 = "Chưa tính";
+    private string validationStatus = "Chưa kiểm tra";
+    private bool isFileValid;
 
-    public StudentSubmissionViewModel(IBackendClient api, StudentSessionState state)
+    public StudentSubmissionViewModel(IBackendClient api, StudentSessionState state, AppAuthSessionState authState)
     {
         this.api = api;
         this.state = state;
-        PickCommand = new RelayCommand(Pick);
-        SubmitCommand = new AsyncRelayCommand(SubmitAsync, () => !IsBusy && !string.IsNullOrWhiteSpace(SelectedPath) && state.HasSession);
+        this.authState = authState;
+        PickCommand = new AsyncRelayCommand(PickAsync, () => !IsBusy);
+        SubmitCommand = new AsyncRelayCommand(SubmitAsync, () => !IsBusy && IsFileValid && !string.IsNullOrWhiteSpace(SelectedPath) && state.HasSession);
     }
 
     public string? SelectedPath { get => selectedPath; private set { if (Set(ref selectedPath, value)) RaiseCommands(); } }
     public double Progress { get => progress; private set => Set(ref progress, value); }
+    public string FileName { get => fileName; private set => Set(ref fileName, value); }
+    public string FileType { get => fileType; private set => Set(ref fileType, value); }
+    public string FileSize { get => fileSize; private set => Set(ref fileSize, value); }
+    public string Sha256 { get => sha256; private set => Set(ref sha256, value); }
+    public string ValidationStatus { get => validationStatus; private set => Set(ref validationStatus, value); }
+    public string LimitText => "10 MB · 1 file · ZIP/RAR/7Z";
+    public bool IsFileValid { get => isFileValid; private set { if (Set(ref isFileValid, value)) RaiseCommands(); } }
     public ICommand PickCommand { get; }
     public ICommand SubmitCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
-        Status = state.HasSession ? "Chọn file bài làm để nộp" : "Hãy tham gia phòng trước khi nộp bài";
+        Status = state.HasSession ? "Chọn một file nén ZIP, RAR hoặc 7Z để nộp" : "Hãy tham gia phòng trước khi nộp bài";
         StatusTone = state.HasSession ? "info" : "warning";
         if (state.HasSession)
         {
             var pending = (await Infrastructure.SubmissionQueueStore.LoadAsync(ct))
-                .FirstOrDefault(x => x.SessionId == state.SessionId && x.ParticipantId == state.ParticipantId
-                    && string.Equals(x.Endpoint, api.BaseAddress.ToString(), StringComparison.OrdinalIgnoreCase)
-                    && File.Exists(x.FilePath));
+                .FirstOrDefault(x => x.SessionId == state.SessionId && x.ParticipantId == state.ParticipantId && File.Exists(x.FilePath));
             if (pending is not null)
             {
                 SelectedPath = pending.FilePath;
-                Status = "Đã tìm thấy bài nộp dở; hệ thống sẽ tiếp tục từ chunk còn thiếu.";
-                SubmitAsync().SafeFireAndForget("Submission.AutoResume");
+                FileName = pending.FileName;
+                FileType = Path.GetExtension(pending.FileName).TrimStart('.').ToUpperInvariant();
+                FileSize = FormatBytes(pending.SizeBytes);
+                Sha256 = pending.Sha256;
+                ValidationStatus = QueueStatusText(pending.QueueStatus);
+                IsFileValid = pending.QueueStatus != Infrastructure.SubmissionQueueStatus.FailedPermanent;
+                Status = $"Có 1 bài đã lưu trên máy: {QueueStatusText(pending.QueueStatus)}";
+                AppServices.SubmissionRecovery.Trigger();
             }
         }
     }
 
-    private void Pick()
+    private async Task PickAsync()
     {
-        SelectedPath = AppServices.Files.PickFile("Bài làm|*.zip;*.pdf;*.docx;*.xlsx;*.pptx;*.txt;*.cs;*.java;*.py|Tất cả file|*.*");
+        var path = AppServices.Files.PickFile("Bài làm đã nén|*.zip;*.rar;*.7z");
+        if (string.IsNullOrWhiteSpace(path)) return;
+        var info = new FileInfo(path);
+        SelectedPath = info.FullName;
+        FileName = info.Name;
+        FileType = Path.GetExtension(info.Name).TrimStart('.').ToUpperInvariant();
+        FileSize = info.Exists ? FormatBytes(info.Length) : "-";
+        Sha256 = "Chưa tính";
+        IsFileValid = false;
+        if (!info.Exists)
+        {
+            IsFileValid = false;
+            ValidationStatus = "File không tồn tại";
+        }
+        else if (!StudentSubmissionPolicy.IsAllowedExtension(info.Name))
+        {
+            IsFileValid = false;
+            ValidationStatus = "Bài làm phải được nén thành một file .zip, .rar hoặc .7z trước khi nộp.";
+        }
+        else if (info.Length <= 0 || info.Length > StudentSubmissionPolicy.MaxBytes)
+        {
+            IsFileValid = false;
+            ValidationStatus = "File bài làm vượt quá 10 MB. Hãy xóa dữ liệu không cần thiết hoặc giảm dung lượng rồi nén lại.";
+        }
+        else
+        {
+            ValidationStatus = "Đang tính SHA-256";
+            Sha256 = await Infrastructure.SubmissionQueueStore.HashFileAsync(info.FullName, DisposeToken);
+            IsFileValid = true;
+            ValidationStatus = "Hợp lệ · sẵn sàng lưu an toàn";
+        }
     }
 
-    private Task SubmitAsync() => RunAsync("Đang gửi bài làm", "Máy chủ đã xác nhận bài nộp và tạo biên nhận", async ct =>
+    private Task SubmitAsync() => RunAsync("Đang sao chép bài vào vùng lưu an toàn", "Đã lưu trên máy; hệ thống sẽ tự gửi và chỉ báo thành công sau khi có biên nhận", async ct =>
     {
-        if (SelectedPath is null || !state.SessionId.HasValue || !state.ParticipantId.HasValue) return;
-        api.SetParticipantToken(state.AccessToken);
-        var info = new FileInfo(SelectedPath);
-        var sha = await ComputeShaAsync(SelectedPath, ct);
-        var fullPath = Path.GetFullPath(SelectedPath);
-        var queued = (await Infrastructure.SubmissionQueueStore.LoadAsync(ct)).FirstOrDefault(x =>
-            x.SessionId == state.SessionId && x.ParticipantId == state.ParticipantId
-            && string.Equals(x.Endpoint, api.BaseAddress.ToString(), StringComparison.OrdinalIgnoreCase)
-            && string.Equals(x.FilePath, fullPath, StringComparison.OrdinalIgnoreCase) && x.Sha256 == sha);
-        queued ??= new Infrastructure.PendingSubmission(
-            Guid.NewGuid(), api.BaseAddress.ToString(), state.SessionId.Value, state.ParticipantId.Value,
-            Infrastructure.SubmissionQueueStore.ProtectToken(state.AccessToken), fullPath, info.Name, info.Length, sha,
-            Guid.NewGuid().ToString("N"), null, null, 0, [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
-        await Infrastructure.SubmissionQueueStore.SaveAsync(queued, ct);
-        var init = ApiGuard.Require(await api.PostAsync<InitSubmissionRequest, InitSubmissionResponse>("api/v1/submissions/init", new(state.SessionId.Value, state.ParticipantId.Value, queued.IdempotencyKey, new[] { new InitSubmissionFileRequest("local-1", info.Name, info.Length, sha, "application/octet-stream") }, DateTimeOffset.UtcNow), ct));
-        var plan = init.FilePlans.Single();
-        queued = queued with { SubmissionId = init.SubmissionId, ServerFileId = plan.FileId, ChunkSizeBytes = init.ChunkSizeBytes, MissingChunks = plan.MissingChunks };
-        await Infrastructure.SubmissionQueueStore.SaveAsync(queued, ct);
-        await using var stream = new FileStream(SelectedPath, FileMode.Open, FileAccess.Read, FileShare.Read, init.ChunkSizeBytes, true);
-        var buffer = new byte[init.ChunkSizeBytes];
-        var missing = plan.MissingChunks.ToList();
-        foreach (var index in plan.MissingChunks)
-        {
-            stream.Position = (long)index * init.ChunkSizeBytes;
-            var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
-            await using var chunk = new MemoryStream(buffer, 0, read, false, true);
-            ApiGuard.Require(await api.UploadChunkAsync($"api/v1/submissions/{init.SubmissionId}/files/{plan.FileId}/chunks/{index}", chunk, read, null, ct));
-            missing.Remove(index);
-            queued = queued with { MissingChunks = missing.ToList() };
-            await Infrastructure.SubmissionQueueStore.SaveAsync(queued, ct);
-            Progress = (plan.TotalChunks - missing.Count) * 90d / plan.TotalChunks;
-            Status = $"Đang gửi phần {plan.TotalChunks - missing.Count}/{plan.TotalChunks}";
-        }
-        _ = ApiGuard.Require(await api.PostAsync<FinalizeSubmissionRequest, FinalizeSubmissionResponse>($"api/v1/submissions/{init.SubmissionId}/finalize", new(null), ct));
-        state.LastSubmissionId = init.SubmissionId;
-        state.LastReceipt = ApiGuard.Require(await api.GetAsync<ReceiptDto>($"api/v1/submissions/{init.SubmissionId}/receipt", ct));
-        await Infrastructure.SubmissionQueueStore.RemoveAsync(queued.QueueId, ct);
-        Progress = 100;
+        if (SelectedPath is null || !state.SessionId.HasValue || !state.ParticipantId.HasValue || authState.CurrentAccount is null) return;
+        var queued = await Infrastructure.SubmissionQueueStore.PrepareAsync(
+            SelectedPath, api.BaseAddress.ToString(), authState.CurrentAccount.UserId, authState.CurrentAccount.StudentCode ?? state.StudentCode,
+            state.SessionId.Value, state.ParticipantId.Value, state.RoomCode, state.AccessMode, state.ServerId, state.AccessToken, ct);
+        SelectedPath = queued.FilePath;
+        Sha256 = queued.Sha256;
+        ValidationStatus = "Đã lưu trên máy";
+        Progress = 10;
+        AppServices.SubmissionRecovery.Trigger();
     });
 
-    private static async Task<string> ComputeShaAsync(string path, CancellationToken ct)
+    private static string FormatBytes(long bytes) => $"{bytes / 1024d / 1024d:N2} MB";
+    private static string QueueStatusText(Infrastructure.SubmissionQueueStatus status) => status switch
     {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
-        return Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
-    }
+        Infrastructure.SubmissionQueueStatus.Prepared => "Đã lưu trên máy",
+        Infrastructure.SubmissionQueueStatus.WaitingForConnection => "Đang chờ kết nối",
+        Infrastructure.SubmissionQueueStatus.Initializing or Infrastructure.SubmissionQueueStatus.Uploading => "Đang gửi tiếp",
+        Infrastructure.SubmissionQueueStatus.Finalizing => "Đang xác nhận",
+        Infrastructure.SubmissionQueueStatus.AwaitingReceipt => "Máy chủ đã nhận, đang chờ biên nhận",
+        Infrastructure.SubmissionQueueStatus.Completed => "Đã có biên nhận",
+        Infrastructure.SubmissionQueueStatus.NeedsLogin => "Cần đăng nhập lại",
+        Infrastructure.SubmissionQueueStatus.NeedsRejoin => "Cần giáo viên duyệt lại",
+        Infrastructure.SubmissionQueueStatus.Expired => "Đã quá thời hạn",
+        _ => "File bị lỗi"
+    };
 
-    protected override void RaiseCommands() => (SubmitCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+    protected override void RaiseCommands()
+    {
+        (PickCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        (SubmitCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+    }
 }
 
 public sealed class StudentReceiptViewModel : ProductPageBase

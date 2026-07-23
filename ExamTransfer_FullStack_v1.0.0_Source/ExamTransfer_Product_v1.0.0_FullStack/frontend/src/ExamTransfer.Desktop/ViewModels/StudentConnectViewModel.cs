@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Windows.Input;
 using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
@@ -12,14 +12,13 @@ public sealed class StudentConnectViewModel : ProductPageBase
     private readonly StudentSessionState state;
     private readonly AppAuthSessionState authState;
     private readonly ILanDiscoveryService discovery;
-    private string ip = "127.0.0.1";
-    private string port = "5048";
     private string roomCode = string.Empty;
-    private string displayName;
-    private string studentCode;
+    private readonly string displayName;
+    private readonly string studentCode;
     private string className = string.Empty;
+    private string classCode = string.Empty;
     private bool isScanning;
-    private ServerCard? selectedServer;
+    private OpenRoomCard? selectedRoom;
 
     public StudentConnectViewModel(IBackendClient api, StudentSessionState state, AppAuthSessionState authState, ILanDiscoveryService? discovery = null)
     {
@@ -27,42 +26,38 @@ public sealed class StudentConnectViewModel : ProductPageBase
         this.state = state;
         this.authState = authState;
         this.discovery = discovery ?? AppServices.LanDiscovery;
-        ip = api.BaseAddress.Host;
-        port = api.BaseAddress.Port.ToString();
         displayName = authState.CurrentAccount?.DisplayName ?? string.Empty;
         studentCode = authState.CurrentAccount?.StudentCode ?? string.Empty;
         ScanCommand = new AsyncRelayCommand(() => ScanAsync(DisposeToken), () => !IsScanning && !IsBusy);
         JoinCommand = new AsyncRelayCommand(JoinAsync, CanJoin);
     }
 
-    public ObservableCollection<ServerCard> Servers { get; } = new();
-    public IReadOnlyList<ReadinessItem> Readiness { get; } = new ReadinessItem[]
-    {
+    public ObservableCollection<OpenRoomCard> Rooms { get; } = new();
+    public IReadOnlyList<ReadinessItem> Readiness { get; } =
+    [
         new("Kết nối mạng", "LAN/Wi-Fi đang hoạt động", true),
         new("Dung lượng trống", "Đủ dung lượng cho đề và bài làm", true),
         new("Quyền ghi", "Thư mục ExamTransfer có thể sử dụng", true),
         new("Định danh thiết bị", Environment.MachineName, true)
-    };
+    ];
 
-    public string Ip { get => ip; set { if (Set(ref ip, value)) RaiseCommands(); } }
-    public string Port { get => port; set { if (Set(ref port, value)) RaiseCommands(); } }
     public string RoomCode { get => roomCode; set { if (Set(ref roomCode, value)) RaiseCommands(); } }
-    public string DisplayName { get => displayName; set { if (Set(ref displayName, value)) RaiseCommands(); } }
-    public string StudentCode { get => studentCode; set { if (Set(ref studentCode, value)) RaiseCommands(); } }
-    public string ClassName { get => className; set => Set(ref className, value); }
+    public string DisplayName => displayName;
+    public string StudentCode => studentCode;
+    public string ClassName { get => className; private set => Set(ref className, value); }
+    public string ClassCode { get => classCode; set { if (Set(ref classCode, value)) RaiseCommands(); } }
     public bool IsScanning { get => isScanning; private set { if (Set(ref isScanning, value)) RaiseCommands(); } }
-    public ServerCard? SelectedServer
+    public OpenRoomCard? SelectedRoom
     {
-        get => selectedServer;
+        get => selectedRoom;
         set
         {
-            if (Set(ref selectedServer, value) && value is not null)
-            {
-                Ip = value.Ip;
-                Port = value.Port.ToString();
-                Status = $"Đã chọn {value.Name}";
-                StatusTone = "primary";
-            }
+            if (!Set(ref selectedRoom, value) || value is null) return;
+            RoomCode = value.RoomCode;
+            ClassName = value.ClassDisplay;
+            ClassCode = value.Room.ClassCode ?? string.Empty;
+            Status = $"Đã chọn phòng {value.RoomCode}";
+            StatusTone = "primary";
         }
     }
 
@@ -77,36 +72,22 @@ public sealed class StudentConnectViewModel : ProductPageBase
         try
         {
             IsScanning = true;
-            Status = "Đang kiểm tra máy chủ trong mạng LAN";
+            Status = "Đang tìm phòng";
             StatusTone = "primary";
-            Servers.Clear();
-            var discovered = await discovery.DiscoverAsync(TimeSpan.FromSeconds(2), ct);
-            foreach (var server in discovered)
-            {
-                Servers.Add(new(
-                    server.ServerName,
-                    "Máy giáo viên",
-                    server.Address,
-                    server.Port,
-                    0,
-                    "Sẵn sàng",
-                    "success",
-                    server.ActiveRoomCount,
-                    0,
-                    server.Fingerprint,
-                    server.Version));
-            }
+            Rooms.Clear();
+            foreach (var room in await discovery.DiscoverOpenSessionsAsync(TimeSpan.FromSeconds(2), ct))
+                Rooms.Add(new(room));
 
-            if (Servers.Count > 0)
+            SelectedRoom = Rooms.FirstOrDefault();
+            if (Rooms.Count == 0)
             {
-                SelectedServer = Servers[0];
-                Status = $"Đã tìm thấy {Servers.Count} máy chủ ExamTransfer";
-                StatusTone = "success";
+                Status = "Không tìm thấy phòng đang mở";
+                StatusTone = "warning";
             }
             else
             {
-                Status = "Chưa tìm thấy máy chủ tự động; có thể nhập IP và cổng thủ công";
-                StatusTone = "warning";
+                Status = $"Đã tìm thấy {Rooms.Count} phòng đang mở";
+                StatusTone = "success";
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -115,7 +96,7 @@ public sealed class StudentConnectViewModel : ProductPageBase
         catch (Exception ex)
         {
             FrontendLogger.Log(ex, "StudentConnect.Scan");
-            Status = "Không tìm thấy máy chủ tự động; hãy nhập IP, cổng và mã phòng";
+            Status = "Không tìm thấy máy giáo viên trong mạng hiện tại. Hãy kiểm tra hai máy đang sử dụng cùng mạng nội bộ và thử quét lại.";
             StatusTone = "warning";
         }
         finally
@@ -124,22 +105,78 @@ public sealed class StudentConnectViewModel : ProductPageBase
         }
     }
 
-    private bool CanJoin() => !IsBusy && authState.IsStudent && !string.IsNullOrWhiteSpace(DisplayName) && !string.IsNullOrWhiteSpace(StudentCode) && !string.IsNullOrWhiteSpace(RoomCode) && int.TryParse(Port, out var parsedPort) && parsedPort is > 0 and <= 65535;
+    private bool CanJoin() => !IsBusy
+        && authState.IsStudent
+        && !string.IsNullOrWhiteSpace(DisplayName)
+        && !string.IsNullOrWhiteSpace(StudentCode)
+        && !string.IsNullOrWhiteSpace(RoomCode)
+        && (SelectedRoom?.Room.ClassId is null || !string.IsNullOrWhiteSpace(ClassCode));
 
     private Task JoinAsync() => RunAsync("Đang gửi yêu cầu tham gia", "Yêu cầu tham gia đã được gửi; hãy mở mục Phòng chờ", async ct =>
     {
-        if (!int.TryParse(Port, out var parsedPort))
-            throw new InvalidOperationException("Cổng máy chủ không hợp lệ.");
-        if (!api.TrySetBaseAddress(Ip, parsedPort, out var endpointError))
-            throw new InvalidOperationException(endpointError ?? "Địa chỉ máy chủ không hợp lệ.");
+        var requestedCode = RoomCode.Trim().ToUpperInvariant();
+        var room = SelectedRoom?.RoomCode.Equals(requestedCode, StringComparison.OrdinalIgnoreCase) == true
+            ? SelectedRoom
+            : Rooms.FirstOrDefault(x => x.RoomCode.Equals(requestedCode, StringComparison.OrdinalIgnoreCase));
+        if (room is null)
+        {
+            if (!AppServices.PublicCloud.Configured || !AppServices.PublicCloud.Authenticated)
+                throw new InvalidOperationException("Không tìm thấy phòng LAN và PublicCloud chưa có phiên Supabase hợp lệ.");
+            if (!string.IsNullOrWhiteSpace(ClassCode))
+            {
+                var enrollment = await AppServices.PublicCloud.RequestEnrollmentAsync(ClassCode.Trim(), StudentCode.Trim(), ct);
+                if (!enrollment.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase))
+                {
+                    Status = enrollment.Status.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
+                        ? "Yêu cầu ghi danh PublicCloud đã bị từ chối."
+                        : "Đã gửi yêu cầu ghi danh PublicCloud; đang chờ giáo viên duyệt.";
+                    StatusTone = enrollment.Status.Equals("Rejected", StringComparison.OrdinalIgnoreCase) ? "danger" : "warning";
+                    return;
+                }
+            }
+            var cloudJoin = await AppServices.PublicCloud.JoinByRoomCodeAsync(
+                requestedCode,
+                Environment.MachineName + "-" + Environment.UserName,
+                Environment.MachineName,
+                "1.0.0",
+                ct);
+            state.Reset();
+            state.SessionId = cloudJoin.SessionId;
+            state.ParticipantId = cloudJoin.ParticipantId;
+            state.ExamId = cloudJoin.ExamId;
+            state.AccessToken = cloudJoin.AccessToken;
+            state.RoomCode = requestedCode;
+            state.StudentCode = StudentCode.Trim();
+            state.DisplayName = DisplayName.Trim();
+            state.AccessMode = SessionAccessMode.PublicCloud;
+            api.SetParticipantToken(null);
+            await AppServices.PublicRealtime.StartAsync(
+                cloudJoin.SessionId,
+                Environment.MachineName + "-" + Environment.UserName,
+                cloudJoin.AccessToken,
+                async token => _ = await AppServices.PublicCloud.GetParticipantStatusAsync(cloudJoin.ParticipantId, token),
+                ct);
+            Status = cloudJoin.Status == ParticipantStatus.Approved
+                ? "Đã tham gia phòng PublicCloud."
+                : "Đã gửi yêu cầu PublicCloud; đang chờ giáo viên duyệt.";
+            StatusTone = cloudJoin.Status == ParticipantStatus.Approved ? "success" : "warning";
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(room.Room.ClassCode)
+            && !room.Room.ClassCode.Equals(ClassCode.Trim(), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Mã lớp không khớp với phòng đã chọn. Hãy kiểm tra lại thông tin lớp.");
+
+        var endpoint = new Uri(room.BaseAddress);
+        if (!api.TrySetBaseAddress(endpoint.GetLeftPart(UriPartial.Authority), endpoint.Port, out var endpointError))
+            throw new InvalidOperationException(endpointError ?? "Không thể kết nối phòng đã chọn.");
         state.Reset();
         api.SetParticipantToken(null);
         if (!api.HasTrustedAccountToken)
-            throw new InvalidOperationException("Máy chủ đã thay đổi. Hãy đăng xuất và đăng nhập lại trên đúng máy chủ giáo viên trước khi tham gia phòng.");
+            throw new InvalidOperationException("Phiên đăng nhập không thuộc máy chủ của phòng đã chọn. Hãy đăng nhập lại rồi thử tham gia.");
 
-        var request = new JoinSessionRequest(RoomCode.Trim().ToUpperInvariant(), StudentCode.Trim(), DisplayName.Trim(), string.IsNullOrWhiteSpace(ClassName) ? null : ClassName.Trim(), Environment.MachineName + "-" + Environment.UserName, Environment.MachineName, "1.0.0", Guid.NewGuid().ToString("N"));
+        var request = new JoinSessionRequest(requestedCode, StudentCode.Trim(), DisplayName.Trim(), room.ClassName, Environment.MachineName + "-" + Environment.UserName, Environment.MachineName, "1.0.0", Guid.NewGuid().ToString("N"));
         var response = ApiGuard.Require(await api.PostAsync<JoinSessionRequest, JoinSessionResponse>("api/v1/sessions/join", request, ct));
-        state.ApplyJoin(response, request.RoomCode, request.StudentCode, request.DisplayName);
+        state.ApplyJoin(response, request.RoomCode, request.StudentCode, request.DisplayName, SessionAccessMode.LanOnly, room.Room.ServerId);
         api.SetParticipantToken(response.AccessToken);
         await AppServices.StudentRealtime.StartAsync(ct);
     });
@@ -151,9 +188,19 @@ public sealed class StudentConnectViewModel : ProductPageBase
     }
 }
 
-public sealed record ServerCard(string Name, string Teacher, string Ip, int Port, int LatencyMs, string Status, string Tone, int Connected, int Capacity, string Fingerprint, string Version)
+public sealed record OpenRoomCard(OpenSessionDiscoveryDto Room)
 {
-    public string Address => $"{Ip}:{Port}";
-    public string CapacityText => Capacity <= 0 ? "Sẵn sàng kết nối" : $"{Connected}/{Capacity} thiết bị";
+    public Guid SessionId => Room.SessionId;
+    public string RoomCode => Room.RoomCode;
+    public string RoomName => Room.RoomName;
+    public string? ClassName => Room.ClassName;
+    public string ClassDisplay => string.IsNullOrWhiteSpace(Room.ClassCode) ? Room.ClassName ?? "Chưa gắn lớp" : $"{Room.ClassName} ({Room.ClassCode})";
+    public string ExamTitle => Room.ExamTitle;
+    public string TeacherName => Room.TeacherName;
+    public string BaseAddress => Room.BaseAddress;
+    public string ApprovalText => Room.RequireApproval ? "Cần giáo viên duyệt" : "Tự động duyệt";
+    public string CapacityText => Room.Capacity.HasValue ? $"{Room.CurrentParticipantCount}/{Room.Capacity}" : $"{Room.CurrentParticipantCount} học sinh";
+    public string StartText => Room.ScheduledStartUtc?.ToLocalTime().ToString("dd/MM HH:mm") ?? "Chưa đặt giờ";
 }
+
 public sealed record ReadinessItem(string Title, string Description, bool Ready);

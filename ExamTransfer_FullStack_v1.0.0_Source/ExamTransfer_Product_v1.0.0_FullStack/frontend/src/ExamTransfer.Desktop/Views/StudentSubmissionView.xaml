@@ -4,92 +4,38 @@
              xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
              beh:EntranceAnimation.IsEnabled="True">
     <Grid Margin="28,24,28,20">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="24" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="12" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
-
-        <!-- Header -->
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="24"/><RowDefinition Height="*"/><RowDefinition Height="12"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <StackPanel Grid.Row="0">
-            <TextBlock Text="Nộp bài"
-                       Style="{StaticResource PageTitleText}" />
-            <TextBlock Text="Kiểm tra file, khởi tạo attempt, tải theo chunk, finalize và chờ máy chủ xác nhận."
-                       Style="{StaticResource BodyText}"
-                       Margin="0,5,0,0" />
+            <TextBlock Text="Nộp bài" Style="{StaticResource PageTitleText}"/>
+            <TextBlock Text="Chỉ nhận một file nén ZIP, RAR hoặc 7Z, tối đa 10 MB. Bài được sao chép vào vùng lưu an toàn trước khi gửi." Style="{StaticResource BodyText}" Margin="0,5,0,0"/>
         </StackPanel>
-
-        <!-- Content -->
         <Grid Grid.Row="2">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.1*" />
-                <ColumnDefinition Width="16" />
-                <ColumnDefinition Width="0.9*" />
-            </Grid.ColumnDefinitions>
-
-            <!-- File picker + progress -->
+            <Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="0.9*"/></Grid.ColumnDefinitions>
             <Border Grid.Column="0" Style="{StaticResource Card}">
                 <StackPanel>
-                    <TextBlock Text="File bài làm"
-                               Style="{StaticResource SectionTitleText}" />
-                    <TextBlock Text="{Binding SelectedPath, TargetNullValue=Chưa chọn file}"
-                               Style="{StaticResource BodyText}"
-                               Margin="0,18,0,0"
-                               TextTrimming="CharacterEllipsis" />
-                    <Button Content="Chọn file bài làm"
-                            Command="{Binding PickCommand}"
-                            Style="{StaticResource SecondaryButton}"
-                            Margin="0,14,0,0" />
-                    <ProgressBar Value="{Binding Progress}"
-                                 Height="10"
-                                 Margin="0,22,0,0" />
-                    <TextBlock Text="{Binding Progress, StringFormat={}{0:N0}%}"
-                               HorizontalAlignment="Right"
-                               Style="{StaticResource CaptionText}"
-                               Margin="0,5,0,0" />
-                    <Button Content="Bắt đầu nộp bài"
-                            Command="{Binding SubmitCommand}"
-                            Style="{StaticResource PrimaryButton}"
-                            Margin="0,20,0,0" />
+                    <TextBlock Text="File bài làm" Style="{StaticResource SectionTitleText}"/>
+                    <TextBlock Text="{Binding SelectedPath, TargetNullValue=Chưa chọn file}" Style="{StaticResource BodyText}" Margin="0,18,0,0" TextTrimming="CharacterEllipsis"/>
+                    <Button Content="Chọn file nén" Command="{Binding PickCommand}" Style="{StaticResource SecondaryButton}" Margin="0,14,0,0"/>
+                    <Grid Margin="0,18,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Tên file" Style="{StaticResource CaptionText}"/><TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="Loại / dung lượng" Style="{StaticResource CaptionText}"/><TextBlock><Run Text="{Binding FileType}"/><Run Text=" · "/><Run Text="{Binding FileSize}"/></TextBlock></StackPanel></Grid>
+                    <TextBlock Text="{Binding LimitText, StringFormat=Giới hạn: {0}}" Style="{StaticResource CaptionText}" Margin="0,12,0,0"/>
+                    <TextBlock Text="{Binding Sha256, StringFormat=SHA-256: {0}}" FontFamily="Consolas" Style="{StaticResource CaptionText}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding ValidationStatus}" Style="{StaticResource BodyText}" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                    <ProgressBar Value="{Binding Progress}" Height="10" Margin="0,18,0,0"/>
+                    <Button Content="Lưu an toàn và bắt đầu nộp" Command="{Binding SubmitCommand}" Style="{StaticResource PrimaryButton}" Margin="0,20,0,0"/>
                 </StackPanel>
             </Border>
-
-            <!-- Process explanation -->
             <Border Grid.Column="2" Style="{StaticResource Card}">
                 <StackPanel>
-                    <TextBlock Text="Quy trình xác nhận"
-                               Style="{StaticResource SectionTitleText}" />
-                    <StackPanel Margin="0,18,0,0">
-                        <TextBlock Text="1. Tính SHA-256 trên máy học sinh"
-                                   Style="{StaticResource BodyText}"
-                                   Margin="0,0,0,10" />
-                        <TextBlock Text="2. Máy chủ tạo attempt và kế hoạch chunk"
-                                   Style="{StaticResource BodyText}"
-                                   Margin="0,0,0,10" />
-                        <TextBlock Text="3. Gửi từng chunk và có thể tiếp tục khi mất mạng"
-                                   Style="{StaticResource BodyText}"
-                                   Margin="0,0,0,10" />
-                        <TextBlock Text="4. Finalize, xác minh toàn file và tạo biên nhận"
-                                   Style="{StaticResource BodyText}" />
-                    </StackPanel>
-                    <Border Style="{StaticResource SubtleCard}" Margin="0,22,0,0">
-                        <TextBlock Text="Không đóng ứng dụng cho đến khi mục Biên nhận hiển thị mã xác nhận từ máy chủ."
-                                   Style="{StaticResource BodyText}" />
-                    </Border>
+                    <TextBlock Text="Phục hồi tự động" Style="{StaticResource SectionTitleText}"/>
+                    <TextBlock Text="1. Sao chép file vào submission spool và flush xuống đĩa" Style="{StaticResource BodyText}" Margin="0,18,0,10" TextWrapping="Wrap"/>
+                    <TextBlock Text="2. Tính SHA-256 trên bản spool" Style="{StaticResource BodyText}" Margin="0,0,0,10"/>
+                    <TextBlock Text="3. Chỉ gửi các chunk máy chủ còn thiếu" Style="{StaticResource BodyText}" Margin="0,0,0,10"/>
+                    <TextBlock Text="4. Tự thử lại sau mất mạng hoặc sau khi mở lại ứng dụng" Style="{StaticResource BodyText}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                    <TextBlock Text="5. Chỉ xóa queue sau khi biên nhận được lưu cục bộ" Style="{StaticResource BodyText}" TextWrapping="Wrap"/>
+                    <Border Style="{StaticResource SubtleCard}" Margin="0,22,0,0"><TextBlock Text="Không hiển thị “đã nộp thành công” trước khi máy chủ tạo biên nhận." Style="{StaticResource BodyText}" TextWrapping="Wrap"/></Border>
                 </StackPanel>
             </Border>
         </Grid>
-
-        <!-- Status bar -->
-        <Border Grid.Row="4"
-                Style="{StaticResource StatusPill}"
-                HorizontalAlignment="Left"
-                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-            <TextBlock Text="{Binding Status}"
-                       Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"
-                       FontSize="12" />
-        </Border>
+        <Border Grid.Row="4" Style="{StaticResource StatusPill}" HorizontalAlignment="Left" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}"><TextBlock Text="{Binding Status}" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" FontSize="12"/></Border>
     </Grid>
 </UserControl>

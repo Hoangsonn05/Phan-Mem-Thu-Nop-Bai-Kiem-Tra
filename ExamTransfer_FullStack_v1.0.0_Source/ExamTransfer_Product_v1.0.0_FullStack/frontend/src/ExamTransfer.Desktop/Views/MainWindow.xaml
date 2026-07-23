@@ -124,6 +124,11 @@
                                    TextTrimming="CharacterEllipsis"
                                    TextWrapping="NoWrap"
                                    Margin="0,1,0,0" />
+                        <TextBlock Text="{Binding PendingSubmissionText}"
+                                   Foreground="#FFF2B84B"
+                                   FontSize="10"
+                                   TextWrapping="Wrap"
+                                   Margin="0,2,0,0" />
                     </StackPanel>
                     <Button Grid.Column="1"
                             Command="{Binding LogoutCommand}"

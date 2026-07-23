@@ -278,10 +278,12 @@ if ($ConfigureFirewall) {
         )) {
             $existing = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
             if ($null -eq $existing) {
-                New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow -Protocol $rule.Protocol -LocalPort $rule.Port | Out-Null
+                New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow -Protocol $rule.Protocol -LocalPort $rule.Port -Profile Private -RemoteAddress LocalSubnet | Out-Null
                 Add-Result 'Windows Firewall' 'INSTALLED' "$($rule.Protocol) $($rule.Port) inbound rule created."
             } else {
-                Add-Result 'Windows Firewall' 'FOUND' "$($rule.Protocol) $($rule.Port) rule already exists."
+                $existing | Set-NetFirewallRule -Profile Private
+                $existing | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet
+                Add-Result 'Windows Firewall' 'FOUND' "$($rule.Protocol) $($rule.Port) is restricted to Private/LocalSubnet."
             }
         }
     }

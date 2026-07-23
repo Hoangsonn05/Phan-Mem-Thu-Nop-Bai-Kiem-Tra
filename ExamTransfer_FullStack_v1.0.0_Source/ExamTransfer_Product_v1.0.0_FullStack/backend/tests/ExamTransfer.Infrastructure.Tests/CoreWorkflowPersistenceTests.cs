@@ -142,6 +142,31 @@ public sealed class CoreWorkflowPersistenceTests
     }
 
     [Fact]
+    public async Task TeacherExamFile_AllowsArbitraryExtensionAboveStudentTenMiBLimit_WithChunks()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var exams = Services(database.Context).Exams;
+        var exam = await exams.CreateAsync(ExamRequest(null, false), CancellationToken.None);
+        var bytes = new byte[StudentSubmissionPolicy.MaxBytes + 1];
+        Random.Shared.NextBytes(bytes);
+        var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+
+        var init = await exams.InitFileAsync(exam.Id, new("teacher-material.custom", bytes.LongLength, sha, "application/octet-stream", 1024 * 1024), CancellationToken.None);
+        for (var index = 0; index < init.TotalChunks; index++)
+        {
+            var offset = index * init.ChunkSizeBytes;
+            var length = Math.Min(init.ChunkSizeBytes, bytes.Length - offset);
+            await using var chunk = new MemoryStream(bytes, offset, length, false, true);
+            await exams.UploadChunkAsync(exam.Id, init.FileId, index, chunk, length, null, CancellationToken.None);
+        }
+        var finalized = await exams.FinalizeFileAsync(exam.Id, init.FileId, new(sha), CancellationToken.None);
+
+        Assert.Equal("teacher-material.custom", finalized.Name);
+        Assert.Equal(bytes.LongLength, finalized.SizeBytes);
+        Assert.True(finalized.SizeBytes > StudentSubmissionPolicy.MaxBytes);
+    }
+
+    [Fact]
     public async Task ClassAndSessionLists_WorkOnSqlite_WithDateTimeOffsetSortKeys()
     {
         await using var database = await FileDatabase.CreateAsync();
@@ -233,6 +258,39 @@ public sealed class CoreWorkflowPersistenceTests
         Assert.True(await database.Context.SyncQueueSet.AnyAsync(x => x.EntityId == classroom.Id.ToString()));
         Assert.True(await database.Context.SyncQueueSet.AnyAsync(x => x.EntityId == exam.Id.ToString()));
         Assert.True(await database.Context.SyncQueueSet.AnyAsync(x => x.EntityId == session.Summary.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task StudentJoinValidationTests_EnforcesMembershipAndApprovalMode()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var classroom = await services.Classes.CreateAsync(new("Join", "JOIN", "2026-2027", null), CancellationToken.None);
+        await services.Classes.AddStudentAsync(classroom.Id, new("SV001", "Sinh viên Một", null, null), CancellationToken.None);
+        var exam = await services.Exams.CreateAsync(ExamRequest(classroom.Id, false), CancellationToken.None);
+        await services.Exams.PublishAsync(exam.Id, CancellationToken.None);
+
+        var approvalSession = await services.Sessions.CreateAsync(
+            new(exam.Id, classroom.Id, null, "{}", false, 40, "JOIN01"), "host", CancellationToken.None);
+        await services.Sessions.TransitionAsync(approvalSession.Summary.Id, SessionStatus.Waiting, null, CancellationToken.None);
+        var pending = await services.Sessions.JoinAsync(
+            new("JOIN01", "SV001", "Sinh viên Một", "Join", "device-1", "machine", "1", "nonce"),
+            Guid.NewGuid(), "SV001", "Sinh viên Một", "127.0.0.1", CancellationToken.None);
+        Assert.Equal(ParticipantStatus.PendingApproval, pending.Status);
+
+        var automaticSession = await services.Sessions.CreateAsync(
+            new(exam.Id, classroom.Id, null, "{}", true, 40, "JOIN02"), "host", CancellationToken.None);
+        await services.Sessions.TransitionAsync(automaticSession.Summary.Id, SessionStatus.Waiting, null, CancellationToken.None);
+        var approved = await services.Sessions.JoinAsync(
+            new("JOIN02", "SV001", "Sinh viên Một", "Join", "device-2", "machine", "1", "nonce"),
+            Guid.NewGuid(), "SV001", "Sinh viên Một", "127.0.0.1", CancellationToken.None);
+        Assert.Equal(ParticipantStatus.Approved, approved.Status);
+
+        var outsider = await Assert.ThrowsAsync<ApiException>(() => services.Sessions.JoinAsync(
+            new("JOIN02", "SV999", "Ngoài lớp", "Join", "device-3", "machine", "1", "nonce"),
+            Guid.NewGuid(), "SV999", "Ngoài lớp", "127.0.0.1", CancellationToken.None));
+        Assert.Equal(ErrorCodes.Forbidden, outsider.Code);
+        Assert.Contains("chưa có tên trong lớp học", outsider.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

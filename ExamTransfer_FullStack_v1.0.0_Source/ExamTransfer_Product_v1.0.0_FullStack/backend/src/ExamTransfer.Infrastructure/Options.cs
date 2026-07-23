@@ -29,6 +29,7 @@ public sealed class DiscoveryOptions
     public string Protocol { get; set; } = "UdpBroadcast";
     public int Port { get; set; } = 5050;
     public string RequestMagic { get; set; } = "EXAMTRANSFER_DISCOVER_V1";
+    public List<string> AdditionalAllowedCidrs { get; set; } = [];
 }
 
 public sealed class StorageOptions

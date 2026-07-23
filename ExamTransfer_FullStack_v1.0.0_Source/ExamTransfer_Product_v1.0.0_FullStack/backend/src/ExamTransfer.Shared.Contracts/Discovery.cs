@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace ExamTransfer.Shared.Contracts;
 
@@ -36,7 +37,10 @@ public static class DiscoveryProtocol
             {
                 ServerName = parsed.ServerName.Trim(),
                 Address = address.ToString(),
-                Fingerprint = parsed.Fingerprint.Trim().ToLowerInvariant()
+                Fingerprint = parsed.Fingerprint.Trim().ToLowerInvariant(),
+                ServerId = string.IsNullOrWhiteSpace(parsed.ServerId)
+                    ? parsed.Fingerprint.Trim().ToLowerInvariant()
+                    : parsed.ServerId.Trim()
             };
             return true;
         }
@@ -55,4 +59,9 @@ public sealed record DiscoveryServerDto(
     string Fingerprint,
     int ActiveRoomCount,
     string Version,
-    DateTimeOffset ServerNowUtc);
+    DateTimeOffset ServerNowUtc,
+    string? ServerId = null)
+{
+    [JsonIgnore]
+    public string BaseAddress => $"http://{Address}:{Port}";
+}

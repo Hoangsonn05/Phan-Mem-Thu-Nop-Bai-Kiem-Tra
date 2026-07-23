@@ -194,8 +194,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                 throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể thêm file vào bài kiểm tra ở trạng thái hiện tại.", 409);
 
             var normalizedName = Path.GetFileName(request.FileName);
-            var rule = exam.ParseFileRule();
-            ValidateFile(normalizedName, request.SizeBytes, request.Sha256, rule);
+            ValidateFile(normalizedName, request.SizeBytes, request.Sha256);
 
             var copiedFiles = new List<(ExamFile Entity, string FullPath)>();
             var persisted = false;
@@ -211,8 +210,6 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                         normalizedName,
                         cancellationToken);
                 }
-
-                ValidateAggregateFileRules(exam, normalizedName, request.SizeBytes, rule);
 
                 var chunkSize = Math.Clamp(
                     request.ChunkSizeBytes ?? _options.Transfer.ChunkSizeBytes,
@@ -658,11 +655,11 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(subject) || duration <= 0) throw new ApiException(ErrorCodes.ValidationFailed, "Tiêu đề, môn học và thời lượng hợp lệ là bắt buộc.");
         if (rule.MaxFileSizeBytes <= 0 || rule.MaxTotalSizeBytes <= 0 || rule.MaxFileCount <= 0) throw new ApiException(ErrorCodes.ValidationFailed, "Quy tắc file không hợp lệ.");
     }
-    private static void ValidateFile(string name, long size, string sha, FileRuleDto rule)
+    private static void ValidateFile(string name, long size, string sha)
     {
-        var ext = Path.GetExtension(name).ToLowerInvariant();
-        if (rule.AllowedExtensions.Count > 0 && !rule.AllowedExtensions.Select(x => x.ToLowerInvariant()).Contains(ext)) throw new ApiException(ErrorCodes.InvalidFileType, $"Định dạng {ext} không được phép.");
-        if (size <= 0 || size > rule.MaxFileSizeBytes) throw new ApiException(ErrorCodes.FileTooLarge, "Kích thước file không hợp lệ hoặc vượt giới hạn.");
+        if (string.IsNullOrWhiteSpace(name) || name is "." or ".." || Path.GetFileName(name) != name)
+            throw new ApiException(ErrorCodes.ValidationFailed, "Tên file đề không hợp lệ.");
+        if (size <= 0) throw new ApiException(ErrorCodes.ValidationFailed, "Kích thước file đề phải lớn hơn 0.");
         if (sha.Length != 64 || !sha.All(Uri.IsHexDigit)) throw new ApiException(ErrorCodes.ValidationFailed, "SHA-256 không hợp lệ.");
     }
     private static void EnsureRowVersion(string current, string supplied) { if (current != supplied) throw new ApiException(ErrorCodes.ConcurrencyConflict, "Dữ liệu đã thay đổi.", 409, details: new { currentRowVersion = current }); }

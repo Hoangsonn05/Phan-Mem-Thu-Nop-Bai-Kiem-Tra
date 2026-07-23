@@ -32,6 +32,7 @@ public interface IBackendClient
 public interface ILanDiscoveryService
 {
     Task<IReadOnlyList<DiscoveryServerDto>> DiscoverAsync(TimeSpan timeout, CancellationToken ct = default);
+    Task<IReadOnlyList<OpenSessionDiscoveryDto>> DiscoverOpenSessionsAsync(TimeSpan timeout, CancellationToken ct = default);
 }
 
 public enum StudentConnectionState { Stopped, Connecting, Online, Reconnecting, Offline, AuthenticationExpired }
@@ -51,6 +52,14 @@ public interface IStudentRealtimeService : IDisposable
     event EventHandler<string>? EventReceived;
     Task StartAsync(CancellationToken ct = default);
     Task StopAsync(CancellationToken ct = default);
+}
+
+public interface ISubmissionRecoveryService : IDisposable
+{
+    int PendingCount { get; }
+    event EventHandler<int>? PendingCountChanged;
+    void Start();
+    void Trigger();
 }
 
 public interface IFileDialogService { string? PickFile(string filter); }

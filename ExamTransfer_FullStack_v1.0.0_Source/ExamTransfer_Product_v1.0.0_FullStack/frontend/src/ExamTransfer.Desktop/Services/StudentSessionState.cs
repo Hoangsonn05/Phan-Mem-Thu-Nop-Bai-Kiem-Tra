@@ -14,6 +14,8 @@ public sealed class StudentSessionState : ObservableObject
     private string studentCode = string.Empty;
     private Guid? lastSubmissionId;
     private ReceiptDto? lastReceipt;
+    private SessionAccessMode accessMode = SessionAccessMode.LanOnly;
+    private string? serverId;
 
     public Guid? SessionId { get => sessionId; set => Set(ref sessionId, value); }
     public Guid? ParticipantId { get => participantId; set => Set(ref participantId, value); }
@@ -24,11 +26,13 @@ public sealed class StudentSessionState : ObservableObject
     public string StudentCode { get => studentCode; set => Set(ref studentCode, value); }
     public Guid? LastSubmissionId { get => lastSubmissionId; set => Set(ref lastSubmissionId, value); }
     public ReceiptDto? LastReceipt { get => lastReceipt; set => Set(ref lastReceipt, value); }
+    public SessionAccessMode AccessMode { get => accessMode; set => Set(ref accessMode, value); }
+    public string? ServerId { get => serverId; set => Set(ref serverId, value); }
 
     public bool HasSession => SessionId.HasValue && ParticipantId.HasValue;
     public event EventHandler? SessionChanged;
 
-    public void ApplyJoin(JoinSessionResponse response, string room, string code, string name)
+    public void ApplyJoin(JoinSessionResponse response, string room, string code, string name, SessionAccessMode mode = SessionAccessMode.LanOnly, string? discoveredServerId = null)
     {
         SessionId = response.SessionId;
         ParticipantId = response.ParticipantId;
@@ -36,6 +40,8 @@ public sealed class StudentSessionState : ObservableObject
         RoomCode = room;
         StudentCode = code;
         DisplayName = name;
+        AccessMode = mode;
+        ServerId = discoveredServerId;
         SessionChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -48,6 +54,8 @@ public sealed class StudentSessionState : ObservableObject
         RoomCode = string.Empty;
         LastSubmissionId = null;
         LastReceipt = null;
+        AccessMode = SessionAccessMode.LanOnly;
+        ServerId = null;
         SessionChanged?.Invoke(this, EventArgs.Empty);
     }
 }

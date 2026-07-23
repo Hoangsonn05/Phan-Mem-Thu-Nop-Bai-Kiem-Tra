@@ -54,6 +54,7 @@
                             <DataGridTextColumn Header="PHÒNG" Binding="{Binding RoomCode}" Width="90" />
                             <DataGridTextColumn Header="BÀI KIỂM TRA" Binding="{Binding Title}" Width="*" />
                             <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="110" />
+                            <DataGridTextColumn Header="PHẠM VI" Binding="{Binding AccessMode}" Width="100" />
                             <DataGridTextColumn Header="KẾT NỐI" Binding="{Binding Counts.Connected}" Width="80" />
                             <DataGridTextColumn Header="ĐÃ NỘP" Binding="{Binding Counts.Submitted}" Width="75" />
                         </DataGrid.Columns>
@@ -123,6 +124,15 @@
                     <CheckBox Content="Tự động duyệt học sinh"
                               IsChecked="{Binding AutoApprove}"
                               Margin="0,16,0,0" />
+                    <TextBlock Text="Phạm vi phiên thi"
+                               Style="{StaticResource LabelText}"
+                               Margin="0,12,0,6" />
+                    <ComboBox ItemsSource="{Binding AccessModes}"
+                              SelectedItem="{Binding AccessMode}" />
+                    <Button Content="Lưu chế độ duyệt"
+                            Command="{Binding SaveSettingsCommand}"
+                            Style="{StaticResource SecondaryButton}"
+                            Margin="0,12,0,0" />
                     <Border Style="{StaticResource SubtleCard}" Margin="0,16,0,0">
                         <TextBlock Text="Sau khi tạo, dùng nút Mở phòng để phát mã phòng và nhận yêu cầu tham gia trong mạng LAN."
                                    Style="{StaticResource BodyText}" />

@@ -2,9 +2,10 @@
 
 ## Operating model
 
-ExamTransfer remains local-first. SQLite and local file storage are authoritative
-while a room is running. Supabase is an asynchronous cloud projection and archive.
-A cloud outage never rolls back or stops LAN exam operations.
+ExamTransfer uses split authority. SQLite and local file storage are authoritative
+for `LanOnly`; Supabase is authoritative for PublicCloud enrollment, participants,
+devices, violations, submissions, and quiz attempts. A cloud outage never rolls
+back or stops LAN exam operations.
 
 ## Access modes
 
@@ -25,8 +26,8 @@ used on student or generally distributed teacher machines.
 
 ## Canonical cloud source
 
-`backend/supabase` is the only migration source. Do not recreate a second
-`database/supabase` tree.
+`backend/supabase` is the only migration source. `database/supabase` may contain
+only its legacy README and must not contain config, seed, functions, or migrations.
 
 Migrations:
 

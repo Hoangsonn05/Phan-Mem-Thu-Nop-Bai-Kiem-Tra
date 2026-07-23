@@ -2,6 +2,8 @@ namespace ExamTransfer.Shared.Contracts;
 
 public enum UserRole { Admin, Teacher, Student }
 public enum ClassStatus { Active, Archived }
+public enum ClassAccessMode { Private, Public }
+public enum SessionAccessMode { LanOnly, PublicCloud }
 public enum ExamStatus { Draft, Published, Archived, Cancelled }
 public enum ExamDeliveryType { FileSubmission, MultipleChoice }
 public enum QuizAttemptStatus { InProgress, Finalized }
@@ -20,3 +22,18 @@ public enum BackupStatus { Creating, Ready, Invalid, RestorePending, Failed }
 public enum MessageType { Information, Warning, TimeChange, System }
 public enum TransferDirection { Download, Upload }
 public enum ControlActionType { Warn, Unlock, EndDeviceSession, RequestExplanation }
+public enum DeviceCommandType
+{
+    ApplyPolicy,
+    UpdatePolicy,
+    ShowWarning,
+    LockExamApplication,
+    UnlockExamApplication,
+    ForceFocusExamApplication,
+    RequestDeviceSnapshot,
+    RequestRunningProcesses,
+    ForceSubmit,
+    EndDeviceSession,
+    ClearPolicy
+}
+public enum DeviceCommandStatus { Pending, Received, Executed, Failed, Expired, Ignored }

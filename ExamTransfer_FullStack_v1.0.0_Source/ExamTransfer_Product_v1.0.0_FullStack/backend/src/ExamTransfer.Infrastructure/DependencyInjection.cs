@@ -74,6 +74,7 @@ public static class DependencyInjection
         services.AddScoped<IBackupService, BackupService>();
         services.AddScoped<ISystemService, SystemService>();
         services.AddScoped<IQuizService, QuizService>();
+        services.AddSingleton<ILanAccessPolicy, LanAccessPolicy>();
         return services;
     }
 }

@@ -119,6 +119,8 @@ public sealed class LoginViewModel : ObservableObject
                     throw new InvalidOperationException("Hồ sơ sinh viên chưa có ngày sinh.");
             }
 
+            if (current.Role == UserRole.Student && AppServices.PublicCloud.Configured)
+                await AppServices.PublicCloud.LoginAsync(Account.Trim(), Password, cts.Token);
             authState.SetAuthenticated(current, result.AccessToken);
             Password = string.Empty;
             Status = "Đăng nhập thành công.";

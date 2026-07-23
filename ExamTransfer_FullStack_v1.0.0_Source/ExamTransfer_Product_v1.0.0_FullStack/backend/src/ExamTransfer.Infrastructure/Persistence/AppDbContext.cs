@@ -33,6 +33,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<ExportJob> ExportJobsSet => Set<ExportJob>();
     public DbSet<BackupRecord> BackupsSet => Set<BackupRecord>();
     public DbSet<SyncQueueItem> SyncQueueSet => Set<SyncQueueItem>();
+    public DbSet<PublicCloudPullCursor> PublicCloudPullCursorsSet => Set<PublicCloudPullCursor>();
+    public DbSet<PublicCloudReplicaRecord> PublicCloudReplicaRecordsSet => Set<PublicCloudReplicaRecord>();
+    public DbSet<PublicCloudIdMapping> PublicCloudIdMappingsSet => Set<PublicCloudIdMapping>();
+    public DbSet<PublicCloudPullFailure> PublicCloudPullFailuresSet => Set<PublicCloudPullFailure>();
     public DbSet<AppSetting> AppSettingsSet => Set<AppSetting>();
 
     IQueryable<User> IAppDbContext.Users => UsersSet;
@@ -113,6 +117,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureEntity<ExportJob>(modelBuilder, "export_jobs");
         ConfigureEntity<BackupRecord>(modelBuilder, "backups");
         ConfigureEntity<SyncQueueItem>(modelBuilder, "sync_queue");
+        ConfigureEntity<PublicCloudPullCursor>(modelBuilder, "public_cloud_pull_cursors");
+        ConfigureEntity<PublicCloudReplicaRecord>(modelBuilder, "public_cloud_replica_records");
+        ConfigureEntity<PublicCloudIdMapping>(modelBuilder, "public_cloud_id_mappings");
+        ConfigureEntity<PublicCloudPullFailure>(modelBuilder, "public_cloud_pull_failures");
 
         modelBuilder.Entity<AppSetting>(entity =>
         {
@@ -146,6 +154,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<ExportJob>().HasIndex(x => new { x.Status, x.CreatedAtUtc });
         modelBuilder.Entity<BackupRecord>().HasIndex(x => x.CreatedAtUtc);
         modelBuilder.Entity<SyncQueueItem>().HasIndex(x => new { x.Status, x.NextRetryAtUtc });
+        modelBuilder.Entity<PublicCloudPullCursor>().HasIndex(x => x.EntityName).IsUnique();
+        modelBuilder.Entity<PublicCloudReplicaRecord>().HasIndex(x => new { x.EntityName, x.CloudEntityId }).IsUnique();
+        modelBuilder.Entity<PublicCloudReplicaRecord>().HasIndex(x => new { x.EntityName, x.CloudVersion });
+        modelBuilder.Entity<PublicCloudIdMapping>().HasIndex(x => new { x.EntityName, x.CloudEntityId }).IsUnique();
+        modelBuilder.Entity<PublicCloudPullFailure>().HasIndex(x => new { x.ResolvedAtUtc, x.NextRetryAtUtc });
 
         modelBuilder.Entity<ClassMember>().HasOne(x => x.Class).WithMany(x => x.Members).HasForeignKey(x => x.ClassId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<Exam>().HasOne(x => x.Class).WithMany().HasForeignKey(x => x.ClassId).OnDelete(DeleteBehavior.Restrict);

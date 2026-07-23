@@ -44,12 +44,23 @@ public sealed class ClassRoom : EntityBase
     public string SchoolYear { get; set; } = string.Empty;
     public string? Description { get; set; }
     public ClassStatus Status { get; set; } = ClassStatus.Active;
+    public ClassAccessMode AccessMode { get; set; } = ClassAccessMode.Private;
+    public bool EnrollmentOpen { get; set; }
+    public bool RequireEnrollmentApproval { get; set; } = true;
+    public string? EnrollmentCodeHash { get; set; }
+    public DateTimeOffset? EnrollmentOpenedAtUtc { get; set; }
+    public DateTimeOffset? EnrollmentClosedAtUtc { get; set; }
+    public int PublicVersion { get; set; }
     public Guid? CreatedBy { get; set; }
     public ICollection<ClassMember> Members { get; set; } = new List<ClassMember>();
 }
 
 public sealed class ClassMember : EntityBase
 {
+    public string SourceMode { get; set; } = "Lan";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "LocalOnly";
     public Guid ClassId { get; set; }
     public ClassRoom Class { get; set; } = null!;
     public Guid? UserId { get; set; }
@@ -99,6 +110,10 @@ public sealed class QuizChoice : EntityBase
 
 public sealed class QuizAttempt : EntityBase
 {
+    public string SourceMode { get; set; } = "Lan";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "LocalOnly";
     public Guid SessionId { get; set; }
     public ExamSession Session { get; set; } = null!;
     public Guid ParticipantId { get; set; }
@@ -117,6 +132,10 @@ public sealed class QuizAttempt : EntityBase
 
 public sealed class QuizAnswer : EntityBase
 {
+    public string SourceMode { get; set; } = "Lan";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "LocalOnly";
     public Guid AttemptId { get; set; }
     public QuizAttempt Attempt { get; set; } = null!;
     public Guid QuestionId { get; set; }
@@ -159,6 +178,7 @@ public sealed class ExamSession : EntityBase
     public DateTimeOffset? EndedAtUtc { get; set; }
     public string SettingsJson { get; set; } = "{}";
     public bool AutoApprove { get; set; }
+    public SessionAccessMode AccessMode { get; set; } = SessionAccessMode.LanOnly;
     public int? Capacity { get; set; }
     public bool AcceptingParticipants { get; set; } = true;
     public long Sequence { get; set; }
@@ -180,6 +200,10 @@ public sealed class ExamSession : EntityBase
 
 public sealed class SessionParticipant : EntityBase
 {
+    public string SourceMode { get; set; } = "Lan";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "LocalOnly";
     public Guid SessionId { get; set; }
     public ExamSession Session { get; set; } = null!;
     public Guid? UserId { get; set; }
@@ -225,6 +249,10 @@ public sealed class Message : EntityBase
 
 public sealed class Submission : EntityBase
 {
+    public string SourceMode { get; set; } = "Lan";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "LocalOnly";
     public Guid SessionId { get; set; }
     public ExamSession Session { get; set; } = null!;
     public Guid ParticipantId { get; set; }
@@ -252,6 +280,10 @@ public sealed class Submission : EntityBase
 
 public sealed class SubmissionFile : EntityBase
 {
+    public string SourceMode { get; set; } = "Lan";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "LocalOnly";
     public Guid SubmissionId { get; set; }
     public Submission Submission { get; set; } = null!;
     public string ClientFileId { get; set; } = string.Empty;
@@ -331,6 +363,10 @@ public sealed class DevicePolicyStatus : EntityBase
 
 public sealed class Violation : EntityBase
 {
+    public string SourceMode { get; set; } = "Lan";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "LocalOnly";
     public Guid SessionId { get; set; }
     public Guid ParticipantId { get; set; }
     public string Type { get; set; } = string.Empty;
@@ -397,6 +433,42 @@ public sealed class SyncQueueItem : EntityBase
     public long UploadOffset { get; set; }
     public DateTimeOffset? LastAttemptAtUtc { get; set; }
     public DateTimeOffset? CompletedAtUtc { get; set; }
+}
+
+public sealed class PublicCloudPullCursor : EntityBase
+{
+    public string EntityName { get; set; } = string.Empty;
+    public long LastCloudVersion { get; set; }
+    public DateTimeOffset? LastUpdatedAtUtc { get; set; }
+    public string? LastEntityId { get; set; }
+}
+
+public sealed class PublicCloudReplicaRecord : EntityBase
+{
+    public string EntityName { get; set; } = string.Empty;
+    public string CloudEntityId { get; set; } = string.Empty;
+    public long CloudVersion { get; set; }
+    public DateTimeOffset CloudUpdatedAtUtc { get; set; }
+    public string PayloadJson { get; set; } = "{}";
+}
+
+public sealed class PublicCloudIdMapping : EntityBase
+{
+    public string EntityName { get; set; } = string.Empty;
+    public string CloudEntityId { get; set; } = string.Empty;
+    public Guid LocalEntityId { get; set; }
+}
+
+public sealed class PublicCloudPullFailure : EntityBase
+{
+    public string EntityName { get; set; } = string.Empty;
+    public string? CloudEntityId { get; set; }
+    public string ErrorClass { get; set; } = string.Empty;
+    public string ErrorMessage { get; set; } = string.Empty;
+    public string? PayloadJson { get; set; }
+    public int RetryCount { get; set; }
+    public DateTimeOffset? NextRetryAtUtc { get; set; }
+    public DateTimeOffset? ResolvedAtUtc { get; set; }
 }
 
 public sealed class AppSetting

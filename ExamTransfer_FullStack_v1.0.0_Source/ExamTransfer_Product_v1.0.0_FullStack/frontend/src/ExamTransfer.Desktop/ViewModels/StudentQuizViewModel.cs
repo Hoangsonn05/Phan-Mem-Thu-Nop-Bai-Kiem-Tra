@@ -36,8 +36,13 @@ public sealed class StudentQuizViewModel : ProductPageBase
         if (!session.HasSession) { Status = "Hãy tham gia phòng trước."; StatusTone = "warning"; return; }
         await RunAsync("Đang mở bài trắc nghiệm", "Bài trắc nghiệm đã sẵn sàng", async token =>
         {
-            api.SetParticipantToken(session.AccessToken);
-            Attempt = ApiGuard.Require(await api.PostAsync<object, QuizAttemptDto>($"api/v1/student/quiz/sessions/{session.SessionId}/attempt", new { }, token));
+            if (session.AccessMode == SessionAccessMode.PublicCloud)
+                Attempt = await AppServices.PublicCloud.StartQuizAttemptAsync(session.SessionId!.Value, token);
+            else
+            {
+                api.SetParticipantToken(session.AccessToken);
+                Attempt = ApiGuard.Require(await api.PostAsync<object, QuizAttemptDto>($"api/v1/student/quiz/sessions/{session.SessionId}/attempt", new { }, token));
+            }
             localAnswers.Clear();
             foreach (var answer in Attempt.Answers) localAnswers[answer.QuestionId] = answer;
             foreach (var answer in await QuizLocalStore.LoadAsync(Attempt.Id, token))
@@ -85,8 +90,11 @@ public sealed class StudentQuizViewModel : ProductPageBase
         await syncGate.WaitAsync(ct);
         try
         {
-            var response = ApiGuard.Require(await api.PutAsync<SyncQuizAnswersRequest, SyncQuizAnswersResultDto>(
-                $"api/v1/student/quiz/attempts/{Attempt.Id}/answers", new(localAnswers.Values.OrderBy(x => x.QuestionId).ToList()), ct));
+            var payload = localAnswers.Values.OrderBy(x => x.QuestionId).ToList();
+            var response = session.AccessMode == SessionAccessMode.PublicCloud
+                ? await AppServices.PublicCloud.SaveQuizAnswersAsync(Attempt.Id, payload, ct)
+                : ApiGuard.Require(await api.PutAsync<SyncQuizAnswersRequest, SyncQuizAnswersResultDto>(
+                    $"api/v1/student/quiz/attempts/{Attempt.Id}/answers", new(payload), ct));
             foreach (var answer in response.Answers) localAnswers[answer.QuestionId] = answer;
             await QuizLocalStore.SaveAsync(Attempt.Id, localAnswers.Values, ct);
             if (showStatus) { Status = "Đã đồng bộ đáp án với máy chủ"; StatusTone = "success"; }
@@ -102,8 +110,11 @@ public sealed class StudentQuizViewModel : ProductPageBase
     {
         if (Attempt is null || !AppServices.Dialogs.Confirm("Chốt bài trắc nghiệm", "Sau khi chốt sẽ không thể sửa đáp án. Tiếp tục?")) return;
         await SyncAsync(ct, true);
-        Attempt = ApiGuard.Require(await api.PostAsync<FinalizeQuizAttemptRequest, QuizAttemptDto>(
-            $"api/v1/student/quiz/attempts/{Attempt.Id}/finalize", new(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow), ct));
+        var idempotencyKey = Guid.NewGuid().ToString("N");
+        Attempt = session.AccessMode == SessionAccessMode.PublicCloud
+            ? await AppServices.PublicCloud.FinalizeQuizAttemptAsync(Attempt.Id, idempotencyKey, ct)
+            : ApiGuard.Require(await api.PostAsync<FinalizeQuizAttemptRequest, QuizAttemptDto>(
+                $"api/v1/student/quiz/attempts/{Attempt.Id}/finalize", new(idempotencyKey, DateTimeOffset.UtcNow), ct));
         Raise(nameof(Result));
     });
 

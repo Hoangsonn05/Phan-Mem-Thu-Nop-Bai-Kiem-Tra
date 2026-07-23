@@ -13,6 +13,14 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
         base.OnStartup(e);
+        ViewModels.AppServices.SubmissionRecovery.Start();
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        ViewModels.AppServices.SubmissionRecovery.Dispose();
+        ViewModels.AppServices.PublicRealtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        base.OnExit(e);
     }
 
     private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

@@ -10,9 +10,10 @@ using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SessionService(AppDbContext db, ISessionTokenService tokens, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger) : ISessionService
+public sealed class SessionService(AppDbContext db, ISessionTokenService tokens, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, ILanAccessPolicy? lanAccessPolicy = null) : ISessionService
 {
     private readonly ExamTransferOptions _options = options.Value;
+    private readonly ILanAccessPolicy _lanAccessPolicy = lanAccessPolicy ?? new Security.LanAccessPolicy(options);
 
     public async Task<PagedResult<SessionSummaryDto>> ListAsync(SessionStatus? status, int page, int pageSize, CancellationToken cancellationToken)
     {
@@ -72,8 +73,14 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             var effectiveClassId = request.ClassId ?? exam.ClassId;
             if (request.ClassId.HasValue && exam.ClassId.HasValue && request.ClassId.Value != exam.ClassId.Value)
                 throw new ApiException(ErrorCodes.ValidationFailed, "Lớp của phòng thi phải trùng với lớp của bài kiểm tra.", 422);
-            if (effectiveClassId.HasValue && !await db.ClassesSet.AnyAsync(x => x.Id == effectiveClassId.Value, cancellationToken))
-                throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp được chọn.", 404);
+            ClassRoom? classroom = null;
+            if (effectiveClassId.HasValue)
+            {
+                classroom = await db.ClassesSet.FirstOrDefaultAsync(x => x.Id == effectiveClassId.Value, cancellationToken)
+                    ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp được chọn.", 404);
+            }
+            if (request.AccessMode == SessionAccessMode.PublicCloud && classroom?.AccessMode != ClassAccessMode.Public)
+                throw new ApiException(ErrorCodes.ValidationFailed, "Chỉ lớp public mới có thể tạo phòng PublicCloud.", 422);
             var roomCode = string.IsNullOrWhiteSpace(request.CustomRoomCode) ? await GenerateRoomCodeAsync(cancellationToken) : request.CustomRoomCode.Trim().ToUpperInvariant();
             if (roomCode.Length < 4 || roomCode.Length > 12) throw new ApiException(ErrorCodes.ValidationFailed, "Mã phòng phải dài 4-12 ký tự.");
             if (await db.ExamSessionsSet.AnyAsync(x => x.RoomCode == roomCode && x.Status != SessionStatus.Archived && x.Status != SessionStatus.Cancelled && x.Status != SessionStatus.Finished, cancellationToken))
@@ -82,11 +89,12 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             {
                 ExamId = request.ExamId, ClassId = effectiveClassId, RoomCode = roomCode,
                 HostDeviceId = hostDeviceId, PlannedStartUtc = request.PlannedStartUtc, SettingsJson = string.IsNullOrWhiteSpace(request.SettingsJson) ? "{}" : request.SettingsJson,
-                AutoApprove = request.AutoApprove, Capacity = request.Capacity, Status = SessionStatus.Draft, AcceptingParticipants = true
+                AutoApprove = request.AutoApprove, Capacity = request.Capacity, Status = SessionStatus.Draft, AcceptingParticipants = true,
+                AccessMode = request.AccessMode
             };
             db.ExamSessionsSet.Add(session); await db.SaveChangesAsync(cancellationToken);
             session.Exam = exam;
-            await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, session, cancellationToken);
+            await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, ToCloud(session), cancellationToken);
             await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", ToCloud(session), cancellationToken: cancellationToken);
             return ToDetail(session);
         }, cancellationToken);
@@ -96,15 +104,26 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
     {
         var session = await db.ExamSessionsSet.Include(x => x.Exam).Include(x => x.Participants).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
-        if (session.Status != SessionStatus.Draft) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ sửa phòng ở trạng thái Draft.", 409);
+        if (session.Status is not (SessionStatus.Draft or SessionStatus.Waiting)) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ sửa phòng trước khi bắt đầu thi.", 409);
         EnsureRowVersion(session.RowVersion, request.RowVersion);
         ValidateSessionConfiguration(request.SettingsJson, request.Capacity);
         session.PlannedStartUtc = request.PlannedStartUtc;
         session.SettingsJson = string.IsNullOrWhiteSpace(request.SettingsJson) ? "{}" : request.SettingsJson;
+        var pending = session.Participants.Where(x => x.Status == ParticipantStatus.PendingApproval).ToList();
+        if (!session.AutoApprove && request.AutoApprove && pending.Count > 0 && !request.ApprovePendingParticipants)
+            throw new ApiException(ErrorCodes.Conflict, "Cần xác nhận trước khi duyệt toàn bộ yêu cầu đang chờ.", 409, details: new { pendingCount = pending.Count, requiresConfirmation = true });
         session.AutoApprove = request.AutoApprove;
+        if (request.AutoApprove && request.ApprovePendingParticipants)
+        {
+            foreach (var participant in pending)
+            {
+                participant.Status = ParticipantStatus.Approved;
+                participant.ApprovedAtUtc = DateTimeOffset.UtcNow;
+            }
+        }
         session.Capacity = request.Capacity;
         await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("SessionUpdated", nameof(ExamSession), session.Id.ToString(), session.Id, null, session, cancellationToken);
+        await audit.WriteAsync("SessionUpdated", nameof(ExamSession), session.Id.ToString(), session.Id, null, ToCloud(session), cancellationToken);
         await outbox.EnqueueAsync(
             "exam_sessions",
             session.Id.ToString(),
@@ -149,6 +168,17 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         var session = await db.ExamSessionsSet.Include(x => x.Exam).Include(x => x.Participants).FirstOrDefaultAsync(x => x.RoomCode == roomCode, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
         if (session.Status != SessionStatus.Waiting || !session.AcceptingParticipants) throw new ApiException(ErrorCodes.InvalidStateTransition, "Phòng chưa mở hoặc đã khóa nhận người mới.", 409);
+        if (session.AccessMode == SessionAccessMode.LanOnly && !_lanAccessPolicy.IsAllowed(ipAddress))
+            throw new ApiException(ErrorCodes.LanAccessDenied, "Thiết bị không nằm trong mạng nội bộ được phép của phòng thi.", 403);
+        if (session.ClassId.HasValue)
+        {
+            var members = await db.ClassMembersSet.AsNoTracking().Where(x => x.ClassId == session.ClassId.Value).ToListAsync(cancellationToken);
+            var normalizedCode = studentCode.Trim();
+            var isMember = members.Any(x => x.UserId == accountUserId)
+                || members.Any(x => !x.UserId.HasValue && x.StudentCode.Trim().Equals(normalizedCode, StringComparison.OrdinalIgnoreCase));
+            if (!isMember)
+                throw new ApiException(ErrorCodes.Forbidden, "Bạn chưa có tên trong lớp học của phòng này. Hãy liên hệ giáo viên để được thêm vào lớp.", 403);
+        }
         if (session.Capacity.HasValue && session.Participants.Count >= session.Capacity.Value) throw new ApiException(ErrorCodes.Conflict, "Phòng đã đủ số lượng.", 409);
         var existing = session.Participants.FirstOrDefault(x => x.StudentCode.Equals(studentCode.Trim(), StringComparison.OrdinalIgnoreCase));
         if (existing is not null)
@@ -178,7 +208,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         };
         db.SessionParticipantsSet.Add(participant); session.Sequence++;
         await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ParticipantJoined", nameof(SessionParticipant), participant.Id.ToString(), session.Id, null, participant, cancellationToken);
+        await audit.WriteAsync("ParticipantJoined", nameof(SessionParticipant), participant.Id.ToString(), session.Id, null, ToCloud(participant), cancellationToken);
         await outbox.EnqueueAsync(
             "session_participants",
             participant.Id.ToString(),
@@ -206,7 +236,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             participant.DeviceId,
             participant.Status,
             ParticipantTokenLifetime(participant.Session));
-        await audit.WriteAsync("ParticipantApproved", nameof(SessionParticipant), participant.Id.ToString(), sessionId, null, participant, cancellationToken);
+        await audit.WriteAsync("ParticipantApproved", nameof(SessionParticipant), participant.Id.ToString(), sessionId, null, ToCloud(participant), cancellationToken);
         await outbox.EnqueueAsync(
             "session_participants",
             participant.Id.ToString(),
@@ -223,7 +253,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
         participant.Status = ParticipantStatus.Rejected; participant.Session.Sequence++;
         await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ParticipantRejected", nameof(SessionParticipant), participant.Id.ToString(), sessionId, null, new { participant, reason }, cancellationToken);
+        await audit.WriteAsync("ParticipantRejected", nameof(SessionParticipant), participant.Id.ToString(), sessionId, null, new { participant = ToCloud(participant), reason }, cancellationToken);
         await outbox.EnqueueAsync(
             "session_participants",
             participant.Id.ToString(),
@@ -405,12 +435,14 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             .OrderBy(x => x.StudentCode)
             .Select(x => x.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds, ParticipantDeadline(x)))
             .ToList(),
-        session.SettingsJson);
+        session.SettingsJson,
+        session.PlannedStartUtc,
+        session.Capacity);
     private SessionSummaryDto ToSummary(ExamSession s)
     {
         var p = s.Participants; var now = DateTimeOffset.UtcNow;
         var counts = new SessionCountsDto(p.Count, p.Count(x => x.Status == ParticipantStatus.PendingApproval), p.Count(x => x.Status == ParticipantStatus.Approved), p.Count(x => x.LastSeenUtc.HasValue && now - x.LastSeenUtc <= TimeSpan.FromSeconds(_options.Session.DisconnectAfterSeconds)), p.Count(x => x.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted), p.Count(x => x.SubmissionStatus == SubmissionStatus.Uploading), p.Count(x => x.Status == ParticipantStatus.Disconnected));
-        return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion);
+        return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion, s.AccessMode, s.AutoApprove);
     }
     private static DateTimeOffset? EffectiveDeadline(ExamSession s) => s.StartedAtUtc?.AddMinutes(s.Exam.DurationMinutes);
     private static DateTimeOffset? ParticipantDeadline(SessionParticipant participant) =>
@@ -471,6 +503,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         ended_at = x.EndedAtUtc,
         settings_json = x.SettingsJson,
         auto_approve = x.AutoApprove,
+        access_mode = x.AccessMode.ToString(),
         capacity = x.Capacity,
         accepting_participants = x.AcceptingParticipants,
         sequence = x.Sequence,

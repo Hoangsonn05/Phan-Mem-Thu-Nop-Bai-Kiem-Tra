@@ -52,7 +52,8 @@ public sealed class UdpDiscoveryService(IServiceScopeFactory scopeFactory, IOpti
                     MachineFingerprint(),
                     rooms,
                     typeof(UdpDiscoveryService).Assembly.GetName().Version?.ToString() ?? "1.0.0",
-                    DateTimeOffset.UtcNow));
+                    DateTimeOffset.UtcNow,
+                    MachineFingerprint()));
                 await udp.SendAsync(response, received.RemoteEndPoint, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }

@@ -20,8 +20,8 @@ public sealed record DashboardSummaryDto(
     IReadOnlyList<SessionSummaryDto> RecentSessions,
     IReadOnlyList<string> Warnings);
 
-public sealed record ClassSummaryDto(Guid Id, string Name, string Code, string SchoolYear, ClassStatus Status, int StudentCount, string RowVersion);
-public sealed record ClassDetailDto(Guid Id, string Name, string Code, string SchoolYear, string? Description, ClassStatus Status, IReadOnlyList<StudentDto> Students, string RowVersion);
+public sealed record ClassSummaryDto(Guid Id, string Name, string Code, string SchoolYear, ClassStatus Status, int StudentCount, string RowVersion, ClassAccessMode AccessMode = ClassAccessMode.Private, bool EnrollmentOpen = false);
+public sealed record ClassDetailDto(Guid Id, string Name, string Code, string SchoolYear, string? Description, ClassStatus Status, IReadOnlyList<StudentDto> Students, string RowVersion, ClassAccessMode AccessMode = ClassAccessMode.Private, bool EnrollmentOpen = false, bool RequireEnrollmentApproval = true);
 public sealed record StudentDto(Guid Id, string StudentCode, string DisplayName, string? Email, string? MetadataJson);
 
 public sealed record ExamSummaryDto(Guid Id, Guid? ClassId, string Title, string Subject, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, int FileCount, string RowVersion);
@@ -29,8 +29,30 @@ public sealed record ExamDetailDto(Guid Id, Guid? ClassId, string Title, string 
 public sealed record ExamManifestDto(Guid ExamId, int Version, DateTimeOffset GeneratedAtUtc, IReadOnlyList<FileDescriptorDto> Files);
 
 public sealed record SessionCountsDto(int Total, int Pending, int Approved, int Connected, int Submitted, int Uploading, int Disconnected);
-public sealed record SessionSummaryDto(Guid Id, Guid ExamId, string Title, string RoomCode, SessionStatus Status, DateTimeOffset ServerNowUtc, DateTimeOffset? StartTimeUtc, DateTimeOffset? EndTimeUtc, DateTimeOffset? EffectiveDeadlineUtc, SessionCountsDto Counts, long Sequence, string RowVersion);
-public sealed record SessionDetailDto(SessionSummaryDto Summary, IReadOnlyList<ParticipantDto> Participants, string SettingsJson);
+public sealed record SessionSummaryDto(Guid Id, Guid ExamId, string Title, string RoomCode, SessionStatus Status, DateTimeOffset ServerNowUtc, DateTimeOffset? StartTimeUtc, DateTimeOffset? EndTimeUtc, DateTimeOffset? EffectiveDeadlineUtc, SessionCountsDto Counts, long Sequence, string RowVersion, SessionAccessMode AccessMode = SessionAccessMode.LanOnly, bool AutoApprove = false);
+public sealed record SessionDetailDto(SessionSummaryDto Summary, IReadOnlyList<ParticipantDto> Participants, string SettingsJson, DateTimeOffset? PlannedStartUtc = null, int? Capacity = null);
+
+public sealed record OpenSessionDiscoveryDto(
+    Guid SessionId,
+    string RoomCode,
+    string RoomName,
+    Guid? ClassId,
+    string? ClassCode,
+    string? ClassName,
+    string ExamTitle,
+    string TeacherName,
+    SessionStatus SessionState,
+    bool RequireApproval,
+    int? Capacity,
+    int CurrentParticipantCount,
+    DateTimeOffset? StartedAtUtc,
+    DateTimeOffset? ScheduledStartUtc,
+    SessionAccessMode AccessMode,
+    string ServerId,
+    string ServerName,
+    string BaseAddress,
+    DateTimeOffset RespondedAtUtc,
+    string ProtocolVersion);
 
 public sealed record ParticipantDto(
     Guid Id,
@@ -60,6 +82,26 @@ public sealed record ControlCapabilitiesDto(bool Fullscreen, bool FocusMonitorin
 public sealed record ControlPolicyDto(Guid SessionId, int Version, bool Fullscreen, string FocusRule, string ClipboardRule, IReadOnlyList<string> AllowedProcesses, IReadOnlyList<string> BlockedProcesses, string NetworkRule, bool EmergencyExit, int TtlMinutes, string RowVersion);
 public sealed record DeviceControlStatusDto(Guid ParticipantId, int PolicyVersion, ControlCapabilitiesDto Capabilities, PolicyApplyStatus Status, string? Error, DateTimeOffset UpdatedAtUtc);
 public sealed record ViolationDto(Guid Id, Guid SessionId, Guid ParticipantId, string Type, ViolationSeverity Severity, DateTimeOffset OccurredAtUtc, string? PayloadJson, DateTimeOffset? HandledAtUtc, Guid? HandledBy);
+
+public sealed record DeviceCommandDto(
+    Guid CommandId,
+    Guid SessionId,
+    string DeviceId,
+    DeviceCommandType CommandType,
+    string PayloadJson,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset ExpiresAtUtc,
+    Guid IssuedBy,
+    string Signature);
+
+public sealed record DeviceCommandResultDto(
+    Guid CommandId,
+    string DeviceId,
+    DeviceCommandStatus Status,
+    DateTimeOffset ReceivedAtUtc,
+    DateTimeOffset? ExecutedAtUtc,
+    string? ErrorCode,
+    string? ErrorMessage);
 
 public sealed record ExportJobDto(Guid Id, Guid SessionId, ExportStatus Status, double Progress, string? OutputFileName, string? Error, DateTimeOffset CreatedAtUtc, DateTimeOffset? CompletedAtUtc);
 public sealed record BackupDto(Guid Id, string FileName, long SizeBytes, string Sha256, string SchemaVersion, bool Encrypted, BackupStatus Status, DateTimeOffset CreatedAtUtc);

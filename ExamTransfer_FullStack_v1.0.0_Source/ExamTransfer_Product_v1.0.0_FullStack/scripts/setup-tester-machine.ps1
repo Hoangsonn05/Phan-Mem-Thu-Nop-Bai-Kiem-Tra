@@ -121,12 +121,18 @@ if ($SupabaseUrl -and $PublishableKey -and $OrganizationId -ne [guid]::Empty) {
 if ($OpenAdminFirewall) {
     try {
         if (-not (Get-NetFirewallRule -DisplayName "ExamTransfer TCP 5048" -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -DisplayName "ExamTransfer TCP 5048" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5048 | Out-Null
+            New-NetFirewallRule -DisplayName "ExamTransfer TCP 5048" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5048 -Profile Private -RemoteAddress LocalSubnet | Out-Null
+        } else {
+            Get-NetFirewallRule -DisplayName "ExamTransfer TCP 5048" | Set-NetFirewallRule -Profile Private
+            Get-NetFirewallRule -DisplayName "ExamTransfer TCP 5048" | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet
         }
         if (-not (Get-NetFirewallRule -DisplayName "ExamTransfer UDP 5050" -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -DisplayName "ExamTransfer UDP 5050" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5050 | Out-Null
+            New-NetFirewallRule -DisplayName "ExamTransfer UDP 5050" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5050 -Profile Private -RemoteAddress LocalSubnet | Out-Null
+        } else {
+            Get-NetFirewallRule -DisplayName "ExamTransfer UDP 5050" | Set-NetFirewallRule -Profile Private
+            Get-NetFirewallRule -DisplayName "ExamTransfer UDP 5050" | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet
         }
-        Add-Result "Firewall" "FOUND" "Inbound TCP 5048 and UDP 5050 rules are present."
+        Add-Result "Firewall" "FOUND" "TCP 5048 and UDP 5050 are restricted to Private/LocalSubnet."
     } catch {
         Add-Result "Firewall" "MANUAL" "Run an elevated PowerShell to add TCP 5048 and UDP 5050: $($_.Exception.Message)"
     }

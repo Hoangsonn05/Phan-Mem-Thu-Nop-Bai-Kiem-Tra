@@ -22,7 +22,7 @@
 - SignalR hub và UDP discovery.
 - Submission init/chunk/status/finalize/receipt, attempt append-only, reject và resubmit.
 - Export background jobs, grading, control policy/violation, history/audit, backup/restore, settings và cloud sync adapter.
-- Supabase schema, RLS, bucket definitions và sync queue đã có trong `database/supabase`.
+- Supabase schema, RLS, RPC, Storage, Realtime policy và pgTAP có nguồn duy nhất trong `backend/supabase`; `database/supabase` chỉ còn README legacy.
 
 ## Giới hạn cần hardening trước production diện rộng
 

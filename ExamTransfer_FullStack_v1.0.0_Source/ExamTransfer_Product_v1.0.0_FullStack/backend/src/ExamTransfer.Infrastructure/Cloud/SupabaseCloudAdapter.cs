@@ -63,15 +63,43 @@ public sealed class SupabaseCloudAdapter(
         try
         {
             using var request = await CreateSyncRequestAsync(
-                HttpMethod.Get,
-                "/rest/v1/examtransfer_cloud_meta?select=schema_version&limit=1",
+                HttpMethod.Post,
+                "/rest/v1/rpc/get_examtransfer_cloud_capabilities",
                 cancellationToken);
+            request.Content = JsonContent.Create(new { });
             using var response = await httpClient.SendAsync(
                 request,
-                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
-
-            return response.IsSuccessStatusCode;
+            if (!response.IsSuccessStatusCode)
+                return false;
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var document = JsonDocument.Parse(content);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() == 1)
+                root = root[0];
+            if (!root.TryGetProperty("schemaVersion", out var schema)
+                || schema.GetInt32() != CloudSchemaCompatibility.RequiredVersion)
+                return false;
+            if (!root.TryGetProperty("criticalRpcs", out var rpcElement)
+                || rpcElement.ValueKind != JsonValueKind.Array)
+                return false;
+            var rpcs = rpcElement.EnumerateArray()
+                .Select(x => x.GetString())
+                .Where(x => x is not null)
+                .Cast<string>()
+                .ToHashSet(StringComparer.Ordinal);
+            if (!CloudSchemaCompatibility.CriticalRpcs.IsSubsetOf(rpcs))
+                return false;
+            if (!root.TryGetProperty("buckets", out var bucketElement)
+                || bucketElement.ValueKind != JsonValueKind.Array)
+                return false;
+            var buckets = bucketElement.EnumerateArray()
+                .Select(x => x.GetString())
+                .Where(x => x is not null)
+                .Cast<string>()
+                .ToHashSet(StringComparer.Ordinal);
+            return buckets.Contains("exam-archives")
+                && buckets.Contains("public-submission-archives");
         }
         catch
         {
@@ -119,7 +147,8 @@ public sealed class SupabaseCloudAdapter(
             && await CheckHealthAsync(cancellationToken);
 
         if (canSynchronize && !reachable)
-            warnings.Add("Không kết nối được Supabase ở thời điểm kiểm tra.");
+            warnings.Add(
+                "Supabase schema hiện tại không tương thích với phiên bản phần mềm, thiếu capability bắt buộc hoặc không thể kết nối. Hãy chạy migration trước khi bật PublicCloud; LAN vẫn hoạt động bằng SQLite.");
 
         return new CloudPreflightResult(
             Enabled,
@@ -194,30 +223,10 @@ public sealed class SupabaseCloudAdapter(
         if (table is not null)
         {
             var payload = BuildPayload(
+                item.EntityType,
                 item.PayloadJson,
                 cloudObjectPath);
-
-            using var request = await CreateSyncRequestAsync(
-                HttpMethod.Post,
-                $"/rest/v1/{table}?on_conflict=id",
-                cancellationToken);
-            request.Headers.TryAddWithoutValidation(
-                "Prefer",
-                string.Equals(table, "audit_logs", StringComparison.OrdinalIgnoreCase)
-                    ? "resolution=ignore-duplicates,return=minimal"
-                    : "resolution=merge-duplicates,return=minimal");
-            request.Content = new StringContent(
-                payload,
-                Encoding.UTF8,
-                "application/json");
-
-            using var response = await httpClient.SendAsync(
-                request,
-                cancellationToken);
-            await EnsureSuccessAsync(
-                response,
-                "Supabase metadata",
-                cancellationToken);
+            await PushMetadataOptimisticallyAsync(table, item.EntityId, payload, cancellationToken);
         }
 
         item.UploadUrl = null;
@@ -228,6 +237,46 @@ public sealed class SupabaseCloudAdapter(
             cloudObjectPath,
             uploadStrategy,
             bytesTransferred);
+    }
+
+    public async Task<CloudPullPage> PullAsync(
+        string entityName,
+        CloudPullCursorValue cursor,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        EnsureCanSynchronize();
+        var table = CloudEntityOwnershipRegistry.Normalize(entityName);
+        if (CloudEntityOwnershipRegistry.GetAuthority(table)
+            is not (CloudEntityAuthority.CloudOwned or CloudEntityAuthority.SourceModeDependent))
+            throw new ArgumentException($"Entity '{entityName}' is not cloud-owned.", nameof(entityName));
+
+        var keyColumn = table is "public_device_commands" or "public_device_command_results"
+            ? "command_id"
+            : "id";
+        var boundedLimit = Math.Clamp(limit, 1, 500);
+        var sourceFilter = CloudEntityOwnershipRegistry.GetAuthority(table) == CloudEntityAuthority.SourceModeDependent
+            ? "&source_mode=eq.PublicCloud"
+            : string.Empty;
+        var organizationId = Uri.EscapeDataString(GetRequiredOrganizationId().ToString());
+        var path = $"/rest/v1/{table}?select=*&organization_id=eq.{organizationId}" +
+            $"{sourceFilter}&cloud_version=gt.{cursor.CloudVersion}" +
+            $"&order=cloud_version.asc,updated_at.asc,{keyColumn}.asc&limit={boundedLimit}";
+        using var request = await CreateSyncRequestAsync(HttpMethod.Get, path, cancellationToken);
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        await EnsureSuccessAsync(response, $"Supabase pull {table}", cancellationToken);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var document = JsonDocument.Parse(json);
+        var records = new List<CloudPullRecord>();
+        foreach (var row in document.RootElement.EnumerateArray())
+        {
+            var id = row.GetProperty(keyColumn).GetString()
+                ?? throw new JsonException($"{table}.{keyColumn} is missing.");
+            var cloudVersion = row.GetProperty("cloud_version").GetInt64();
+            var updatedAt = row.GetProperty("updated_at").GetDateTimeOffset();
+            records.Add(new CloudPullRecord(table, id, cloudVersion, updatedAt, row.GetRawText()));
+        }
+        return new CloudPullPage(records, records.Count == boundedLimit);
     }
 
     public async Task<CloudLoginResult> LoginAsync(
@@ -943,7 +992,54 @@ public sealed class SupabaseCloudAdapter(
                 : 0;
     }
 
+    private async Task PushMetadataOptimisticallyAsync(
+        string table,
+        string entityId,
+        string payload,
+        CancellationToken cancellationToken)
+    {
+        using var insert = await CreateSyncRequestAsync(
+            HttpMethod.Post,
+            $"/rest/v1/{table}?on_conflict=id",
+            cancellationToken);
+        insert.Headers.TryAddWithoutValidation(
+            "Prefer",
+            "resolution=ignore-duplicates,return=representation");
+        insert.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var insertResponse = await httpClient.SendAsync(insert, cancellationToken);
+        await EnsureSuccessAsync(insertResponse, "Supabase metadata insert", cancellationToken);
+        var insertBody = await insertResponse.Content.ReadAsStringAsync(cancellationToken);
+        if (!string.IsNullOrWhiteSpace(insertBody) && insertBody != "[]")
+            return;
+
+        if (string.Equals(table, "audit_logs", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        using var payloadDocument = JsonDocument.Parse(payload);
+        if (!payloadDocument.RootElement.TryGetProperty("cloud_version", out var versionElement)
+            || !versionElement.TryGetInt64(out var expectedVersion))
+            throw new JsonException($"Local-owned payload for {table} has no cloud_version.");
+
+        using var update = await CreateSyncRequestAsync(
+            HttpMethod.Patch,
+            $"/rest/v1/{table}?id=eq.{Uri.EscapeDataString(entityId)}&cloud_version=lt.{expectedVersion}",
+            cancellationToken);
+        update.Headers.TryAddWithoutValidation("Prefer", "return=representation");
+        update.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var updateResponse = await httpClient.SendAsync(update, cancellationToken);
+        await EnsureSuccessAsync(updateResponse, "Supabase optimistic metadata update", cancellationToken);
+        var updateBody = await updateResponse.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(updateBody) || updateBody == "[]")
+        {
+            throw new ApiException(
+                ErrorCodes.CloudUploadFailed,
+                $"Cloud conflict for local-owned {table}/{entityId}; a newer cloud_version already exists.",
+                409);
+        }
+    }
+
     private string BuildPayload(
+        string entityType,
         string payloadJson,
         string? cloudObjectPath)
     {
@@ -965,11 +1061,32 @@ public sealed class SupabaseCloudAdapter(
         NormalizeJsonFields(payload);
         payload["organization_id"] =
             GetRequiredOrganizationId().ToString();
+        if (CloudEntityOwnershipRegistry.GetAuthority(entityType)
+            is CloudEntityAuthority.LocalOwned or CloudEntityAuthority.SourceModeDependent)
+        {
+            payload["cloud_version"] = ResolveLocalCloudVersion(payload);
+        }
         if (!string.IsNullOrWhiteSpace(cloudObjectPath))
             payload["cloud_object_path"] = cloudObjectPath;
         if (payload.ContainsKey("sync_status"))
             payload["sync_status"] = SyncStatus.Synced.ToString();
         return payload.ToJsonString(JsonOptions);
+    }
+
+    private static long ResolveLocalCloudVersion(JsonObject payload)
+    {
+        if (payload["cloud_version"] is JsonValue existing
+            && existing.TryGetValue<long>(out var explicitVersion)
+            && explicitVersion > 0)
+            return explicitVersion;
+        foreach (var key in new[] { "updated_at", "updatedAt", "updatedAtUtc" })
+        {
+            if (payload[key] is JsonValue value
+                && value.TryGetValue<string>(out var text)
+                && DateTimeOffset.TryParse(text, out var updatedAt))
+                return Math.Max(1, updatedAt.UtcTicks);
+        }
+        return DateTimeOffset.UtcNow.UtcTicks;
     }
 
     private static void NormalizeJsonFields(JsonObject payload)
@@ -1292,6 +1409,7 @@ public sealed class SupabaseCloudAdapter(
         {
             "class" or "classes" => "classes",
             "class_member" or "class_members" => "class_members",
+            "public_class_assignment" or "public_class_assignments" => "public_class_assignments",
             "exam" or "exams" => "exams",
             "exam_file" or "exam_files" => "exam_files",
             "session" or "exam_session" or "exam_sessions" => "exam_sessions",
