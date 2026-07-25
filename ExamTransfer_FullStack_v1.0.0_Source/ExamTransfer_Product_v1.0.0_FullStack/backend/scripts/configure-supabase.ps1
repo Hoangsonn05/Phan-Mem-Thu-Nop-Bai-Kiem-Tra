@@ -78,7 +78,7 @@ $payload["Cloud"] = [ordered]@{
 
 $json = $payload | ConvertTo-Json -Depth 8
 $tempPath = "$configPath.tmp"
-[IO.File]::WriteAllText($tempPath, $json, [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($tempPath, $json, (New-Object Text.UTF8Encoding($false)))
 Move-Item -LiteralPath $tempPath -Destination $configPath -Force
 
 if (-not [string]::IsNullOrWhiteSpace($SecretKey)) {

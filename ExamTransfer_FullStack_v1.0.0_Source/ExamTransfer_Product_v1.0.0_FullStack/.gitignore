@@ -16,3 +16,21 @@ backend/artifacts/student-import-*.csv
 *.log
 *.tmp
 *.cache
+
+# Docker local configuration and secrets
+.env
+.env.*
+!.env.example
+!.env.docker.example
+*.env.local
+
+# Production backup artifacts are private and never belong in source control.
+backend/backups/
+**/backups/supabase-production/
+*.sql.backup
+*.dump
+*.backup
+
+# Supabase CLI/branch metadata is local-only.
+**/.branches/
+**/supabase/.temp/

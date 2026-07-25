@@ -11,6 +11,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<UserLoginSession> UserLoginSessionsSet => Set<UserLoginSession>();
     public DbSet<ClassRoom> ClassesSet => Set<ClassRoom>();
     public DbSet<ClassMember> ClassMembersSet => Set<ClassMember>();
+    public DbSet<ClassEnrollmentRequest> ClassEnrollmentRequestsSet => Set<ClassEnrollmentRequest>();
     public DbSet<Exam> ExamsSet => Set<Exam>();
     public DbSet<ExamFile> ExamFilesSet => Set<ExamFile>();
     public DbSet<QuizQuestion> QuizQuestionsSet => Set<QuizQuestion>();
@@ -28,6 +29,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<GradedAttachment> GradedAttachmentsSet => Set<GradedAttachment>();
     public DbSet<ControlPolicy> ControlPoliciesSet => Set<ControlPolicy>();
     public DbSet<DevicePolicyStatus> DevicePolicyStatusesSet => Set<DevicePolicyStatus>();
+    public DbSet<PublicDeviceConnection> PublicDeviceConnectionsSet => Set<PublicDeviceConnection>();
+    public DbSet<PublicDeviceCommand> PublicDeviceCommandsSet => Set<PublicDeviceCommand>();
+    public DbSet<PublicDeviceCommandResult> PublicDeviceCommandResultsSet => Set<PublicDeviceCommandResult>();
     public DbSet<Violation> ViolationsSet => Set<Violation>();
     public DbSet<AuditLog> AuditLogsSet => Set<AuditLog>();
     public DbSet<ExportJob> ExportJobsSet => Set<ExportJob>();
@@ -95,6 +99,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureEntity<UserLoginSession>(modelBuilder, "user_login_sessions");
         ConfigureEntity<ClassRoom>(modelBuilder, "classes");
         ConfigureEntity<ClassMember>(modelBuilder, "class_members");
+        ConfigureEntity<ClassEnrollmentRequest>(modelBuilder, "class_enrollment_requests");
         ConfigureEntity<Exam>(modelBuilder, "exams");
         ConfigureEntity<ExamFile>(modelBuilder, "exam_files");
         ConfigureEntity<QuizQuestion>(modelBuilder, "quiz_questions");
@@ -112,6 +117,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureEntity<GradedAttachment>(modelBuilder, "graded_attachments");
         ConfigureEntity<ControlPolicy>(modelBuilder, "control_policies");
         ConfigureEntity<DevicePolicyStatus>(modelBuilder, "device_policy_status");
+        ConfigureEntity<PublicDeviceConnection>(modelBuilder, "public_device_connections");
+        ConfigureEntity<PublicDeviceCommand>(modelBuilder, "public_device_commands");
+        ConfigureEntity<PublicDeviceCommandResult>(modelBuilder, "public_device_command_results");
         ConfigureEntity<Violation>(modelBuilder, "violations");
         ConfigureEntity<AuditLog>(modelBuilder, "audit_logs");
         ConfigureEntity<ExportJob>(modelBuilder, "export_jobs");
@@ -133,6 +141,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<User>().HasIndex(x => x.CloudId);
         modelBuilder.Entity<ClassRoom>().HasIndex(x => new { x.Code, x.SchoolYear }).IsUnique();
         modelBuilder.Entity<ClassMember>().HasIndex(x => new { x.ClassId, x.StudentCode }).IsUnique();
+        modelBuilder.Entity<ClassEnrollmentRequest>().HasIndex(x => new { x.ClassId, x.StudentUserId }).IsUnique();
+        modelBuilder.Entity<ClassEnrollmentRequest>().HasIndex(x => new { x.ClassId, x.Status, x.RequestedAtUtc });
         modelBuilder.Entity<Exam>().HasIndex(x => new { x.Status, x.ClassId });
         modelBuilder.Entity<ExamFile>().HasIndex(x => new { x.ExamId, x.Version, x.StoredName }).IsUnique();
         modelBuilder.Entity<QuizQuestion>().HasIndex(x => new { x.ExamId, x.Version, x.Order }).IsUnique();
@@ -149,6 +159,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<RubricScore>().HasIndex(x => new { x.GradeId, x.CriterionKey }).IsUnique();
         modelBuilder.Entity<ControlPolicy>().HasIndex(x => new { x.SessionId, x.Version }).IsUnique();
         modelBuilder.Entity<DevicePolicyStatus>().HasIndex(x => new { x.ParticipantId, x.PolicyVersion }).IsUnique();
+        modelBuilder.Entity<PublicDeviceConnection>().HasIndex(x => new { x.SessionId, x.DeviceId }).IsUnique();
+        modelBuilder.Entity<PublicDeviceCommand>().HasIndex(x => new { x.SessionId, x.DeviceId, x.IssuedAtUtc });
+        modelBuilder.Entity<PublicDeviceCommandResult>().HasIndex(x => new { x.DeviceId, x.ReceivedAtUtc });
         modelBuilder.Entity<Violation>().HasIndex(x => new { x.SessionId, x.ParticipantId, x.OccurredAtUtc });
         modelBuilder.Entity<AuditLog>().HasIndex(x => new { x.CreatedAtUtc, x.EntityType, x.SessionId });
         modelBuilder.Entity<ExportJob>().HasIndex(x => new { x.Status, x.CreatedAtUtc });

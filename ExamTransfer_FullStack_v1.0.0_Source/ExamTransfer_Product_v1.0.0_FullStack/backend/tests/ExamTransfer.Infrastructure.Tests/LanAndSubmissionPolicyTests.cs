@@ -27,6 +27,32 @@ public sealed class LanAndSubmissionPolicyTests
     }
 
     [Theory]
+    [InlineData("192.168.50.0/24", true)]
+    [InlineData("10.0.0.0/8", true)]
+    [InlineData("172.20.0.0/16", true)]
+    [InlineData("0.0.0.0/0", false)]
+    [InlineData("8.8.8.0/24", false)]
+    [InlineData("192.168.0.0/8", false)]
+    [InlineData("not-a-cidr", false)]
+    public void LanAccessPolicy_CidrParserAcceptsOnlyContainedPrivateRanges(string cidr, bool expected) =>
+        Assert.Equal(expected, LanAccessPolicy.IsValidPrivateCidr(cidr));
+
+    [Fact]
+    public void ExamTransferOptionsValidator_FailsInvalidOrBroadCidrs()
+    {
+        var options = new ExamTransferOptions();
+        options.LanAccess.AllowedCidrs.Add("0.0.0.0/0");
+        options.LanAccess.TrustDockerDesktopNat = true;
+        options.LanAccess.TrustedDockerGatewayCidrs.Add("172.16.0.0/12");
+
+        var result = new ExamTransferOptionsValidator().Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, x => x.Contains("AllowedCidrs", StringComparison.Ordinal));
+        Assert.Contains(result.Failures!, x => x.Contains("/24 or narrower", StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData("bailam.zip", true)]
     [InlineData("BAILAM.RAR", true)]
     [InlineData("bai lam.7z", true)]

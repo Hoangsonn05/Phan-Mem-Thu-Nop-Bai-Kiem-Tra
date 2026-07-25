@@ -66,8 +66,8 @@ insert into public.public_class_assignments(organization_id,class_id,exam_id) va
 insert into public.quiz_questions(id,organization_id,exam_id,version,sort_order,question_text,points,multiple) values
   ('14000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000000','12000000-0000-0000-0000-000000000001',1,1,'Two plus two?',1,false);
 insert into public.quiz_choices(id,organization_id,question_id,sort_order,choice_text,is_correct) values
-  ('15000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000000','14000000-0000-0000-0000-000000000001',1,'4',true),
-  ('15000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000000','14000000-0000-0000-0000-000000000001',2,'5',false);
+  ('15000000-0000-4000-8000-000000000001','10000000-0000-0000-0000-000000000000','14000000-0000-0000-0000-000000000001',1,'4',true),
+  ('15000000-0000-4000-8000-000000000002','10000000-0000-0000-0000-000000000000','14000000-0000-0000-0000-000000000001',2,'5',false);
 
 set local role authenticated;
 select set_config('request.jwt.claims','{"sub":"10000000-0000-0000-0000-000000000002","role":"authenticated"}',true);
@@ -82,7 +82,7 @@ select throws_ok($$select public.join_public_session('23000000-0000-0000-0000-00
 insert into tap_values values ('connection', public.upsert_public_device_heartbeat('13000000-0000-0000-0000-000000000000','device-one','Online','ExamTransfer','[]','1','1'));
 select is(public.upsert_public_device_heartbeat('13000000-0000-0000-0000-000000000000','device-one','Online','ExamTransfer','[]','1','1'), (select value from tap_values where key='connection'), 'heartbeat upsert is idempotent');
 select is((select violation_count from public.public_device_connections where id=(select value from tap_values where key='connection')), 0, 'Student cannot supply server-managed device counters');
-select results_eq($$with changed as (update public.public_device_connections set policy_state='Applied',lock_state='Locked',violation_count=999 where id=(select value from tap_values where key='connection') returning 1) select count(*)::bigint from changed$$, array[0::bigint], 'Student cannot directly set device policy, lock, or count');
+select throws_ok($$update public.public_device_connections set policy_state='Applied',lock_state='Locked',violation_count=999 where id=(select value from tap_values where key='connection')$$, '42501', 'permission denied for table public_device_connections', 'Student cannot directly set device policy, lock, or count');
 select ok(public.report_public_violation('13000000-0000-0000-0000-000000000000','device-one','FocusLost','{}') is not null, 'violation RPC creates server-owned evidence row');
 select is((select source_mode from public.violations order by created_at desc limit 1), 'PublicCloud', 'violation authority is PublicCloud');
 insert into tap_values values ('quiz_participant', public.join_public_session('13000000-0000-0000-0000-000000000001','device-quiz','test','1','{}'));
@@ -93,7 +93,7 @@ values ('16000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-00000000
 update public.exam_sessions set status='InProgress' where id in ('13000000-0000-0000-0000-000000000000','13000000-0000-0000-0000-000000000001');
 set local role authenticated;
 select set_config('request.jwt.claims','{"sub":"10000000-0000-0000-0000-000000000002","role":"authenticated"}',true);
-select throws_ok($$insert into public.public_device_command_results(command_id,organization_id,device_id,status,received_at) values ('16000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000000','device-one','Received',now())$$, '42501', 'Student cannot directly insert command results');
+select throws_ok($$insert into public.public_device_command_results(command_id,organization_id,device_id,status,received_at) values ('16000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000000','device-one','Received',now())$$, '42501', 'permission denied for table public_device_command_results', 'Student cannot directly insert command results');
 select is(public.ack_public_device_command('16000000-0000-0000-0000-000000000001','device-one','Received',null,null), 'Received', 'command can enter Received state');
 select is(public.ack_public_device_command('16000000-0000-0000-0000-000000000001','device-one','Executed',null,null), 'Executed', 'command can enter one final state');
 select is(public.ack_public_device_command('16000000-0000-0000-0000-000000000001','device-one','Executed',null,null), 'Executed', 'final command result is idempotent');
@@ -105,8 +105,8 @@ select results_eq($$with changed as (update public.submission_files set archive_
 select throws_ok($$select public.finalize_public_submission((select value from tap_values where key='submission'),'submission-key-0001')$$, '55000', 'ARCHIVE_NOT_VERIFIED_BY_BACKEND', 'unverified archive cannot be finalized');
 insert into tap_values values ('quiz_attempt', public.start_public_quiz_attempt('13000000-0000-0000-0000-000000000001','quiz-start-0001'));
 select is(public.start_public_quiz_attempt('13000000-0000-0000-0000-000000000001','quiz-start-0001'), (select value from tap_values where key='quiz_attempt'), 'quiz start is idempotent');
-select is(public.save_public_quiz_answers((select value from tap_values where key='quiz_attempt'),'14000000-0000-0000-0000-000000000001','["15000000-0000-0000-0000-000000000001"]',1,now()), 1::bigint, 'quiz answer revision is accepted');
-select is(public.save_public_quiz_answers((select value from tap_values where key='quiz_attempt'),'14000000-0000-0000-0000-000000000001','["15000000-0000-0000-0000-000000000002"]',1,now()), 1::bigint, 'stale quiz revision is idempotently ignored');
+select is(public.save_public_quiz_answers((select value from tap_values where key='quiz_attempt'),'14000000-0000-0000-0000-000000000001','["15000000-0000-4000-8000-000000000001"]',1,now()), 1::bigint, 'quiz answer revision is accepted');
+select is(public.save_public_quiz_answers((select value from tap_values where key='quiz_attempt'),'14000000-0000-0000-0000-000000000001','["15000000-0000-4000-8000-000000000002"]',1,now()), 1::bigint, 'stale quiz revision is idempotently ignored');
 select is(public.finalize_public_quiz_attempt((select value from tap_values where key='quiz_attempt'),'quiz-final-0001'), 1::numeric, 'quiz is scored on the server');
 select is(public.finalize_public_quiz_attempt((select value from tap_values where key='quiz_attempt'),'quiz-final-0001'), 1::numeric, 'quiz finalize is idempotent');
 select results_eq($$with changed as (update public.quiz_attempts set score=999,status='Finalized' where id=(select value from tap_values where key='quiz_attempt') returning 1) select count(*)::bigint from changed$$, array[0::bigint], 'Student cannot directly set quiz status or score');

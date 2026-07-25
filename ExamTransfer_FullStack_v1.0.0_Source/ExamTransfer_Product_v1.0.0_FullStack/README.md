@@ -97,3 +97,30 @@ PowerShell thứ hai:
 - `docs/implementation-status.md`
 - `frontend/docs/design-system.md`
 - `backend/docs/openapi/examtransfer-api-v1.yaml`
+
+## Chạy backend bằng Docker
+
+Frontend WPF vẫn chạy trực tiếp trên Windows; chỉ backend và backend test runner được đóng gói vào Docker.
+
+Setup lần đầu:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\scripts\setup-docker-first-run.ps1" -FixDockerPath -StartDockerDesktop
+```
+
+Khởi động lại sau này:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\scripts\docker-start-backend.ps1"
+```
+
+Sau khi `git pull`, build lại backend:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\scripts\docker-start-backend.ps1" -Build
+```
+
+Tài liệu chi tiết:
+
+- `HUONG_DAN_CLONE_VA_SETUP_DOCKER_LAN_DAU.md`
+- `HUONG_DAN_TAO_FILE_KEY_VA_MOI_TRUONG_DOCKER.md`

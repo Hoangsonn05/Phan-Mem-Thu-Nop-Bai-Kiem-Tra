@@ -22,7 +22,7 @@ $installerOutput = Join-Path $root 'artifacts\installer'
 
 function Require-File([string]$Path) {
     if (-not (Test-Path $Path -PathType Leaf)) {
-        throw "Không tìm thấy file bắt buộc: $Path"
+        throw "Required file was not found: $Path"
     }
 }
 
@@ -33,7 +33,7 @@ function Find-InnoCompiler {
     ) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) }
 
     if ($candidates.Count -eq 0) {
-        throw 'Không tìm thấy Inno Setup 6. Hãy cài Inno Setup 6 rồi chạy lại.'
+        throw 'Inno Setup 6 was not found. Install Inno Setup 6 and retry.'
     }
 
     return $candidates[0]
@@ -47,7 +47,7 @@ Require-File $installerScript
 
 $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
 if (-not $dotnet) {
-    throw 'Không tìm thấy dotnet. Hãy cài .NET SDK 10.'
+    throw 'dotnet was not found. Install .NET SDK 10.'
 }
 
 Write-Host "=== ExamTransfer release $Version ===" -ForegroundColor Cyan
@@ -66,19 +66,19 @@ New-Item -ItemType Directory -Path $installerOutput -Force | Out-Null
 
 Write-Host "\n[1/6] Restore backend..." -ForegroundColor Yellow
 dotnet restore $backendSolution
-if ($LASTEXITCODE -ne 0) { throw 'dotnet restore thất bại.' }
+if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
 
 if (-not $SkipTests) {
     Write-Host "\n[2/6] Test backend Release..." -ForegroundColor Yellow
     dotnet test $backendSolution -c Release --no-restore
-    if ($LASTEXITCODE -ne 0) { throw 'Backend test thất bại. Dừng tạo bản phát hành.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Backend tests failed. Release creation stopped.' }
 
     Write-Host "\n[3/6] Verify frontend..." -ForegroundColor Yellow
     powershell -ExecutionPolicy Bypass -File $frontendVerify
-    if ($LASTEXITCODE -ne 0) { throw 'Frontend verify thất bại. Dừng tạo bản phát hành.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend verification failed. Release creation stopped.' }
 }
 else {
-    Write-Warning 'Đã bỏ qua test theo tham số -SkipTests. Không dùng tùy chọn này cho bản phát hành chính thức.'
+    Write-Warning 'Tests were skipped by -SkipTests. Do not use this option for an official release.'
 }
 
 $assemblyVersion = "$Version.0"
@@ -97,7 +97,7 @@ dotnet publish $frontendProject `
     -p:AssemblyVersion=$assemblyVersion `
     -p:FileVersion=$assemblyVersion `
     -o $clientOutput
-if ($LASTEXITCODE -ne 0) { throw 'Publish frontend thất bại.' }
+if ($LASTEXITCODE -ne 0) { throw 'Frontend publish failed.' }
 
 Write-Host "\n[5/6] Publish Local Server..." -ForegroundColor Yellow
 dotnet publish $backendProject `
@@ -111,7 +111,7 @@ dotnet publish $backendProject `
     -p:AssemblyVersion=$assemblyVersion `
     -p:FileVersion=$assemblyVersion `
     -o $serverOutput
-if ($LASTEXITCODE -ne 0) { throw 'Publish Local Server thất bại.' }
+if ($LASTEXITCODE -ne 0) { throw 'Local Server publish failed.' }
 
 Require-File (Join-Path $clientOutput 'ExamTransfer.Desktop.exe')
 Require-File (Join-Path $serverOutput 'ExamTransfer.LocalServer.exe')
@@ -119,7 +119,7 @@ Require-File (Join-Path $serverOutput 'ExamTransfer.LocalServer.exe')
 Write-Host "\n[6/6] Build installer..." -ForegroundColor Yellow
 $iscc = Find-InnoCompiler
 & $iscc "/DMyAppVersion=$Version" $installerScript
-if ($LASTEXITCODE -ne 0) { throw 'Biên dịch installer thất bại.' }
+if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 
 $installer = Join-Path $installerOutput "ExamTransfer-Setup-$Version.exe"
 Require-File $installer
@@ -128,7 +128,7 @@ $hash = Get-FileHash $installer -Algorithm SHA256
 $hashFile = "$installer.sha256.txt"
 "$($hash.Hash)  $([IO.Path]::GetFileName($installer))" | Set-Content -Path $hashFile -Encoding ascii
 
-Write-Host "\nBUILD THÀNH CÔNG" -ForegroundColor Green
+Write-Host "\nBUILD SUCCEEDED" -ForegroundColor Green
 Write-Host "Installer : $installer"
 Write-Host "SHA-256  : $($hash.Hash)"
 Write-Host "Hash file: $hashFile"

@@ -3,6 +3,7 @@ using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.LocalServer.Controllers;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
@@ -35,7 +36,9 @@ public sealed class OpenSessionDiscoveryTests
         await db.SaveChangesAsync();
 
         var options = new ExamTransferOptions();
-        options.Server.PreferredIp = "192.168.10.2";
+        options.Server.PreferredIp = LanNetworkConfiguration.RunningInContainer
+            ? "192.168.10.1"
+            : LanNetworkConfiguration.GetActivePhysicalAddresses().First().ToString();
         var controller = new DiscoveryController(db, new AllowLanPolicy(), Options.Create(options))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }

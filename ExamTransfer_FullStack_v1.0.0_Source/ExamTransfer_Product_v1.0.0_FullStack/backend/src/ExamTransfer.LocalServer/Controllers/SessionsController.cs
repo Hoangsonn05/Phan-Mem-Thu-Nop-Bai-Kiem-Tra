@@ -68,9 +68,10 @@ public sealed class SessionsController(ISessionService service) : ApiControllerB
     }
 
     [HttpPost("{id:guid}/participants/{participantId:guid}/approve")][Authorize(Policy = "TeacherOrAdmin")]
-    public async Task<ActionResult<ApiResponse<ParticipantDto>>> Approve(Guid id, Guid participantId, CancellationToken ct) => Data(await service.ApproveAsync(id, participantId, ct));
+    public async Task<ActionResult<ApiResponse<ParticipantDto>>> Approve(Guid id, Guid participantId, TeacherMutationRequest mutation, CancellationToken ct) =>
+        Data(await service.ApproveAsync(id, participantId, mutation.MutationRequestId, ct));
     [HttpPost("{id:guid}/participants/{participantId:guid}/reject")][Authorize(Policy = "TeacherOrAdmin")]
-    public async Task<ActionResult<ApiResponse<object>>> Reject(Guid id, Guid participantId, [FromBody] Dictionary<string, string>? body, CancellationToken ct) { await service.RejectAsync(id, participantId, body?.GetValueOrDefault("reason"), ct); return EmptyData(); }
+    public async Task<ActionResult<ApiResponse<object>>> Reject(Guid id, Guid participantId, ReasonedTeacherMutationRequest mutation, CancellationToken ct) { await service.RejectAsync(id, participantId, mutation.Reason, mutation.MutationRequestId, ct); return EmptyData(); }
     [HttpPost("{id:guid}/participants/bulk-approve")][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<IReadOnlyList<ParticipantDto>>>> BulkApprove(Guid id, BulkApproveRequest request, CancellationToken ct) => Data(await service.BulkApproveAsync(id, request, ct));
     [HttpPost("{id:guid}/participants/{participantId:guid}/extra-time")][Authorize(Policy = "TeacherOrAdmin")]

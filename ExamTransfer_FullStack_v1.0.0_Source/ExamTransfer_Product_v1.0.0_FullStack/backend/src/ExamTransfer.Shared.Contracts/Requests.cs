@@ -29,10 +29,12 @@ public sealed record CreateSessionRequest(Guid ExamId, Guid? ClassId, DateTimeOf
 public sealed record UpdateSessionRequest(DateTimeOffset? PlannedStartUtc, string SettingsJson, bool AutoApprove, int? Capacity, string RowVersion, bool ApprovePendingParticipants = false);
 public sealed record JoinSessionRequest(string RoomCode, string StudentCode, string DisplayName, string? ClassName, string DeviceId, string MachineName, string AppVersion, string Nonce);
 public sealed record JoinSessionResponse(Guid SessionId, Guid ParticipantId, ParticipantStatus Status, string AccessToken, DateTimeOffset TokenExpiresAtUtc, ParticipantDto Participant);
-public sealed record ExtraTimeRequest(int Minutes, string Reason);
+public sealed record TeacherMutationRequest(Guid MutationRequestId);
+public sealed record ReasonedTeacherMutationRequest(string? Reason, Guid MutationRequestId);
+public sealed record ExtraTimeRequest(int Minutes, string Reason, Guid MutationRequestId);
 public sealed record SendMessageRequest(Guid? ReceiverParticipantId, MessageType Type, string Content);
 public sealed record EndSessionRequest(bool Force, string? Reason);
-public sealed record BulkApproveRequest(IReadOnlyList<Guid> ParticipantIds);
+public sealed record BulkApproveRequest(IReadOnlyList<Guid> ParticipantIds, Guid MutationRequestId);
 public sealed record HeartbeatRequest(string DeviceStatus, DateTimeOffset ClientNowUtc, long SequenceAck);
 
 public sealed record InitSubmissionFileRequest(string ClientFileId, string Name, long SizeBytes, string Sha256, string MimeType);
@@ -40,8 +42,8 @@ public sealed record InitSubmissionRequest(Guid SessionId, Guid ParticipantId, s
 public sealed record InitSubmissionResponse(Guid SubmissionId, int AttemptNumber, int ChunkSizeBytes, IReadOnlyList<ChunkPlanDto> FilePlans, DateTimeOffset DeadlineUtc);
 public sealed record FinalizeSubmissionRequest(string? ClientNote);
 public sealed record FinalizeSubmissionResponse(SubmissionStatus Status, DateTimeOffset ServerReceivedAtUtc, bool IsLate, string ReceiptCode, string ReceiptSignature, IReadOnlyList<FileDescriptorDto> Files);
-public sealed record RejectSubmissionRequest(string Reason);
-public sealed record AllowResubmitRequest(string Reason);
+public sealed record RejectSubmissionRequest(string Reason, Guid MutationRequestId);
+public sealed record AllowResubmitRequest(string Reason, Guid MutationRequestId);
 
 public sealed record CreateExportRequest(Guid SessionId, bool IncludeFiles, bool IncludeManifest, bool IncludeReceipts, bool IncludeAudit, string Format, string NamingPattern);
 public sealed record CreateBackupRequest(bool IncludeFiles, bool Encrypt, string? PasswordHint);

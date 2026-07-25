@@ -64,10 +64,14 @@
                         <TextBlock Text="Trạng thái thiết bị" Style="{StaticResource SectionTitleText}" Margin="18,16,18,10" />
                         <DataGrid Grid.Row="1" ItemsSource="{Binding Devices}">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="THIẾT BỊ" Binding="{Binding ParticipantId}" Width="*" />
-                                <DataGridTextColumn Header="POLICY" Binding="{Binding PolicyVersion}" Width="70" />
-                                <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="110" />
-                                <DataGridTextColumn Header="LỖI" Binding="{Binding Error}" Width="*" />
+                                <DataGridTextColumn Header="THIẾT BỊ" Binding="{Binding DeviceId}" Width="*" />
+                                <DataGridTextColumn Header="KẾT NỐI" Binding="{Binding ConnectionState}" Width="90" />
+                                <DataGridTextColumn Header="HEARTBEAT" Binding="{Binding HeartbeatAtUtc}" Width="140" />
+                                <DataGridTextColumn Header="POLICY" Binding="{Binding PolicyState}" Width="90" />
+                                <DataGridTextColumn Header="KHÓA" Binding="{Binding LockState}" Width="75" />
+                                <DataGridTextColumn Header="AGENT" Binding="{Binding AgentVersion}" Width="75" />
+                                <DataGridTextColumn Header="COMMAND" Binding="{Binding LastCommandStatus}" Width="90" />
+                                <DataGridTextColumn Header="LỖI" Binding="{Binding LastCommandError}" Width="*" />
                             </DataGrid.Columns>
                         </DataGrid>
                     </Grid>

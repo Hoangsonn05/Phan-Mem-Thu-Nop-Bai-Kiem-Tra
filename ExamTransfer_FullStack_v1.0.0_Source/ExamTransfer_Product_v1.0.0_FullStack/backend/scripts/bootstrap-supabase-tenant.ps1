@@ -180,7 +180,7 @@ function Invoke-JsonPost {
             $parsedKeys = '(could not parse)'
         }
 
-        $utf8Len = [System.Text.UTF8Encoding]::new($false).GetByteCount($Body)
+        $utf8Len = (New-Object System.Text.UTF8Encoding($false)).GetByteCount($Body)
 
         throw @"
 Request failed: $Label
@@ -275,7 +275,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Credentials') {
                 }
 
                 # Safe diagnostics - never print password value
-                $utf8Len = [System.Text.UTF8Encoding]::new($false).GetByteCount($authBody)
+                $utf8Len = (New-Object System.Text.UTF8Encoding($false)).GetByteCount($authBody)
                 throw @"
 Auth login failed.
   Endpoint    : /auth/v1/token?grant_type=password
@@ -354,7 +354,7 @@ if ($DryRunRequest) {
     $roundTrip = $rpcBody | ConvertFrom-Json
     $nameMatch = ($roundTrip.organization_name -eq $OrganizationName.Trim())
 
-    $utf8Len = [System.Text.UTF8Encoding]::new($false).GetByteCount($rpcBody)
+    $utf8Len = (New-Object System.Text.UTF8Encoding($false)).GetByteCount($rpcBody)
 
     Write-Host ''
     Write-Host '=== DRY-RUN REPORT ===' -ForegroundColor Yellow

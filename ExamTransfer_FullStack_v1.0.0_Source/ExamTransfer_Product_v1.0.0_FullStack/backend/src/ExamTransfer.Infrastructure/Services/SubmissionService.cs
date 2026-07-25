@@ -9,7 +9,7 @@ using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IReceiptSigner receipts, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options) : ISubmissionService
+public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IReceiptSigner receipts, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ICloudAdapter? cloud = null) : ISubmissionService
 {
     private readonly ExamTransferOptions _options = options.Value;
 
@@ -158,6 +158,16 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
     {
         if (string.IsNullOrWhiteSpace(request.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Phải có lý do từ chối.");
         var submission = await db.SubmissionsSet.Include(x => x.Participant).ThenInclude(x => x.Session).FirstOrDefaultAsync(x => x.Id == submissionId, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài nộp.", 404);
+        if (submission.Participant.Session.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            if (request.MutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
+            _ = await RequireCloud().RejectPublicSubmissionAsync(
+                submissionId,
+                request.Reason,
+                request.MutationRequestId,
+                cancellationToken);
+            return;
+        }
         if (submission.Status is not (SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted)) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ từ chối bài đã nộp.", 409);
         submission.Status = SubmissionStatus.Rejected; submission.TeacherRejectReason = request.Reason; submission.Participant.SubmissionStatus = SubmissionStatus.Rejected; submission.Participant.Session.Sequence++;
         await db.SaveChangesAsync(cancellationToken);
@@ -174,7 +184,17 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
     public async Task AllowResubmitAsync(Guid participantId, AllowResubmitRequest request, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Phải có lý do cho nộp lại.");
-        var participant = await db.SessionParticipantsSet.FirstOrDefaultAsync(x => x.Id == participantId, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
+        var participant = await db.SessionParticipantsSet.Include(x => x.Session).FirstOrDefaultAsync(x => x.Id == participantId, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
+        if (participant.Session.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            if (request.MutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
+            _ = await RequireCloud().AllowPublicResubmissionAsync(
+                participantId,
+                request.Reason,
+                request.MutationRequestId,
+                cancellationToken);
+            return;
+        }
         participant.ResubmitAllowed = true;
         participant.ResubmitReason = request.Reason;
         await db.SaveChangesAsync(cancellationToken);
@@ -281,4 +301,10 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
             if (f.Sha256.Length != 64 || !f.Sha256.All(Uri.IsHexDigit)) throw new ApiException(ErrorCodes.ValidationFailed, $"SHA-256 của {f.Name} không hợp lệ.");
         }
     }
+
+    private ICloudAdapter RequireCloud() =>
+        cloud ?? throw new ApiException(
+            ErrorCodes.CloudOffline,
+            "PublicCloud chưa được cấu hình cho thao tác giáo viên.",
+            503);
 }

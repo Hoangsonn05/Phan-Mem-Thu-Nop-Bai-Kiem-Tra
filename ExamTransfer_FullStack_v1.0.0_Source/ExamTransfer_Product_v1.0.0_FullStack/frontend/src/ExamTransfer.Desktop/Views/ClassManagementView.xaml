@@ -173,6 +173,38 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- PublicCloud enrollment requests -->
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0" Padding="0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="180" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="Yêu cầu ghi danh PublicCloud"
+                                       Style="{StaticResource SectionTitleText}"
+                                       Margin="18,16,18,10" />
+                            <DataGrid Grid.Row="1"
+                                      ItemsSource="{Binding EnrollmentRequests}"
+                                      SelectedItem="{Binding SelectedEnrollmentRequest}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="MÃ HỌC SINH" Binding="{Binding StudentCode}" Width="*" />
+                                    <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="110" />
+                                    <DataGridTextColumn Header="YÊU CẦU LÚC" Binding="{Binding RequestedAtUtc}" Width="150" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="18,12,18,16">
+                                <Button Content="Duyệt"
+                                        Command="{Binding ApproveEnrollmentCommand}"
+                                        Style="{StaticResource PrimaryButton}" />
+                                <Button Content="Từ chối"
+                                        Command="{Binding RejectEnrollmentCommand}"
+                                        Style="{StaticResource DangerButton}"
+                                        Margin="8,0,0,0" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
                     <!-- Student list in class -->
                     <Border Style="{StaticResource Card}" Margin="0,14,0,0" Padding="0">
                         <Grid>

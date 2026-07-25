@@ -6,6 +6,7 @@ public sealed class ExamTransferOptions
 {
     public ServerOptions Server { get; set; } = new();
     public DiscoveryOptions Discovery { get; set; } = new();
+    public LanAccessOptions LanAccess { get; set; } = new();
     public StorageOptions Storage { get; set; } = new();
     public TransferOptions Transfer { get; set; } = new();
     public SessionOptions Session { get; set; } = new();
@@ -30,6 +31,13 @@ public sealed class DiscoveryOptions
     public int Port { get; set; } = 5050;
     public string RequestMagic { get; set; } = "EXAMTRANSFER_DISCOVER_V1";
     public List<string> AdditionalAllowedCidrs { get; set; } = [];
+}
+
+public sealed class LanAccessOptions
+{
+    public List<string> AllowedCidrs { get; set; } = [];
+    public bool TrustDockerDesktopNat { get; set; }
+    public List<string> TrustedDockerGatewayCidrs { get; set; } = [];
 }
 
 public sealed class StorageOptions

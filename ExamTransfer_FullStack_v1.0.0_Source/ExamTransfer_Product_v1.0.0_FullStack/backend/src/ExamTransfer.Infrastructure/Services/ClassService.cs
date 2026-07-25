@@ -9,7 +9,7 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditService audit, IOutboxService outbox) : IClassService
+public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditService audit, IOutboxService outbox, ICloudAdapter? cloud = null) : IClassService
 {
     public async Task<PagedResult<ClassSummaryDto>> ListAsync(string? search, int page, int pageSize, CancellationToken cancellationToken)
     {
@@ -56,7 +56,16 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
     {
         var entity = await db.ClassesSet.AsNoTracking().Include(x => x.Members).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
-        return entity.ToDetail(entity.Members.OrderBy(x => x.StudentCode).Select(x => x.ToDto()).ToList());
+        var requestRows = await db.ClassEnrollmentRequestsSet.AsNoTracking()
+            .Where(x => x.ClassId == id)
+            .ToListAsync(cancellationToken);
+        var requests = requestRows
+            .OrderBy(x => x.Status == "Pending" ? 0 : 1)
+            .ThenByDescending(x => x.RequestedAtUtc)
+            .Select(ToEnrollmentDto)
+            .ToList();
+        return entity.ToDetail(entity.Members.OrderBy(x => x.StudentCode).Select(x => x.ToDto()).ToList())
+            with { EnrollmentRequests = requests };
     }
 
     public async Task<ClassDetailDto> CreateAsync(CreateClassRequest request, CancellationToken cancellationToken)
@@ -400,6 +409,64 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
         return Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(sb.ToString())).ToArray();
     }
 
+    public async Task<IReadOnlyList<ClassEnrollmentRequestDto>> ListEnrollmentRequestsAsync(
+        Guid classId,
+        CancellationToken cancellationToken)
+    {
+        if (!await db.ClassesSet.AnyAsync(x => x.Id == classId, cancellationToken))
+            throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
+        var rows = await db.ClassEnrollmentRequestsSet.AsNoTracking()
+            .Where(x => x.ClassId == classId)
+            .ToListAsync(cancellationToken);
+        return rows
+            .OrderBy(x => x.Status == "Pending" ? 0 : 1)
+            .ThenByDescending(x => x.RequestedAtUtc)
+            .Select(ToEnrollmentDto)
+            .ToList();
+    }
+
+    public async Task<ClassEnrollmentRequestDto> ApproveEnrollmentAsync(
+        Guid classId,
+        Guid requestId,
+        Guid mutationRequestId,
+        CancellationToken cancellationToken)
+    {
+        if (mutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
+        var local = await FindEnrollmentAsync(classId, requestId, cancellationToken);
+        var result = await RequireCloud().ApprovePublicEnrollmentAsync(
+            requestId,
+            mutationRequestId,
+            cancellationToken);
+        return ToEnrollmentDto(local) with
+        {
+            Status = result.Status,
+            DecidedAtUtc = result.DecidedAtUtc,
+            CloudVersion = result.CloudVersion
+        };
+    }
+
+    public async Task<ClassEnrollmentRequestDto> RejectEnrollmentAsync(
+        Guid classId,
+        Guid requestId,
+        string? reason,
+        Guid mutationRequestId,
+        CancellationToken cancellationToken)
+    {
+        if (mutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
+        var local = await FindEnrollmentAsync(classId, requestId, cancellationToken);
+        var result = await RequireCloud().RejectPublicEnrollmentAsync(
+            requestId,
+            reason,
+            mutationRequestId,
+            cancellationToken);
+        return ToEnrollmentDto(local) with
+        {
+            Status = result.Status,
+            DecidedAtUtc = result.DecidedAtUtc,
+            CloudVersion = result.CloudVersion
+        };
+    }
+
     private static object ToCloud(ClassRoom x) => new
     {
         id = x.Id,
@@ -419,6 +486,31 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
         created_at = x.CreatedAtUtc,
         updated_at = x.UpdatedAtUtc
     };
+
+    private async Task<ClassEnrollmentRequest> FindEnrollmentAsync(
+        Guid classId,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        await db.ClassEnrollmentRequestsSet.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == requestId && x.ClassId == classId, cancellationToken)
+        ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy yêu cầu ghi danh.", 404);
+
+    private ICloudAdapter RequireCloud() =>
+        cloud ?? throw new ApiException(
+            ErrorCodes.CloudOffline,
+            "PublicCloud chưa được cấu hình cho thao tác ghi danh.",
+            503);
+
+    private static ClassEnrollmentRequestDto ToEnrollmentDto(ClassEnrollmentRequest x) =>
+        new(
+            x.Id,
+            x.ClassId,
+            x.StudentUserId,
+            x.StudentCode,
+            x.Status,
+            x.RequestedAtUtc,
+            x.DecidedAtUtc,
+            x.CloudVersion);
 
     private async Task<T> InTransactionAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
     {

@@ -1,4 +1,4 @@
-# ExamTransfer Backend v1.2.0
+﻿# ExamTransfer Backend v1.2.0
 
 ASP.NET Core/.NET 10 local-first backend for ExamTransfer.
 
@@ -39,7 +39,7 @@ Validate source layout:
 Push linked schema:
 
 ```powershell
-.\scripts\push-supabase-schema.ps1 -ProjectRef "PROJECT_REF" -RunDatabaseTests
+Production remote writes are guarded. Follow `..\docs\production-update-checklist.md`; the legacy `push-supabase-schema.ps1` is disabled.
 ```
 
 Configure non-secret values and the trusted Backend secret:

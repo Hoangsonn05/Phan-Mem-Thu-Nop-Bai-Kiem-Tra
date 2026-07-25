@@ -21,8 +21,17 @@ public sealed record DashboardSummaryDto(
     IReadOnlyList<string> Warnings);
 
 public sealed record ClassSummaryDto(Guid Id, string Name, string Code, string SchoolYear, ClassStatus Status, int StudentCount, string RowVersion, ClassAccessMode AccessMode = ClassAccessMode.Private, bool EnrollmentOpen = false);
-public sealed record ClassDetailDto(Guid Id, string Name, string Code, string SchoolYear, string? Description, ClassStatus Status, IReadOnlyList<StudentDto> Students, string RowVersion, ClassAccessMode AccessMode = ClassAccessMode.Private, bool EnrollmentOpen = false, bool RequireEnrollmentApproval = true);
+public sealed record ClassDetailDto(Guid Id, string Name, string Code, string SchoolYear, string? Description, ClassStatus Status, IReadOnlyList<StudentDto> Students, string RowVersion, ClassAccessMode AccessMode = ClassAccessMode.Private, bool EnrollmentOpen = false, bool RequireEnrollmentApproval = true, IReadOnlyList<ClassEnrollmentRequestDto>? EnrollmentRequests = null);
 public sealed record StudentDto(Guid Id, string StudentCode, string DisplayName, string? Email, string? MetadataJson);
+public sealed record ClassEnrollmentRequestDto(
+    Guid Id,
+    Guid ClassId,
+    Guid StudentUserId,
+    string StudentCode,
+    string Status,
+    DateTimeOffset RequestedAtUtc,
+    DateTimeOffset? DecidedAtUtc,
+    long CloudVersion);
 
 public sealed record ExamSummaryDto(Guid Id, Guid? ClassId, string Title, string Subject, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, int FileCount, string RowVersion);
 public sealed record ExamDetailDto(Guid Id, Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, FileRuleDto FileRule, IReadOnlyList<FileDescriptorDto> Files, string RowVersion);
@@ -80,7 +89,22 @@ public sealed record RubricScoreDto(string CriterionKey, string Title, decimal S
 
 public sealed record ControlCapabilitiesDto(bool Fullscreen, bool FocusMonitoring, bool ClipboardControl, bool ProcessControl, bool NetworkControl);
 public sealed record ControlPolicyDto(Guid SessionId, int Version, bool Fullscreen, string FocusRule, string ClipboardRule, IReadOnlyList<string> AllowedProcesses, IReadOnlyList<string> BlockedProcesses, string NetworkRule, bool EmergencyExit, int TtlMinutes, string RowVersion);
-public sealed record DeviceControlStatusDto(Guid ParticipantId, int PolicyVersion, ControlCapabilitiesDto Capabilities, PolicyApplyStatus Status, string? Error, DateTimeOffset UpdatedAtUtc);
+public sealed record DeviceControlStatusDto(
+    Guid ParticipantId,
+    int PolicyVersion,
+    ControlCapabilitiesDto Capabilities,
+    PolicyApplyStatus Status,
+    string? Error,
+    DateTimeOffset UpdatedAtUtc,
+    string? DeviceId = null,
+    ConnectionState ConnectionState = ConnectionState.Offline,
+    DateTimeOffset? HeartbeatAtUtc = null,
+    string? PolicyState = null,
+    string? LockState = null,
+    string? AppVersion = null,
+    string? AgentVersion = null,
+    DeviceCommandStatus? LastCommandStatus = null,
+    string? LastCommandError = null);
 public sealed record ViolationDto(Guid Id, Guid SessionId, Guid ParticipantId, string Type, ViolationSeverity Severity, DateTimeOffset OccurredAtUtc, string? PayloadJson, DateTimeOffset? HandledAtUtc, Guid? HandledBy);
 
 public sealed record DeviceCommandDto(

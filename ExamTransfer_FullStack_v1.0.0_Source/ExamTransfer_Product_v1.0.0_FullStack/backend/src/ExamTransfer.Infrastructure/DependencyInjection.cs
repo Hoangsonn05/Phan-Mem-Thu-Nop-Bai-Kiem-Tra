@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure;
 
@@ -16,7 +17,10 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddExamTransferInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        services.Configure<ExamTransferOptions>(configuration);
+        services.AddOptions<ExamTransferOptions>()
+            .Bind(configuration)
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<ExamTransferOptions>, ExamTransferOptionsValidator>();
         services.AddSingleton<IStoragePaths, StoragePaths>();
         services.AddSingleton<IChunkStorage, ChunkStorage>();
         services.AddSingleton<IReceiptSigner, ReceiptSigner>();
@@ -26,14 +30,7 @@ public static class DependencyInjection
         services.AddSingleton<IBackupEngine, SqliteBackupEngine>();
         services.AddMemoryCache();
         services.AddHttpContextAccessor();
-        var commonData = Environment.GetFolderPath(
-            Environment.SpecialFolder.CommonApplicationData);
-        if (string.IsNullOrWhiteSpace(commonData))
-            commonData = AppContext.BaseDirectory;
-        var keyDirectory = Path.Combine(
-            commonData,
-            "ExamTransfer",
-            "keys");
+        var keyDirectory = ResolveDataProtectionKeyDirectory();
         Directory.CreateDirectory(keyDirectory);
         var dataProtection = services
             .AddDataProtection()
@@ -76,5 +73,13 @@ public static class DependencyInjection
         services.AddScoped<IQuizService, QuizService>();
         services.AddSingleton<ILanAccessPolicy, LanAccessPolicy>();
         return services;
+    }
+
+    public static string ResolveDataProtectionKeyDirectory()
+    {
+        var commonData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        if (string.IsNullOrWhiteSpace(commonData))
+            commonData = AppContext.BaseDirectory;
+        return Path.Combine(commonData, "ExamTransfer", "keys");
     }
 }

@@ -1,10 +1,10 @@
-# Supabase PublicCloud deployment
+﻿# Supabase PublicCloud deployment
 
 ## Release gate
 
-PublicCloud schema compatibility is `14`. LAN remains usable when cloud is
+PublicCloud schema compatibility is `15`. LAN remains usable when cloud is
 unconfigured, offline, or incompatible. Both cloud workers stop when the
-capability RPC does not report schema 14, all critical RPCs, `exam-archives`,
+capability RPC does not report schema 15, all critical RPCs, `exam-archives`,
 and `public-submission-archives`.
 
 Do not label a build production-ready until the staging roundtrip scripts have
@@ -32,13 +32,13 @@ In the Supabase dashboard enable `Realtime -> Settings -> Channel Restrictions
 
 1. Record `git status --short` and preserve the dirty worktree. Do not reset,
    restore, clean, stash, commit, or push as part of deployment validation.
-2. Create and verify a Supabase database backup. Record its identifier and a
-   tested restore procedure outside this repository.
-3. Run the read-only report
-   `backend/supabase/preflight/public_cloud_completion_v2.sql`. Resolve every
-   duplicate PublicCloud idempotency/archive row and invalid legacy archive by
-   an approved data process. The report never deletes data.
-4. From `backend`, and only if this checkout is already linked to the intended
+2. Disable cloud and stop the production Local Server.
+3. Confirm the exact linked Project Ref.
+4. Run the read-only report
+   `backend/supabase/preflight/public_cloud_production_legacy_preflight.sql`.
+   Resolve every `BLOCKER` by an approved data process. The report never
+   creates, updates, or deletes database objects/data.
+5. From `backend`, and only if this checkout is already linked to the intended
    staging project, run:
 
    ```powershell
@@ -48,21 +48,27 @@ In the Supabase dashboard enable `Realtime -> Settings -> Channel Restrictions
 
    If the checkout is not linked, stop. Do not run `supabase link`, migration
    repair, or a real push merely to complete this checklist.
+6. Create both database and Storage backups with
+   `backend/scripts/backup-supabase-production-all.ps1`, then run
+   `verify-supabase-production-backup.ps1`. Do not apply migration unless it
+   returns `BACKUP_READY`.
 
 ## Apply to staging
 
-After review of the dry run, an authorized operator may apply migrations using
-the team's normal release process. The completion migration is
-`20260722161450_public_cloud_completion_v2.sql`; it is additive and corrects
-the earlier global submission constraints with PublicCloud-only partial
-indexes.
+After review of the dry run and a verified backup, an authorized operator may
+apply migrations using the team's normal release process. Completion migration
+`20260722161450_public_cloud_completion_v2.sql` reaches schema 14 and corrects
+global submission constraints with PublicCloud-only partial indexes.
+`20260723043859_public_cloud_teacher_mutations_and_projection.sql` reaches
+schema 15 with server-authorized, idempotent teacher mutations and projection
+fields.
 
 Authorized staging deployment commands (not run by this implementation turn):
 
 ```powershell
 supabase migration list
 supabase db push --dry-run
-supabase db push
+# Không push trực tiếp. Dùng backend/scripts/apply-supabase-production-update.ps1 sau khi backup/readiness đạt.
 supabase db lint --linked --level warning
 supabase functions deploy verify-public-submission-archive
 supabase functions deploy issue-public-device-command
@@ -96,6 +102,18 @@ Desktop PublicCloud configuration uses:
 - optional `EXAMTRANSFER_STUDENT_EMAIL_DOMAIN`
 
 Never place a service-role or secret key on a student/teacher desktop.
+
+## Migration audit
+
+| Migration | Schema | Main changes | Legacy risk/dependency | Remote status |
+| --- | ---: | --- | --- | --- |
+| `20260722141147` | 13 | Public classes, sessions, devices, submissions, Storage/RLS/RPC | Must create partial PublicCloud indexes; depends on earlier profile/auth schema | Determine with `migration list` |
+| `20260722161450` | 14 | Ownership completion, archive validation, private Realtime, capability RPC | Forward-fixes global indexes; trigger ignores Lan rows | Determine with `migration list` |
+| `20260723043859` | 15 | Teacher mutation RPCs/idempotency and projection completion | Depends on schema 14 and existing PublicCloud ownership columns | Determine with `migration list` |
+
+If `20260722141147` is pending remotely, use the corrected source migration.
+If it is already applied, do not rewrite remote history or use migration
+repair; let `20260722161450` perform the safe forward fix.
 
 ## Staging verification
 
@@ -137,3 +155,18 @@ authorization, and snapshot recovery after reconnect.
    analysis. Do not delete quarantined rows automatically.
 4. Rotate service-role/HMAC secrets if they may have been exposed.
 5. Re-run the full staging gate before re-enabling workers.
+
+
+## Production write guard
+
+`backend/scripts/push-supabase-schema.ps1` is intentionally disabled for remote
+writes. Production updates must use:
+
+1. `check-production-update-readiness.ps1` with all local/Docker/Supabase gates.
+2. `backup-supabase-production-all.ps1`.
+3. `verify-supabase-production-backup.ps1`.
+4. A second full readiness run with remote preflight/dry-run and the verified
+   backup.
+5. `apply-supabase-production-update.ps1` with the exact Project Ref,
+   `BACKUP_VERIFIED_READY_FOR_PRODUCTION_UPDATE` JSON report, and explicit
+   production-write confirmation.

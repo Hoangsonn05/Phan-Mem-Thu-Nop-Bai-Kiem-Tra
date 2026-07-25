@@ -31,4 +31,18 @@ public sealed class ClassesController(IClassService service) : ApiControllerBase
     public async Task<ActionResult<ApiResponse<ImportCommitResultDto>>> CommitImport(Guid id, ImportCommitRequest request, CancellationToken ct) => Data(await service.CommitImportAsync(id, request, ct));
     [HttpGet("{id:guid}/export")]
     public async Task<IActionResult> Export(Guid id, CancellationToken ct) => File(await service.ExportCsvAsync(id, ct), "text/csv; charset=utf-8", $"class-{id:N}.csv");
+    [HttpGet("{id:guid}/enrollment-requests")]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<ClassEnrollmentRequestDto>>>> EnrollmentRequests(Guid id, CancellationToken ct) =>
+        Data(await service.ListEnrollmentRequestsAsync(id, ct));
+    [HttpPost("{id:guid}/enrollment-requests/{requestId:guid}/approve")]
+    public async Task<ActionResult<ApiResponse<ClassEnrollmentRequestDto>>> ApproveEnrollment(
+        Guid id, Guid requestId, TeacherMutationRequest mutation, CancellationToken ct) =>
+        Data(await service.ApproveEnrollmentAsync(id, requestId, mutation.MutationRequestId, ct));
+    [HttpPost("{id:guid}/enrollment-requests/{requestId:guid}/reject")]
+    public async Task<ActionResult<ApiResponse<ClassEnrollmentRequestDto>>> RejectEnrollment(
+        Guid id,
+        Guid requestId,
+        ReasonedTeacherMutationRequest mutation,
+        CancellationToken ct) =>
+        Data(await service.RejectEnrollmentAsync(id, requestId, mutation.Reason, mutation.MutationRequestId, ct));
 }

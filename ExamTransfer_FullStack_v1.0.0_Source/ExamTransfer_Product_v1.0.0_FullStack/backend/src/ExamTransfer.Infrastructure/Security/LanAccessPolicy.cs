@@ -9,13 +9,26 @@ namespace ExamTransfer.Infrastructure.Security;
 public sealed class LanAccessPolicy : ILanAccessPolicy
 {
     private readonly IReadOnlyList<NetworkRange> ranges;
+    private readonly IReadOnlyList<NetworkRange> trustedDockerGateways;
+    private readonly bool trustDockerDesktopNat;
 
     public LanAccessPolicy(IOptions<ExamTransferOptions> options)
-        : this(GetLocalRanges().Concat(ParseConfigured(options.Value.Discovery.AdditionalAllowedCidrs)).ToList())
+        : this(
+            GetAllowedRanges(options.Value),
+            ParseConfigured(options.Value.LanAccess.TrustedDockerGatewayCidrs).ToList(),
+            options.Value.LanAccess.TrustDockerDesktopNat)
     {
     }
 
-    internal LanAccessPolicy(IReadOnlyList<NetworkRange> ranges) => this.ranges = ranges;
+    internal LanAccessPolicy(
+        IReadOnlyList<NetworkRange> ranges,
+        IReadOnlyList<NetworkRange>? trustedDockerGateways = null,
+        bool trustDockerDesktopNat = false)
+    {
+        this.ranges = ranges;
+        this.trustedDockerGateways = trustedDockerGateways ?? [];
+        this.trustDockerDesktopNat = trustDockerDesktopNat;
+    }
 
     public bool IsAllowed(string? remoteAddress)
     {
@@ -23,33 +36,49 @@ public sealed class LanAccessPolicy : ILanAccessPolicy
         if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
         if (IPAddress.IsLoopback(address)) return true;
         if (address.AddressFamily != AddressFamily.InterNetwork || !IsPrivate(address)) return false;
-        return ranges.Any(range => range.Contains(address));
+        if (ranges.Any(range => range.Contains(address))) return true;
+        return trustDockerDesktopNat
+            && LanNetworkConfiguration.RunningInContainer
+            && trustedDockerGateways.Any(range => range.Contains(address));
     }
 
     internal static bool IsPrivate(IPAddress address)
     {
         var bytes = address.GetAddressBytes();
         return bytes[0] == 10
-            || bytes[0] == 127
-            || (bytes[0] == 169 && bytes[1] == 254)
             || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31)
             || (bytes[0] == 192 && bytes[1] == 168);
     }
 
     internal static bool TryParseCidr(string value, out NetworkRange range)
+        => TryParseCidr(value, out range, out _);
+
+    public static bool IsValidPrivateCidr(string value) =>
+        TryParseCidr(value, out _, out _);
+
+    internal static bool TryParseCidr(string value, out NetworkRange range, out int prefix)
     {
         range = default;
+        prefix = 0;
         var parts = value.Split('/', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length != 2
             || !IPAddress.TryParse(parts[0], out var address)
             || address.AddressFamily != AddressFamily.InterNetwork
-            || !int.TryParse(parts[1], out var prefix)
-            || prefix is < 0 or > 32
-            || !IsPrivate(address))
+            || !int.TryParse(parts[1], out prefix)
+            || !IsPrivateCidr(address, prefix))
             return false;
 
         range = NetworkRange.FromPrefix(address, prefix);
         return true;
+    }
+
+    private static bool IsPrivateCidr(IPAddress address, int prefix)
+    {
+        if (prefix is < 8 or > 32) return false;
+        var bytes = address.GetAddressBytes();
+        if (bytes[0] == 10) return prefix >= 8;
+        if (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) return prefix >= 12;
+        return bytes[0] == 192 && bytes[1] == 168 && prefix >= 16;
     }
 
     private static IEnumerable<NetworkRange> GetLocalRanges()
@@ -71,6 +100,16 @@ public sealed class LanAccessPolicy : ILanAccessPolicy
         foreach (var value in values)
             if (TryParseCidr(value, out var range))
                 yield return range;
+    }
+
+    private static IReadOnlyList<NetworkRange> GetAllowedRanges(ExamTransferOptions options)
+    {
+        var configured = options.LanAccess.AllowedCidrs
+            .Concat(options.Discovery.AdditionalAllowedCidrs);
+        var explicitRanges = ParseConfigured(configured).ToList();
+        if (LanNetworkConfiguration.RunningInContainer)
+            return explicitRanges;
+        return GetLocalRanges().Concat(explicitRanges).Distinct().ToList();
     }
 
     internal readonly record struct NetworkRange(uint Network, uint Mask)

@@ -3,6 +3,7 @@ using ExamTransfer.Application;
 using ExamTransfer.Infrastructure;
 using ExamTransfer.Infrastructure.Backup;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.LocalServer;
 using ExamTransfer.LocalServer.Auth;
 using ExamTransfer.LocalServer.Discovery;
 using ExamTransfer.LocalServer.Hubs;
@@ -83,7 +84,9 @@ builder.Services.AddSingleton<IPublicCloudPullWorker>(sp => sp.GetRequiredServic
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PublicCloudPullWorker>());
 builder.Services.AddHostedService<CloudAuthRefreshWorker>();
 builder.Services.AddHostedService<ExportWorker>();
+builder.Services.AddSingleton<DiscoveryRuntimeState>();
 builder.Services.AddHostedService<UdpDiscoveryService>();
+builder.Services.AddSingleton<RuntimeHealthReporter>();
 
 var app = builder.Build();
 app.UseMiddleware<TraceIdMiddleware>();
@@ -95,7 +98,13 @@ app.UseMiddleware<PasswordChangeGateMiddleware>();
 app.UseAuthorization();
 app.UseMiddleware<LanAccessMiddleware>();
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok", serverNowUtc = DateTimeOffset.UtcNow, schemaVersion = ExamTransfer.Shared.Contracts.ContractInfo.SchemaVersion }));
+app.MapGet("/health", async (RuntimeHealthReporter reporter, CancellationToken ct) =>
+{
+    var report = await reporter.GetAsync(ct);
+    return report.Status == "Unhealthy"
+        ? Results.Json(report, statusCode: StatusCodes.Status503ServiceUnavailable)
+        : Results.Ok(report);
+});
 app.MapControllers();
 app.MapHub<ExamHub>(ExamTransfer.Shared.Contracts.ContractInfo.HubPath);
 

@@ -200,6 +200,56 @@ public interface ICloudAdapter
         int limit,
         CancellationToken cancellationToken) =>
         Task.FromResult(new CloudPullPage([], false));
+    Task<CloudParticipantMutationResult> ApprovePublicParticipantAsync(
+        Guid sessionId,
+        Guid participantId,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<CloudParticipantMutationResult> RejectPublicParticipantAsync(
+        Guid sessionId,
+        Guid participantId,
+        string? reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<CloudBulkParticipantMutationResult> BulkApprovePublicParticipantsAsync(
+        Guid sessionId,
+        IReadOnlyList<Guid> participantIds,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<CloudParticipantMutationResult> AddPublicParticipantExtraTimeAsync(
+        Guid sessionId,
+        Guid participantId,
+        int minutes,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<CloudParticipantMutationResult> AllowPublicResubmissionAsync(
+        Guid participantId,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<CloudSubmissionMutationResult> RejectPublicSubmissionAsync(
+        Guid submissionId,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<CloudEnrollmentMutationResult> ApprovePublicEnrollmentAsync(
+        Guid enrollmentRequestId,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<CloudEnrollmentMutationResult> RejectPublicEnrollmentAsync(
+        Guid enrollmentRequestId,
+        string? reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
     Task<CloudLoginResult> LoginAsync(string email, string password, CancellationToken cancellationToken);
     Task<CloudLoginResult?> RefreshSessionAsync(CancellationToken cancellationToken);
     Task LogoutAsync(CancellationToken cancellationToken);
@@ -221,6 +271,40 @@ public sealed record CloudPushResult(
     string? CloudObjectPath,
     string UploadStrategy,
     long BytesTransferred);
+
+public sealed record CloudParticipantMutationResult(
+    Guid ParticipantId,
+    Guid SessionId,
+    ParticipantStatus Status,
+    DateTimeOffset? ApprovedAtUtc,
+    int ExtraTimeMinutes,
+    bool ResubmitAllowed,
+    string? ResubmitReason,
+    long CloudVersion,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? EffectiveDeadlineUtc = null);
+
+public sealed record CloudBulkParticipantMutationResult(
+    int ApprovedCount,
+    int SkippedCount,
+    IReadOnlyList<CloudParticipantMutationResult> Participants);
+
+public sealed record CloudSubmissionMutationResult(
+    Guid SubmissionId,
+    Guid SessionId,
+    Guid ParticipantId,
+    SubmissionStatus Status,
+    string? TeacherRejectReason,
+    long CloudVersion,
+    DateTimeOffset UpdatedAtUtc);
+
+public sealed record CloudEnrollmentMutationResult(
+    Guid EnrollmentRequestId,
+    Guid ClassId,
+    string Status,
+    DateTimeOffset? DecidedAtUtc,
+    long CloudVersion,
+    DateTimeOffset UpdatedAtUtc);
 
 public sealed record CloudPreflightResult(
     bool Enabled,
@@ -267,6 +351,9 @@ public interface IClassService
     Task<ImportPreviewDto> PreviewImportAsync(Guid classId, ImportPreviewRequest request, CancellationToken cancellationToken);
     Task<ImportCommitResultDto> CommitImportAsync(Guid classId, ImportCommitRequest request, CancellationToken cancellationToken);
     Task<byte[]> ExportCsvAsync(Guid classId, CancellationToken cancellationToken);
+    Task<IReadOnlyList<ClassEnrollmentRequestDto>> ListEnrollmentRequestsAsync(Guid classId, CancellationToken cancellationToken);
+    Task<ClassEnrollmentRequestDto> ApproveEnrollmentAsync(Guid classId, Guid requestId, Guid mutationRequestId, CancellationToken cancellationToken);
+    Task<ClassEnrollmentRequestDto> RejectEnrollmentAsync(Guid classId, Guid requestId, string? reason, Guid mutationRequestId, CancellationToken cancellationToken);
 }
 
 public interface IExamService
@@ -294,8 +381,8 @@ public interface ISessionService
     Task<SessionDetailDto> UpdateAsync(Guid id, UpdateSessionRequest request, CancellationToken cancellationToken);
     Task<SessionDetailDto> TransitionAsync(Guid id, SessionStatus target, EndSessionRequest? endRequest, CancellationToken cancellationToken);
     Task<JoinSessionResponse> JoinAsync(JoinSessionRequest request, Guid accountUserId, string studentCode, string displayName, string? ipAddress, CancellationToken cancellationToken);
-    Task<ParticipantDto> ApproveAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken);
-    Task RejectAsync(Guid sessionId, Guid participantId, string? reason, CancellationToken cancellationToken);
+    Task<ParticipantDto> ApproveAsync(Guid sessionId, Guid participantId, Guid mutationRequestId, CancellationToken cancellationToken);
+    Task RejectAsync(Guid sessionId, Guid participantId, string? reason, Guid mutationRequestId, CancellationToken cancellationToken);
     Task<IReadOnlyList<ParticipantDto>> BulkApproveAsync(Guid sessionId, BulkApproveRequest request, CancellationToken cancellationToken);
     Task<ParticipantDto> AddExtraTimeAsync(Guid sessionId, Guid participantId, ExtraTimeRequest request, CancellationToken cancellationToken);
     Task<MessageDto> SendMessageAsync(Guid sessionId, SendMessageRequest request, CancellationToken cancellationToken);
@@ -373,6 +460,7 @@ public interface ISystemService
 public interface IQuizService
 {
     Task<QuizImportResultDto> ImportAsync(Guid examId, QuizImportFileRequest request, CancellationToken cancellationToken);
+    Task<IReadOnlyList<QuizAttemptDto>> ListAttemptsForSessionAsync(Guid sessionId, CancellationToken cancellationToken);
     Task<QuizAttemptDto> StartOrGetAttemptAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken);
     Task<SyncQuizAnswersResultDto> SyncAnswersAsync(Guid attemptId, Guid participantId, SyncQuizAnswersRequest request, CancellationToken cancellationToken);
     Task<QuizAttemptDto> FinalizeAsync(Guid attemptId, Guid participantId, FinalizeQuizAttemptRequest request, CancellationToken cancellationToken);

@@ -1,38 +1,50 @@
 ﻿using System.Net;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using ExamTransfer.Infrastructure;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.LocalServer.Discovery;
 
-public sealed class UdpDiscoveryService(IServiceScopeFactory scopeFactory, IOptions<ExamTransferOptions> options, ILogger<UdpDiscoveryService> logger) : BackgroundService
+public sealed class DiscoveryRuntimeState
+{
+    public bool Enabled { get; internal set; }
+    public bool Listening { get; internal set; }
+    public string? LastErrorCode { get; internal set; }
+}
+
+public sealed class UdpDiscoveryService(
+    IServiceScopeFactory scopeFactory,
+    IOptions<ExamTransferOptions> options,
+    DiscoveryRuntimeState state,
+    ILogger<UdpDiscoveryService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        state.Enabled = options.Value.Discovery.Enabled;
         if (!options.Value.Discovery.Enabled) return;
         var discoveryPort = options.Value.Discovery.Port;
 
-        if (IPGlobalProperties
-            .GetIPGlobalProperties()
-            .GetActiveUdpListeners()
-            .Any(endpoint => endpoint.Port == discoveryPort))
+        UdpClient? udp = null;
+        try
         {
-            logger.LogWarning(
-                "UDP discovery port {Port} is already in use. LAN auto-discovery is disabled for this run.",
-                discoveryPort);
-
+            udp = new UdpClient(new IPEndPoint(IPAddress.Any, discoveryPort));
+            state.Listening = true;
+            logger.LogInformation("UDP discovery listening on 0.0.0.0:{Port}", discoveryPort);
+        }
+        catch (SocketException ex)
+        {
+            state.LastErrorCode = "UDP_DISCOVERY_BIND_FAILED";
+            logger.LogWarning(ex, "UDP discovery could not bind 0.0.0.0:{Port}; LAN auto-discovery is disabled for this run.", discoveryPort);
             return;
         }
 
-        using var udp = new UdpClient(
-            new IPEndPoint(IPAddress.Any, discoveryPort));
-        logger.LogInformation("UDP discovery listening on {Port}", options.Value.Discovery.Port);
+        using (udp)
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -42,12 +54,25 @@ public sealed class UdpDiscoveryService(IServiceScopeFactory scopeFactory, IOpti
                 if (!text.Equals(options.Value.Discovery.RequestMagic, StringComparison.Ordinal)) continue;
                 using var scope = scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var rooms = await db.ExamSessionsSet.CountAsync(x => x.Status == SessionStatus.Waiting || x.Status == SessionStatus.InProgress || x.Status == SessionStatus.Paused || x.Status == SessionStatus.Collecting, stoppingToken);
-                var address = options.Value.Server.PreferredIp ?? GetLanIp();
+                var rooms = await db.ExamSessionsSet.CountAsync(
+                    x => x.AccessMode == SessionAccessMode.LanOnly
+                        && x.Status == SessionStatus.Waiting
+                        && x.AcceptingParticipants,
+                    stoppingToken);
+                var endpoint = LanNetworkConfiguration.ResolveAdvertisedEndpoint(options.Value);
+                if (!endpoint.Ready)
+                {
+                    state.LastErrorCode = endpoint.Code;
+                    logger.LogWarning(
+                        "UDP discovery response suppressed: {Code}. {Detail}",
+                        endpoint.Code,
+                        endpoint.Detail);
+                    continue;
+                }
                 var response = JsonSerializer.SerializeToUtf8Bytes(new DiscoveryServerDto(
                     DiscoveryProtocol.ProtocolVersion,
                     Environment.MachineName,
-                    address,
+                    endpoint.Address!,
                     options.Value.Server.Port,
                     MachineFingerprint(),
                     rooms,
@@ -59,16 +84,11 @@ public sealed class UdpDiscoveryService(IServiceScopeFactory scopeFactory, IOpti
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
             catch (Exception ex) { logger.LogWarning(ex, "UDP discovery request failed"); }
         }
-    }
-
-    private static string GetLanIp()
-    {
-        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback))
+        state.Listening = false;
+        if (stoppingToken.IsCancellationRequested)
         {
-            var address = nic.GetIPProperties().UnicastAddresses.FirstOrDefault(x => x.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(x.Address));
-            if (address is not null) return address.Address.ToString();
+            state.LastErrorCode = null;
         }
-        return "127.0.0.1";
     }
 
     private static string MachineFingerprint()
@@ -77,4 +97,3 @@ public sealed class UdpDiscoveryService(IServiceScopeFactory scopeFactory, IOpti
         return Convert.ToHexString(bytes)[..16].ToLowerInvariant();
     }
 }
-

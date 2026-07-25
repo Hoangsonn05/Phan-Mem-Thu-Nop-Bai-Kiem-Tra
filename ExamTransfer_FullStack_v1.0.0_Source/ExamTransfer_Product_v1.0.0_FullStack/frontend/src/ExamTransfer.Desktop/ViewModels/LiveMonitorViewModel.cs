@@ -85,7 +85,10 @@ public sealed class LiveMonitorViewModel : ProductPageBase
     private Task ExtraTimeAsync() => RunAsync("Đang cộng thời gian", "Thời gian bổ sung đã được áp dụng", async ct =>
     {
         if (SelectedSession is null || SelectedParticipant is null || !int.TryParse(ExtraMinutes, out var minutes)) return;
-        var updated = ApiGuard.Require(await api.PostAsync<ExtraTimeRequest, ParticipantDto>($"api/v1/sessions/{SelectedSession.Id}/participants/{SelectedParticipant.Id}/extra-time", new(minutes, "Giáo viên điều chỉnh thời gian."), ct));
+        var mutationKey = $"extra-time:{SelectedSession.Id:N}:{SelectedParticipant.Id:N}:{minutes}";
+        var mutationId = GetMutationRequestId(mutationKey);
+        var updated = ApiGuard.Require(await api.PostAsync<ExtraTimeRequest, ParticipantDto>($"api/v1/sessions/{SelectedSession.Id}/participants/{SelectedParticipant.Id}/extra-time", new(minutes, "Giáo viên điều chỉnh thời gian.", mutationId), ct));
+        CompleteMutationRequest(mutationKey);
         ReplaceParticipant(updated);
     });
 

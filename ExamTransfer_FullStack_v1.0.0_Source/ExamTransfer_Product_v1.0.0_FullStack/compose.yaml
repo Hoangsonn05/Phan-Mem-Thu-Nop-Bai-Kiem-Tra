@@ -1,0 +1,59 @@
+name: examtransfer
+
+services:
+  backend:
+    image: examtransfer-backend:local
+    container_name: ${EXAMTRANSFER_CONTAINER_NAME:-examtransfer-backend}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: final
+      args:
+        DOTNET_VERSION: "10.0"
+        BUILD_CONFIGURATION: "Release"
+    env_file:
+      - ${EXAMTRANSFER_ENV_FILE:-./.env.docker}
+    ports:
+      - "${EXAMTRANSFER_TCP_PORT:-5048}:5048/tcp"
+      - "${EXAMTRANSFER_UDP_PORT:-5050}:5050/udp"
+    volumes:
+      - examtransfer_data:/data/ExamTransfer
+      - examtransfer_runtime:/usr/share/ExamTransfer
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:5048/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  backend-tests:
+    image: examtransfer-backend-tests:local
+    profiles: ["test"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: test
+      args:
+        DOTNET_VERSION: "10.0"
+        BUILD_CONFIGURATION: "Release"
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Testing"
+      Cloud__Enabled: "false"
+      Storage__RootPath: "/tmp/ExamTransferTests"
+    entrypoint:
+      - dotnet
+      - test
+      - ExamTransfer.sln
+      - --configuration
+      - Release
+      - --no-build
+      - --logger
+      - console;verbosity=normal
+
+volumes:
+  examtransfer_data:
+    name: ${EXAMTRANSFER_DATA_VOLUME:-examtransfer_data}
+  examtransfer_runtime:
+    name: ${EXAMTRANSFER_RUNTIME_VOLUME:-examtransfer_runtime}

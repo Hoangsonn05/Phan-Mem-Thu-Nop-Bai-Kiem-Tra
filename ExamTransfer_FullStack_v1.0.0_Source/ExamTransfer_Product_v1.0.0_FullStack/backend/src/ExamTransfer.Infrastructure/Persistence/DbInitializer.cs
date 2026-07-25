@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "6";
+    public const string SchemaVersion = "7";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -84,7 +84,69 @@ public static class DbInitializer
             await EnsureColumnAsync(db, table, "CloudUpdatedAtUtc", "TEXT NULL", cancellationToken);
             await EnsureColumnAsync(db, table, "CloudSyncState", "TEXT NOT NULL DEFAULT 'LocalOnly'", cancellationToken);
         }
+        await EnsurePublicCloudProjectionTablesAsync(db, cancellationToken);
         await EnsurePublicCloudReplicaTablesAsync(db, cancellationToken);
+    }
+
+    private static async Task EnsurePublicCloudProjectionTablesAsync(
+        AppDbContext db,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            CREATE TABLE IF NOT EXISTS "class_enrollment_requests" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_class_enrollment_requests" PRIMARY KEY,
+                "SourceMode" TEXT NOT NULL, "CloudVersion" INTEGER NOT NULL,
+                "CloudUpdatedAtUtc" TEXT NULL, "CloudSyncState" TEXT NOT NULL,
+                "ClassId" TEXT NOT NULL, "StudentUserId" TEXT NOT NULL,
+                "StudentCode" TEXT NOT NULL, "Status" TEXT NOT NULL,
+                "RequestedAtUtc" TEXT NOT NULL, "DecidedAtUtc" TEXT NULL,
+                "DecidedBy" TEXT NULL, "DecisionReason" TEXT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_class_enrollment_requests_ClassId_StudentUserId"
+                ON "class_enrollment_requests" ("ClassId", "StudentUserId");
+            CREATE INDEX IF NOT EXISTS "IX_class_enrollment_requests_ClassId_Status_RequestedAtUtc"
+                ON "class_enrollment_requests" ("ClassId", "Status", "RequestedAtUtc");
+
+            CREATE TABLE IF NOT EXISTS "public_device_connections" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_public_device_connections" PRIMARY KEY,
+                "SourceMode" TEXT NOT NULL, "CloudVersion" INTEGER NOT NULL,
+                "CloudUpdatedAtUtc" TEXT NULL, "CloudSyncState" TEXT NOT NULL,
+                "SessionId" TEXT NOT NULL, "ParticipantId" TEXT NOT NULL, "UserId" TEXT NOT NULL,
+                "DeviceId" TEXT NOT NULL, "ConnectionState" INTEGER NOT NULL,
+                "HeartbeatAtUtc" TEXT NOT NULL, "ForegroundApplication" TEXT NULL,
+                "RunningProcessSummaryJson" TEXT NULL, "PolicyState" TEXT NULL,
+                "LockState" TEXT NULL, "ViolationCount" INTEGER NOT NULL,
+                "AppVersion" TEXT NULL, "AgentVersion" TEXT NULL,
+                "PolicyLeaseExpiresAtUtc" TEXT NULL, "LastPolicyRenewalAtUtc" TEXT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_public_device_connections_SessionId_DeviceId"
+                ON "public_device_connections" ("SessionId", "DeviceId");
+
+            CREATE TABLE IF NOT EXISTS "public_device_commands" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_public_device_commands" PRIMARY KEY,
+                "SourceMode" TEXT NOT NULL, "CloudVersion" INTEGER NOT NULL,
+                "CloudUpdatedAtUtc" TEXT NULL, "CloudSyncState" TEXT NOT NULL,
+                "SessionId" TEXT NOT NULL, "DeviceId" TEXT NOT NULL,
+                "CommandType" INTEGER NOT NULL, "PayloadJson" TEXT NOT NULL,
+                "IssuedAtUtc" TEXT NOT NULL, "ExpiresAtUtc" TEXT NOT NULL,
+                "IssuedBy" TEXT NOT NULL, "Signature" TEXT NOT NULL,
+                "RetryCount" INTEGER NOT NULL, "LastRetryAtUtc" TEXT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS "IX_public_device_commands_SessionId_DeviceId_IssuedAtUtc"
+                ON "public_device_commands" ("SessionId", "DeviceId", "IssuedAtUtc");
+
+            CREATE TABLE IF NOT EXISTS "public_device_command_results" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_public_device_command_results" PRIMARY KEY,
+                "SourceMode" TEXT NOT NULL, "CloudVersion" INTEGER NOT NULL,
+                "CloudUpdatedAtUtc" TEXT NULL, "CloudSyncState" TEXT NOT NULL,
+                "DeviceId" TEXT NOT NULL, "Status" INTEGER NOT NULL,
+                "ReceivedAtUtc" TEXT NOT NULL, "ExecutedAtUtc" TEXT NULL,
+                "ErrorCode" TEXT NULL, "ErrorMessage" TEXT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS "IX_public_device_command_results_DeviceId_ReceivedAtUtc"
+                ON "public_device_command_results" ("DeviceId", "ReceivedAtUtc");
+            """;
+        await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
     }
 
     private static async Task EnsurePublicCloudReplicaTablesAsync(

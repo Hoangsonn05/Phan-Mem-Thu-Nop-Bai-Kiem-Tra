@@ -70,6 +70,22 @@ public sealed class ClassMember : EntityBase
     public string? MetadataJson { get; set; }
 }
 
+public sealed class ClassEnrollmentRequest : EntityBase
+{
+    public string SourceMode { get; set; } = "PublicCloud";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "Pulled";
+    public Guid ClassId { get; set; }
+    public Guid StudentUserId { get; set; }
+    public string StudentCode { get; set; } = string.Empty;
+    public string Status { get; set; } = "Pending";
+    public DateTimeOffset RequestedAtUtc { get; set; }
+    public DateTimeOffset? DecidedAtUtc { get; set; }
+    public Guid? DecidedBy { get; set; }
+    public string? DecisionReason { get; set; }
+}
+
 public sealed class Exam : EntityBase
 {
     public Guid? ClassId { get; set; }
@@ -359,6 +375,61 @@ public sealed class DevicePolicyStatus : EntityBase
     public string CapabilityJson { get; set; } = "{}";
     public PolicyApplyStatus Status { get; set; } = PolicyApplyStatus.NotRequested;
     public string? Error { get; set; }
+}
+
+public sealed class PublicDeviceConnection : EntityBase
+{
+    public string SourceMode { get; set; } = "PublicCloud";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "Pulled";
+    public Guid SessionId { get; set; }
+    public Guid ParticipantId { get; set; }
+    public Guid UserId { get; set; }
+    public string DeviceId { get; set; } = string.Empty;
+    public ConnectionState ConnectionState { get; set; }
+    public DateTimeOffset HeartbeatAtUtc { get; set; }
+    public string? ForegroundApplication { get; set; }
+    public string? RunningProcessSummaryJson { get; set; }
+    public string? PolicyState { get; set; }
+    public string? LockState { get; set; }
+    public int ViolationCount { get; set; }
+    public string? AppVersion { get; set; }
+    public string? AgentVersion { get; set; }
+    public DateTimeOffset? PolicyLeaseExpiresAtUtc { get; set; }
+    public DateTimeOffset? LastPolicyRenewalAtUtc { get; set; }
+}
+
+public sealed class PublicDeviceCommand : EntityBase
+{
+    public string SourceMode { get; set; } = "PublicCloud";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "Pulled";
+    public Guid SessionId { get; set; }
+    public string DeviceId { get; set; } = string.Empty;
+    public DeviceCommandType CommandType { get; set; }
+    public string PayloadJson { get; set; } = "{}";
+    public DateTimeOffset IssuedAtUtc { get; set; }
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+    public Guid IssuedBy { get; set; }
+    public string Signature { get; set; } = string.Empty;
+    public int RetryCount { get; set; }
+    public DateTimeOffset? LastRetryAtUtc { get; set; }
+}
+
+public sealed class PublicDeviceCommandResult : EntityBase
+{
+    public string SourceMode { get; set; } = "PublicCloud";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "Pulled";
+    public string DeviceId { get; set; } = string.Empty;
+    public DeviceCommandStatus Status { get; set; }
+    public DateTimeOffset ReceivedAtUtc { get; set; }
+    public DateTimeOffset? ExecutedAtUtc { get; set; }
+    public string? ErrorCode { get; set; }
+    public string? ErrorMessage { get; set; }
 }
 
 public sealed class Violation : EntityBase

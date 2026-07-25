@@ -160,7 +160,7 @@ if (-not $KeepSdkPolicy) {
                 Add-Result 'SDK roll-forward policy' 'FOUND' "$globalJsonPath is compatible with global .NET 10 SDK installation."
             }
         } catch {
-            Add-Result 'SDK roll-forward policy' 'MANUAL' "Could not inspect/update $globalJsonPath: $($_.Exception.Message)"
+            Add-Result 'SDK roll-forward policy' 'MANUAL' "Could not inspect/update ${globalJsonPath}: $($_.Exception.Message)"
         }
     }
 } else {

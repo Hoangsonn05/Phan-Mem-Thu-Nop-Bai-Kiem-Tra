@@ -163,8 +163,12 @@ create index if not exists ix_public_commands_device_pending on public.public_de
 create index if not exists ix_public_violations_session_device on public.violations(session_id, device_id, occurred_at desc);
 create index if not exists ix_class_members_user_class on public.class_members(user_id, class_id);
 create index if not exists ix_session_participants_user_session on public.session_participants(user_id, session_id);
-create unique index if not exists ux_public_submission_idempotency on public.submissions(participant_id, idempotency_key) where idempotency_key is not null;
-create unique index if not exists ux_submission_files_submission on public.submission_files(submission_id);
+create unique index if not exists ux_public_submission_idempotency
+  on public.submissions(participant_id, idempotency_key)
+  where source_mode = 'PublicCloud' and idempotency_key is not null;
+create unique index if not exists ux_public_submission_single_file
+  on public.submission_files(submission_id)
+  where source_mode = 'PublicCloud';
 create index if not exists ix_participants_public_cursor on public.session_participants(cloud_version, id) where source_mode = 'PublicCloud';
 create index if not exists ix_submissions_public_cursor on public.submissions(cloud_version, id) where source_mode = 'PublicCloud';
 create index if not exists ix_submission_files_public_cursor on public.submission_files(cloud_version, id) where source_mode = 'PublicCloud';
@@ -175,9 +179,17 @@ create index if not exists ix_quiz_answers_public_cursor on public.quiz_answers(
 create or replace function public.enforce_student_submission_policy()
 returns trigger language plpgsql set search_path = '' as $function$
 begin
+  if new.source_mode <> 'PublicCloud' then
+    return new;
+  end if;
   if new.size_bytes <= 0 or new.size_bytes > 10485760 then raise exception 'SUBMISSION_TOO_LARGE' using errcode = '22023'; end if;
   if lower(new.name) !~ '\.(zip|rar|7z)$' then raise exception 'SUBMISSION_ARCHIVE_REQUIRED' using errcode = '22023'; end if;
-  if exists (select 1 from public.submission_files f where f.submission_id = new.submission_id and f.id <> new.id) then
+  if exists (
+    select 1 from public.submission_files f
+    where f.submission_id = new.submission_id
+      and f.source_mode = 'PublicCloud'
+      and f.id <> new.id
+  ) then
     raise exception 'SUBMISSION_FILE_COUNT_INVALID' using errcode = '23505';
   end if;
   return new;
@@ -233,7 +245,7 @@ begin
   where organization_id = v_profile.organization_id
     and access_mode = 'Public' and enrollment_open
     and enrollment_code_hash is not null
-    and enrollment_code_hash = crypt(btrim(p_enrollment_code), enrollment_code_hash)
+    and enrollment_code_hash = extensions.crypt(btrim(p_enrollment_code), enrollment_code_hash)
   limit 1;
   if not found then raise exception 'ENROLLMENT_CODE_INVALID' using errcode = '22023'; end if;
 
@@ -294,7 +306,8 @@ begin
   end if;
   if length(btrim(p_enrollment_code)) < 6 then raise exception 'ENROLLMENT_CODE_TOO_SHORT' using errcode = '22023'; end if;
   update public.classes
-  set access_mode = 'Public', enrollment_code_hash = crypt(btrim(p_enrollment_code), gen_salt('bf')),
+  set access_mode = 'Public',
+      enrollment_code_hash = extensions.crypt(btrim(p_enrollment_code), extensions.gen_salt('bf')),
       enrollment_open = true, enrollment_opened_at = now(), enrollment_closed_at = null,
       public_version = public_version + 1, updated_at = now()
   where id = p_class_id and organization_id = (select public.current_organization_id());
@@ -382,7 +395,6 @@ as $function$
 declare
   v_profile public.profiles%rowtype := private.require_active_student();
   v_session public.exam_sessions%rowtype;
-  v_member public.class_members%rowtype;
   v_participant_id uuid;
   v_status text;
 begin
@@ -406,7 +418,7 @@ begin
     and c.access_mode = 'Public';
   if not found then raise exception 'PUBLIC_SESSION_NOT_FOUND' using errcode = 'P0002'; end if;
 
-  select m.* into v_member
+  perform 1
   from public.class_members m
   where m.class_id = v_session.class_id
     and m.organization_id = v_profile.organization_id
@@ -632,14 +644,14 @@ begin
       and o.owner_id = v_profile.id::text
   ) then raise exception 'ARCHIVE_OBJECT_NOT_FOUND' using errcode = 'P0002'; end if;
 
-  v_receipt := upper(substr(encode(digest(p_submission_id::text || ':' || v_received::text, 'sha256'), 'hex'), 1, 16));
+  v_receipt := upper(substr(encode(extensions.digest(p_submission_id::text || ':' || v_received::text, 'sha256'), 'hex'), 1, 16));
   update public.submissions
   set status = case when v_received > deadline_at then 'LateSubmitted' else 'Submitted' end,
       server_received_at = v_received,
       is_late = v_received > deadline_at,
       is_official = true,
       receipt_code = v_receipt,
-      receipt_signature = encode(digest(id::text || ':' || v_receipt, 'sha256'), 'hex'),
+      receipt_signature = encode(extensions.digest(id::text || ':' || v_receipt, 'sha256'), 'hex'),
       cloud_version = private.next_public_cloud_version(),
       updated_at = v_received
   where id = p_submission_id;
@@ -751,7 +763,7 @@ begin
   if pg_column_size(coalesce(p_evidence_metadata, '{}'::jsonb)) > 65536 then
     raise exception 'VIOLATION_EVIDENCE_TOO_LARGE' using errcode = '22023';
   end if;
-  select c, s.class_id into v_connection, v_class_id
+  select c.* into v_connection
   from public.public_device_connections c
   join public.exam_sessions s
     on s.id = c.session_id and s.organization_id = c.organization_id
@@ -768,6 +780,10 @@ begin
     and s.access_mode = 'PublicCloud'
     and s.status in ('Waiting','Distributing','InProgress','Paused','Collecting');
   if not found then raise exception 'DEVICE_CONNECTION_NOT_FOUND' using errcode = 'P0002'; end if;
+  select s.class_id into strict v_class_id
+  from public.exam_sessions s
+  where s.id = v_connection.session_id
+    and s.organization_id = v_connection.organization_id;
 
   insert into public.violations(
     id, organization_id, class_id, session_id, participant_id, device_id,
@@ -1185,73 +1201,87 @@ security definer
 set search_path = ''
 as $function$
 begin
-  if tg_table_name = 'exam_sessions' and new.access_mode = 'PublicCloud' and not exists (
-    select 1 from public.exams e join public.classes c on c.id = new.class_id
-    where e.id = new.exam_id and e.organization_id = new.organization_id
-      and c.organization_id = new.organization_id and e.class_id = new.class_id
-  ) then raise exception 'SESSION_TENANT_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'session_participants' and new.source_mode = 'PublicCloud' and not exists (
-    select 1 from public.exam_sessions s
-    where s.id = new.session_id and s.organization_id = new.organization_id
-      and s.access_mode = 'PublicCloud'
-  ) then raise exception 'PARTICIPANT_TENANT_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'public_class_assignments' and not exists (
-    select 1 from public.classes c join public.exams e on e.id = new.exam_id
-    where c.id = new.class_id and c.organization_id = new.organization_id
-      and e.organization_id = new.organization_id and e.class_id = new.class_id
-  ) then raise exception 'ASSIGNMENT_TENANT_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'public_device_connections' and not exists (
-    select 1 from public.exam_sessions s
-    join public.session_participants p on p.session_id = s.id
-    where s.id = new.session_id and p.id = new.participant_id
-      and s.organization_id = new.organization_id
-      and p.organization_id = new.organization_id
-      and p.user_id = new.user_id and s.access_mode = 'PublicCloud'
-  ) then raise exception 'DEVICE_TENANT_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'public_device_commands' and not exists (
-    select 1 from public.public_device_connections c
-    where c.session_id = new.session_id and c.device_id = new.device_id
-      and c.organization_id = new.organization_id
-  ) then raise exception 'COMMAND_DEVICE_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'public_device_command_results' and not exists (
-    select 1 from public.public_device_commands c
-    where c.command_id = new.command_id and c.device_id = new.device_id
-      and c.organization_id = new.organization_id
-  ) then raise exception 'COMMAND_RESULT_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'violations' and new.source_mode = 'PublicCloud' and not exists (
-    select 1 from public.session_participants p
-    join public.exam_sessions s on s.id = p.session_id
-    where p.id = new.participant_id and p.session_id = new.session_id
-      and p.organization_id = new.organization_id
-      and s.organization_id = new.organization_id
-      and s.class_id is not distinct from new.class_id
-      and s.access_mode = 'PublicCloud'
-  ) then raise exception 'VIOLATION_TENANT_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'submissions' and new.source_mode = 'PublicCloud' and not exists (
-    select 1 from public.session_participants p
-    join public.exam_sessions s on s.id = p.session_id
-    where p.id = new.participant_id and p.session_id = new.session_id
-      and p.organization_id = new.organization_id
-      and s.organization_id = new.organization_id and s.access_mode = 'PublicCloud'
-  ) then raise exception 'SUBMISSION_TENANT_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'submission_files' and new.source_mode = 'PublicCloud' and not exists (
-    select 1 from public.submissions s
-    where s.id = new.submission_id and s.organization_id = new.organization_id
-      and s.source_mode = 'PublicCloud'
-  ) then raise exception 'SUBMISSION_FILE_TENANT_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'quiz_attempts' and new.source_mode = 'PublicCloud' and not exists (
-    select 1 from public.session_participants p
-    join public.exam_sessions s on s.id = p.session_id
-    where p.id = new.participant_id and p.session_id = new.session_id
-      and p.organization_id = new.organization_id
-      and s.organization_id = new.organization_id and s.access_mode = 'PublicCloud'
-  ) then raise exception 'QUIZ_ATTEMPT_TENANT_MISMATCH' using errcode = '23514';
-  elsif tg_table_name = 'quiz_answers' and new.source_mode = 'PublicCloud' and not exists (
-    select 1 from public.quiz_attempts a
-    join public.quiz_questions q on q.id = new.question_id
-    where a.id = new.attempt_id and a.organization_id = new.organization_id
-      and q.organization_id = new.organization_id and a.source_mode = 'PublicCloud'
-  ) then raise exception 'QUIZ_ANSWER_TENANT_MISMATCH' using errcode = '23514';
+  -- NEW is a polymorphic record. Branch on TG_TABLE_NAME before accessing
+  -- table-specific fields so an update to one table never resolves fields
+  -- that exist only on another table.
+  if tg_table_name = 'exam_sessions' then
+    if new.access_mode = 'PublicCloud' and not exists (
+      select 1 from public.exams e join public.classes c on c.id = new.class_id
+      where e.id = new.exam_id and e.organization_id = new.organization_id
+        and c.organization_id = new.organization_id and e.class_id = new.class_id
+    ) then raise exception 'SESSION_TENANT_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'session_participants' then
+    if new.source_mode = 'PublicCloud' and not exists (
+      select 1 from public.exam_sessions s
+      where s.id = new.session_id and s.organization_id = new.organization_id
+        and s.access_mode = 'PublicCloud'
+    ) then raise exception 'PARTICIPANT_TENANT_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'public_class_assignments' then
+    if not exists (
+      select 1 from public.classes c join public.exams e on e.id = new.exam_id
+      where c.id = new.class_id and c.organization_id = new.organization_id
+        and e.organization_id = new.organization_id and e.class_id = new.class_id
+    ) then raise exception 'ASSIGNMENT_TENANT_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'public_device_connections' then
+    if not exists (
+      select 1 from public.exam_sessions s
+      join public.session_participants p on p.session_id = s.id
+      where s.id = new.session_id and p.id = new.participant_id
+        and s.organization_id = new.organization_id
+        and p.organization_id = new.organization_id
+        and p.user_id = new.user_id and s.access_mode = 'PublicCloud'
+    ) then raise exception 'DEVICE_TENANT_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'public_device_commands' then
+    if not exists (
+      select 1 from public.public_device_connections c
+      where c.session_id = new.session_id and c.device_id = new.device_id
+        and c.organization_id = new.organization_id
+    ) then raise exception 'COMMAND_DEVICE_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'public_device_command_results' then
+    if not exists (
+      select 1 from public.public_device_commands c
+      where c.command_id = new.command_id and c.device_id = new.device_id
+        and c.organization_id = new.organization_id
+    ) then raise exception 'COMMAND_RESULT_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'violations' then
+    if new.source_mode = 'PublicCloud' and not exists (
+      select 1 from public.session_participants p
+      join public.exam_sessions s on s.id = p.session_id
+      where p.id = new.participant_id and p.session_id = new.session_id
+        and p.organization_id = new.organization_id
+        and s.organization_id = new.organization_id
+        and s.class_id is not distinct from new.class_id
+        and s.access_mode = 'PublicCloud'
+    ) then raise exception 'VIOLATION_TENANT_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'submissions' then
+    if new.source_mode = 'PublicCloud' and not exists (
+      select 1 from public.session_participants p
+      join public.exam_sessions s on s.id = p.session_id
+      where p.id = new.participant_id and p.session_id = new.session_id
+        and p.organization_id = new.organization_id
+        and s.organization_id = new.organization_id and s.access_mode = 'PublicCloud'
+    ) then raise exception 'SUBMISSION_TENANT_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'submission_files' then
+    if new.source_mode = 'PublicCloud' and not exists (
+      select 1 from public.submissions s
+      where s.id = new.submission_id and s.organization_id = new.organization_id
+        and s.source_mode = 'PublicCloud'
+    ) then raise exception 'SUBMISSION_FILE_TENANT_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'quiz_attempts' then
+    if new.source_mode = 'PublicCloud' and not exists (
+      select 1 from public.session_participants p
+      join public.exam_sessions s on s.id = p.session_id
+      where p.id = new.participant_id and p.session_id = new.session_id
+        and p.organization_id = new.organization_id
+        and s.organization_id = new.organization_id and s.access_mode = 'PublicCloud'
+    ) then raise exception 'QUIZ_ATTEMPT_TENANT_MISMATCH' using errcode = '23514'; end if;
+  elsif tg_table_name = 'quiz_answers' then
+    if new.source_mode = 'PublicCloud' and not exists (
+      select 1 from public.quiz_attempts a
+      join public.quiz_questions q on q.id = new.question_id
+      where a.id = new.attempt_id and a.organization_id = new.organization_id
+        and q.organization_id = new.organization_id and a.source_mode = 'PublicCloud'
+    ) then raise exception 'QUIZ_ANSWER_TENANT_MISMATCH' using errcode = '23514'; end if;
   end if;
   return new;
 end

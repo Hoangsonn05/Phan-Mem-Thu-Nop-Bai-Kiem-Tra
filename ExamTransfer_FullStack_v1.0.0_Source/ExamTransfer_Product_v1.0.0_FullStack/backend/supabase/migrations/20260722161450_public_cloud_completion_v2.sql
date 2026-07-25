@@ -352,7 +352,6 @@ create or replace function public.get_public_exam_file_download(
   p_file_id uuid)
 returns table(object_path text, file_name text, size_bytes bigint, sha256 text)
 language plpgsql
-stable
 security definer
 set search_path = ''
 as $function$

@@ -13,6 +13,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
     private readonly IBackendClient api;
     private ClassSummaryDto? selectedClass;
     private StudentDto? selectedStudent;
+    private ClassEnrollmentRequestDto? selectedEnrollmentRequest;
     private string currentClassRowVersion = "1";
     private string name = string.Empty;
     private string code = string.Empty;
@@ -36,10 +37,13 @@ public sealed class ClassManagementViewModel : ProductPageBase
         ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsBusy && SelectedClass is not null);
         ImportCommand = new AsyncRelayCommand(ImportAsync, () => !IsBusy && SelectedClass is not null);
         ArchiveCommand = new AsyncRelayCommand(ArchiveAsync, () => !IsBusy && SelectedClass is not null);
+        ApproveEnrollmentCommand = new AsyncRelayCommand(ApproveEnrollmentAsync, () => !IsBusy && SelectedClass is not null && SelectedEnrollmentRequest?.Status == "Pending");
+        RejectEnrollmentCommand = new AsyncRelayCommand(RejectEnrollmentAsync, () => !IsBusy && SelectedClass is not null && SelectedEnrollmentRequest?.Status == "Pending");
     }
 
     public ObservableCollection<ClassSummaryDto> Classes { get; } = new();
     public ObservableCollection<StudentDto> Students { get; } = new();
+    public ObservableCollection<ClassEnrollmentRequestDto> EnrollmentRequests { get; } = new();
     public ClassSummaryDto? SelectedClass { get => selectedClass; set { if (Set(ref selectedClass, value)) RaiseCommands(); } }
     public StudentDto? SelectedStudent
     {
@@ -57,6 +61,11 @@ public sealed class ClassManagementViewModel : ProductPageBase
                 RaiseCommands();
             }
         }
+    }
+    public ClassEnrollmentRequestDto? SelectedEnrollmentRequest
+    {
+        get => selectedEnrollmentRequest;
+        set { if (Set(ref selectedEnrollmentRequest, value)) RaiseCommands(); }
     }
     public string Name { get => name; set => Set(ref name, value); }
     public string Code { get => code; set => Set(ref code, value); }
@@ -77,6 +86,8 @@ public sealed class ClassManagementViewModel : ProductPageBase
     public ICommand ExportCommand { get; }
     public ICommand ImportCommand { get; }
     public ICommand ArchiveCommand { get; }
+    public ICommand ApproveEnrollmentCommand { get; }
+    public ICommand RejectEnrollmentCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
@@ -96,7 +107,10 @@ public sealed class ClassManagementViewModel : ProductPageBase
         if (SelectedClass is not null)
             await LoadDetailAsync(ct);
         else
+        {
             Students.Clear();
+            EnrollmentRequests.Clear();
+        }
     }
 
     private Task OpenAsync() => RunAsync("Đang mở lớp", "Đã tải chi tiết lớp", LoadDetailAsync);
@@ -106,6 +120,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
         if (SelectedClass is null) return;
         var detail = ApiGuard.Require(await api.GetAsync<ClassDetailDto>($"api/v1/classes/{SelectedClass.Id}", ct));
         Students.ReplaceWith(detail.Students);
+        EnrollmentRequests.ReplaceWith(detail.EnrollmentRequests ?? []);
         Name = detail.Name;
         Code = detail.Code;
         SchoolYear = detail.SchoolYear;
@@ -113,6 +128,8 @@ public sealed class ClassManagementViewModel : ProductPageBase
         AccessMode = detail.AccessMode;
         currentClassRowVersion = detail.RowVersion;
         SelectedStudent = Students.FirstOrDefault();
+        SelectedEnrollmentRequest = EnrollmentRequests.FirstOrDefault(x => x.Status == "Pending")
+            ?? EnrollmentRequests.FirstOrDefault();
     }
 
     private Task CreateAsync() => RunAsync("Đang tạo lớp", "Lớp học đã được tạo", async ct =>
@@ -184,11 +201,40 @@ public sealed class ClassManagementViewModel : ProductPageBase
         Classes.Remove(SelectedClass);
         SelectedClass = Classes.FirstOrDefault();
         Students.Clear();
+        EnrollmentRequests.Clear();
+    });
+
+    private Task ApproveEnrollmentAsync() => RunAsync("Đang duyệt ghi danh", "Yêu cầu ghi danh đã được duyệt trên PublicCloud", async ct =>
+    {
+        if (SelectedClass is null || SelectedEnrollmentRequest is null) return;
+        var mutationKey = $"approve-enrollment:{SelectedEnrollmentRequest.Id:N}";
+        var mutationId = GetMutationRequestId(mutationKey);
+        var updated = ApiGuard.Require(await api.PostAsync<object, ClassEnrollmentRequestDto>(
+            $"api/v1/classes/{SelectedClass.Id}/enrollment-requests/{SelectedEnrollmentRequest.Id}/approve",
+            new TeacherMutationRequest(mutationId), ct));
+        CompleteMutationRequest(mutationKey);
+        var index = EnrollmentRequests.IndexOf(SelectedEnrollmentRequest);
+        if (index >= 0) EnrollmentRequests[index] = updated;
+        SelectedEnrollmentRequest = updated;
+    });
+
+    private Task RejectEnrollmentAsync() => RunAsync("Đang từ chối ghi danh", "Yêu cầu ghi danh đã được từ chối trên PublicCloud", async ct =>
+    {
+        if (SelectedClass is null || SelectedEnrollmentRequest is null) return;
+        var mutationKey = $"reject-enrollment:{SelectedEnrollmentRequest.Id:N}";
+        var mutationId = GetMutationRequestId(mutationKey);
+        var updated = ApiGuard.Require(await api.PostAsync<object, ClassEnrollmentRequestDto>(
+            $"api/v1/classes/{SelectedClass.Id}/enrollment-requests/{SelectedEnrollmentRequest.Id}/reject",
+            new ReasonedTeacherMutationRequest("Giáo viên từ chối yêu cầu ghi danh.", mutationId), ct));
+        CompleteMutationRequest(mutationKey);
+        var index = EnrollmentRequests.IndexOf(SelectedEnrollmentRequest);
+        if (index >= 0) EnrollmentRequests[index] = updated;
+        SelectedEnrollmentRequest = updated;
     });
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, OpenCommand, AddStudentCommand, SaveClassCommand, UpdateStudentCommand, RemoveStudentCommand, ExportCommand, ImportCommand, ArchiveCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, OpenCommand, AddStudentCommand, SaveClassCommand, UpdateStudentCommand, RemoveStudentCommand, ExportCommand, ImportCommand, ArchiveCommand, ApproveEnrollmentCommand, RejectEnrollmentCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
     }
 }
 
@@ -663,14 +709,20 @@ public sealed class LobbyViewModel : ProductPageBase
     private Task ApproveAsync() => RunAsync("Đang duyệt học sinh", "Học sinh đã được duyệt", async ct =>
     {
         if (SelectedSession is null || SelectedParticipant is null) return;
-        var updated = ApiGuard.Require(await api.PostAsync<object, ParticipantDto>($"api/v1/sessions/{SelectedSession.Id}/participants/{SelectedParticipant.Id}/approve", new { }, ct));
+        var mutationKey = $"approve-participant:{SelectedSession.Id:N}:{SelectedParticipant.Id:N}";
+        var mutationId = GetMutationRequestId(mutationKey);
+        var updated = ApiGuard.Require(await api.PostAsync<TeacherMutationRequest, ParticipantDto>($"api/v1/sessions/{SelectedSession.Id}/participants/{SelectedParticipant.Id}/approve", new(mutationId), ct));
+        CompleteMutationRequest(mutationKey);
         ReplaceParticipant(updated);
     });
 
     private Task RejectAsync() => RunAsync("Đang từ chối yêu cầu", "Yêu cầu tham gia đã bị từ chối", async ct =>
     {
         if (SelectedSession is null || SelectedParticipant is null || !AppServices.Dialogs.Confirm("Từ chối học sinh", $"Từ chối {SelectedParticipant.DisplayName}?")) return;
-        _ = await api.PostAsync<object, object>($"api/v1/sessions/{SelectedSession.Id}/participants/{SelectedParticipant.Id}/reject", new { reason = "Thông tin tham gia chưa hợp lệ." }, ct);
+        var mutationKey = $"reject-participant:{SelectedSession.Id:N}:{SelectedParticipant.Id:N}";
+        var mutationId = GetMutationRequestId(mutationKey);
+        _ = ApiGuard.Require(await api.PostAsync<ReasonedTeacherMutationRequest, object>($"api/v1/sessions/{SelectedSession.Id}/participants/{SelectedParticipant.Id}/reject", new("Thông tin tham gia chưa hợp lệ.", mutationId), ct));
+        CompleteMutationRequest(mutationKey);
         Participants.Remove(SelectedParticipant);
         SelectedParticipant = Participants.FirstOrDefault();
     });
@@ -679,7 +731,10 @@ public sealed class LobbyViewModel : ProductPageBase
     {
         if (SelectedSession is null) return;
         var ids = Participants.Where(x => x.Status == ParticipantStatus.PendingApproval).Select(x => x.Id).ToArray();
-        var updated = ApiGuard.Require(await api.PostAsync<BulkApproveRequest, IReadOnlyList<ParticipantDto>>($"api/v1/sessions/{SelectedSession.Id}/participants/bulk-approve", new(ids), ct));
+        var mutationKey = $"bulk-approve:{SelectedSession.Id:N}:{string.Join(",", ids.Order())}";
+        var mutationId = GetMutationRequestId(mutationKey);
+        var updated = ApiGuard.Require(await api.PostAsync<BulkApproveRequest, IReadOnlyList<ParticipantDto>>($"api/v1/sessions/{SelectedSession.Id}/participants/bulk-approve", new(ids, mutationId), ct));
+        CompleteMutationRequest(mutationKey);
         Participants.ReplaceWith(updated);
     });
 
@@ -765,14 +820,20 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     private Task RejectAsync() => RunAsync("Đang từ chối bài", "Bài nộp đã bị từ chối và vẫn được lưu lịch sử", async ct =>
     {
         if (SelectedSubmission is null || !AppServices.Dialogs.Confirm("Từ chối bài nộp", $"Từ chối attempt {SelectedSubmission.AttemptNumber} của {SelectedSubmission.DisplayName}?")) return;
-        _ = await api.PostAsync<RejectSubmissionRequest, object>($"api/v1/submissions/{SelectedSubmission.Id}/reject", new(Reason), ct);
+        var mutationKey = $"reject-submission:{SelectedSubmission.Id:N}";
+        var mutationId = GetMutationRequestId(mutationKey);
+        _ = ApiGuard.Require(await api.PostAsync<RejectSubmissionRequest, object>($"api/v1/submissions/{SelectedSubmission.Id}/reject", new(Reason, mutationId), ct));
+        CompleteMutationRequest(mutationKey);
         await LoadSubmissionsCoreAsync(ct);
     });
 
     private Task ResubmitAsync() => RunAsync("Đang cấp quyền nộp lại", "Học sinh đã được phép tạo attempt mới", async ct =>
     {
         if (SelectedSubmission is null) return;
-        _ = await api.PostAsync<AllowResubmitRequest, object>($"api/v1/participants/{SelectedSubmission.ParticipantId}/allow-resubmit", new(Reason), ct);
+        var mutationKey = $"allow-resubmit:{SelectedSubmission.ParticipantId:N}";
+        var mutationId = GetMutationRequestId(mutationKey);
+        _ = ApiGuard.Require(await api.PostAsync<AllowResubmitRequest, object>($"api/v1/participants/{SelectedSubmission.ParticipantId}/allow-resubmit", new(Reason, mutationId), ct));
+        CompleteMutationRequest(mutationKey);
     });
 
     private async Task DownloadAsync()

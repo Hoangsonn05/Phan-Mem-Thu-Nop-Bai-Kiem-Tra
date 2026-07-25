@@ -1,11 +1,9 @@
-using System.Net;
-using System.Net.NetworkInformation;
-using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using ExamTransfer.Application;
 using ExamTransfer.Infrastructure;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -50,7 +48,13 @@ public sealed class DiscoveryController(
             .Where(x => teacherIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, x => x.DisplayName, ct);
 
-        var address = options.Value.Server.PreferredIp ?? GetLanIp();
+        var endpoint = LanNetworkConfiguration.ResolveAdvertisedEndpoint(options.Value);
+        if (!endpoint.Ready)
+            throw new ApiException(
+                endpoint.Code,
+                "Cấu hình địa chỉ LAN của máy giáo viên chưa hoàn chỉnh; máy chủ không quảng bá endpoint không an toàn.",
+                503);
+        var address = endpoint.Address!;
         var baseAddress = $"{(options.Value.Server.UseHttps ? "https" : "http")}://{address}:{options.Value.Server.Port}";
         var serverId = MachineId();
         var now = DateTimeOffset.UtcNow;
@@ -85,18 +89,6 @@ public sealed class DiscoveryController(
         }).ToList();
 
         return Data<IReadOnlyList<OpenSessionDiscoveryDto>>(result);
-    }
-
-    private static string GetLanIp()
-    {
-        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces()
-                     .Where(x => x.OperationalStatus == OperationalStatus.Up && x.NetworkInterfaceType != NetworkInterfaceType.Loopback))
-        {
-            var address = nic.GetIPProperties().UnicastAddresses
-                .FirstOrDefault(x => x.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(x.Address));
-            if (address is not null) return address.Address.ToString();
-        }
-        return IPAddress.Loopback.ToString();
     }
 
     private static string MachineId() =>

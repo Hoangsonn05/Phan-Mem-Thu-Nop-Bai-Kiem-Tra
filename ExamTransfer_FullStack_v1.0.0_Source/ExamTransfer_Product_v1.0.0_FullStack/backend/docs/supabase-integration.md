@@ -1,4 +1,4 @@
-# Supabase production integration
+﻿# Supabase production integration
 
 ## Operating model
 
@@ -46,7 +46,7 @@ All archive buckets are private. Object paths begin with:
 ## Configure a development project
 
 ```powershell
-.ackend\scripts\push-supabase-schema.ps1 -ProjectRef "PROJECT_REF"
+Production deployment: follow `docs/production-update-checklist.md`; direct legacy push is disabled.
 
 .ackend\scripts\configure-supabase.ps1 `
   -SupabaseUrl "https://PROJECT_REF.supabase.co" `
@@ -59,7 +59,8 @@ All archive buckets are private. Object paths begin with:
 The non-secret machine configuration is written to:
 
 ```text
-%ProgramData%\ExamTransfer\configuntime-settings.json
+%ProgramData%\ExamTransfer\config
+untime-settings.json
 ```
 
 ## Provision the first tenant

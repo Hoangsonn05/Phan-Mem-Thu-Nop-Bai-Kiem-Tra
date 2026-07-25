@@ -64,8 +64,66 @@ public sealed class ControlService(
 
     public async Task<IReadOnlyList<DeviceControlStatusDto>> GetDeviceStatusAsync(Guid sessionId, CancellationToken cancellationToken)
     {
-        var rows = await db.DevicePolicyStatusesSet.AsNoTracking().Where(x => x.SessionId == sessionId).OrderBy(x => x.ParticipantId).ToListAsync(cancellationToken);
-        return rows.Select(ToDto).ToList();
+        var rows = await db.DevicePolicyStatusesSet.AsNoTracking()
+            .Where(x => x.SessionId == sessionId)
+            .OrderByDescending(x => x.PolicyVersion)
+            .ToListAsync(cancellationToken);
+        var latestLocal = rows
+            .GroupBy(x => x.ParticipantId)
+            .ToDictionary(x => x.Key, x => x.First());
+        var connections = await db.PublicDeviceConnectionsSet.AsNoTracking()
+            .Where(x => x.SessionId == sessionId)
+            .OrderBy(x => x.ParticipantId)
+            .ToListAsync(cancellationToken);
+        if (connections.Count == 0)
+            return latestLocal.Values.OrderBy(x => x.ParticipantId).Select(ToDto).ToList();
+
+        var deviceIds = connections.Select(x => x.DeviceId).Distinct().ToList();
+        var commands = await db.PublicDeviceCommandsSet.AsNoTracking()
+            .Where(x => x.SessionId == sessionId && deviceIds.Contains(x.DeviceId))
+            .ToListAsync(cancellationToken);
+        var latestCommand = commands
+            .GroupBy(x => x.DeviceId)
+            .ToDictionary(
+                x => x.Key,
+                x => x.OrderByDescending(command => command.IssuedAtUtc).First(),
+                StringComparer.Ordinal);
+        var commandIds = latestCommand.Values.Select(x => x.Id).ToList();
+        var results = await db.PublicDeviceCommandResultsSet.AsNoTracking()
+            .Where(x => commandIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, cancellationToken);
+
+        return connections.Select(connection =>
+        {
+            latestLocal.TryGetValue(connection.ParticipantId, out var local);
+            latestCommand.TryGetValue(connection.DeviceId, out var command);
+            var result = command is not null && results.TryGetValue(command.Id, out var found)
+                ? found
+                : null;
+            var capabilities = local is null
+                ? new ControlCapabilitiesDto(false, false, false, false, false)
+                : DeserializeCapabilities(local.CapabilityJson);
+            var policyStatus = local?.Status
+                ?? (Enum.TryParse<PolicyApplyStatus>(connection.PolicyState, true, out var parsed)
+                    ? parsed
+                    : PolicyApplyStatus.NotRequested);
+            return new DeviceControlStatusDto(
+                connection.ParticipantId,
+                local?.PolicyVersion ?? 0,
+                capabilities,
+                policyStatus,
+                local?.Error ?? result?.ErrorMessage,
+                connection.CloudUpdatedAtUtc ?? connection.UpdatedAtUtc,
+                connection.DeviceId,
+                connection.ConnectionState,
+                connection.HeartbeatAtUtc,
+                connection.PolicyState,
+                connection.LockState,
+                connection.AppVersion,
+                connection.AgentVersion,
+                result?.Status,
+                result?.ErrorMessage);
+        }).ToList();
     }
 
     public async Task<PagedResult<ViolationDto>> GetViolationsAsync(Guid sessionId, ViolationSeverity? severity, int page, int pageSize, CancellationToken cancellationToken)
@@ -73,9 +131,22 @@ public sealed class ControlService(
         page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 1, 200);
         var query = db.ViolationsSet.AsNoTracking().Where(x => x.SessionId == sessionId);
         if (severity.HasValue) query = query.Where(x => x.Severity == severity.Value);
-        var total = await query.CountAsync(cancellationToken);
-        var rows = await query.OrderByDescending(x => x.OccurredAtUtc).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
-        return new(rows.Select(x => x.ToDto()).ToList(), page, pageSize, total);
+        var sortKeys = await query
+            .Select(x => new { x.Id, x.OccurredAtUtc })
+            .ToListAsync(cancellationToken);
+        var total = sortKeys.Count;
+        var pageIds = sortKeys
+            .OrderByDescending(x => x.OccurredAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x => x.Id)
+            .ToList();
+        var rowMap = await query
+            .Where(x => pageIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, cancellationToken);
+        var rows = pageIds.Select(id => rowMap[id].ToDto()).ToList();
+        return new(rows, page, pageSize, total);
     }
 
     public async Task<ViolationDto> ReportViolationAsync(Guid sessionId, Guid participantId, ViolationReportRequest request, CancellationToken cancellationToken)
@@ -139,9 +210,13 @@ public sealed class ControlService(
     }
     private static DeviceControlStatusDto ToDto(DevicePolicyStatus x)
     {
-        var c = JsonSerializer.Deserialize<ControlCapabilitiesDto>(x.CapabilityJson, JsonOptions) ?? new(false, false, false, false, false);
+        var c = DeserializeCapabilities(x.CapabilityJson);
         return new(x.ParticipantId, x.PolicyVersion, c, x.Status, x.Error, x.UpdatedAtUtc);
     }
+
+    private static ControlCapabilitiesDto DeserializeCapabilities(string json) =>
+        JsonSerializer.Deserialize<ControlCapabilitiesDto>(json, JsonOptions)
+        ?? new(false, false, false, false, false);
 
     private static object ToCloud(ControlPolicy x) => new
     {

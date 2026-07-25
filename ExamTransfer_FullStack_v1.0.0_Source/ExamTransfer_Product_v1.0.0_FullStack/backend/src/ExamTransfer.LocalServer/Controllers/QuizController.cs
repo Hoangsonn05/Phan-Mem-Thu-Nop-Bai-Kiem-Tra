@@ -14,6 +14,15 @@ public sealed class QuizAuthoringController(IQuizService quiz) : ApiControllerBa
         Data(await quiz.ImportAsync(examId, request, ct));
 }
 
+[Route("api/v1/sessions/{sessionId:guid}/quiz-attempts")]
+[Authorize(Policy = "TeacherOrAdmin")]
+public sealed class TeacherQuizMonitoringController(IQuizService quiz) : ApiControllerBase
+{
+    [HttpGet]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<QuizAttemptDto>>>> List(Guid sessionId, CancellationToken ct) =>
+        Data(await quiz.ListAttemptsForSessionAsync(sessionId, ct));
+}
+
 [Route("api/v1/student/quiz")]
 [Authorize(Policy = "StudentWithParticipant")]
 public sealed class StudentQuizController(IQuizService quiz) : ApiControllerBase

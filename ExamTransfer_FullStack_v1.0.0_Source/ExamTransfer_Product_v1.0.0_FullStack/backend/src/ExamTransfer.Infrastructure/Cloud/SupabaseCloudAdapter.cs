@@ -260,7 +260,7 @@ public sealed class SupabaseCloudAdapter(
             : string.Empty;
         var organizationId = Uri.EscapeDataString(GetRequiredOrganizationId().ToString());
         var path = $"/rest/v1/{table}?select=*&organization_id=eq.{organizationId}" +
-            $"{sourceFilter}&cloud_version=gt.{cursor.CloudVersion}" +
+            $"{sourceFilter}&cloud_version=gte.{cursor.CloudVersion}" +
             $"&order=cloud_version.asc,updated_at.asc,{keyColumn}.asc&limit={boundedLimit}";
         using var request = await CreateSyncRequestAsync(HttpMethod.Get, path, cancellationToken);
         using var response = await httpClient.SendAsync(request, cancellationToken);
@@ -268,16 +268,234 @@ public sealed class SupabaseCloudAdapter(
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
         using var document = JsonDocument.Parse(json);
         var records = new List<CloudPullRecord>();
-        foreach (var row in document.RootElement.EnumerateArray())
+        var rawRows = document.RootElement.EnumerateArray().ToList();
+        foreach (var row in rawRows)
         {
             var id = row.GetProperty(keyColumn).GetString()
                 ?? throw new JsonException($"{table}.{keyColumn} is missing.");
             var cloudVersion = row.GetProperty("cloud_version").GetInt64();
             var updatedAt = row.GetProperty("updated_at").GetDateTimeOffset();
-            records.Add(new CloudPullRecord(table, id, cloudVersion, updatedAt, row.GetRawText()));
+            if (IsAfterCursor(cloudVersion, updatedAt, id, cursor))
+                records.Add(new CloudPullRecord(table, id, cloudVersion, updatedAt, row.GetRawText()));
         }
-        return new CloudPullPage(records, records.Count == boundedLimit);
+        return new CloudPullPage(records, rawRows.Count == boundedLimit);
     }
+
+    public async Task<CloudParticipantMutationResult> ApprovePublicParticipantAsync(
+        Guid sessionId,
+        Guid participantId,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseParticipantMutation(await InvokeTeacherRpcAsync(
+            "approve_public_participant",
+            new { p_session_id = sessionId, p_participant_id = participantId, p_request_id = requestId },
+            cancellationToken));
+
+    public async Task<CloudParticipantMutationResult> RejectPublicParticipantAsync(
+        Guid sessionId,
+        Guid participantId,
+        string? reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseParticipantMutation(await InvokeTeacherRpcAsync(
+            "reject_public_participant",
+            new { p_session_id = sessionId, p_participant_id = participantId, p_reason = reason, p_request_id = requestId },
+            cancellationToken));
+
+    public async Task<CloudBulkParticipantMutationResult> BulkApprovePublicParticipantsAsync(
+        Guid sessionId,
+        IReadOnlyList<Guid> participantIds,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        var result = await InvokeTeacherRpcAsync(
+            "bulk_approve_public_participants",
+            new { p_session_id = sessionId, p_participant_ids = participantIds, p_request_id = requestId },
+            cancellationToken);
+        var participants = result.GetProperty("participants")
+            .EnumerateArray()
+            .Select(ParseParticipantMutation)
+            .ToList();
+        return new(
+            result.GetProperty("approvedCount").GetInt32(),
+            result.GetProperty("skippedCount").GetInt32(),
+            participants);
+    }
+
+    public async Task<CloudParticipantMutationResult> AddPublicParticipantExtraTimeAsync(
+        Guid sessionId,
+        Guid participantId,
+        int minutes,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseParticipantMutation(await InvokeTeacherRpcAsync(
+            "add_public_participant_extra_time",
+            new
+            {
+                p_session_id = sessionId,
+                p_participant_id = participantId,
+                p_minutes = minutes,
+                p_reason = reason,
+                p_request_id = requestId
+            },
+            cancellationToken));
+
+    public async Task<CloudParticipantMutationResult> AllowPublicResubmissionAsync(
+        Guid participantId,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseParticipantMutation(await InvokeTeacherRpcAsync(
+            "allow_public_resubmission",
+            new { p_participant_id = participantId, p_reason = reason, p_request_id = requestId },
+            cancellationToken));
+
+    public async Task<CloudSubmissionMutationResult> RejectPublicSubmissionAsync(
+        Guid submissionId,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        var result = await InvokeTeacherRpcAsync(
+            "reject_public_submission",
+            new { p_submission_id = submissionId, p_reason = reason, p_request_id = requestId },
+            cancellationToken);
+        return new(
+            result.GetProperty("submissionId").GetGuid(),
+            result.GetProperty("sessionId").GetGuid(),
+            result.GetProperty("participantId").GetGuid(),
+            Enum.Parse<SubmissionStatus>(result.GetProperty("status").GetString()!, true),
+            OptionalString(result, "teacherRejectReason"),
+            result.GetProperty("cloudVersion").GetInt64(),
+            result.GetProperty("updatedAt").GetDateTimeOffset());
+    }
+
+    public async Task<CloudEnrollmentMutationResult> ApprovePublicEnrollmentAsync(
+        Guid enrollmentRequestId,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseEnrollmentMutation(await InvokeTeacherRpcAsync(
+            "approve_public_enrollment_request",
+            new { p_enrollment_request_id = enrollmentRequestId, p_request_id = requestId },
+            cancellationToken));
+
+    public async Task<CloudEnrollmentMutationResult> RejectPublicEnrollmentAsync(
+        Guid enrollmentRequestId,
+        string? reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseEnrollmentMutation(await InvokeTeacherRpcAsync(
+            "reject_public_enrollment_request",
+            new { p_enrollment_request_id = enrollmentRequestId, p_reason = reason, p_request_id = requestId },
+            cancellationToken));
+
+    private async Task<JsonElement> InvokeTeacherRpcAsync(
+        string rpcName,
+        object payload,
+        CancellationToken cancellationToken)
+    {
+        EnsurePublishableConfigured();
+        var session = await RefreshSessionAsync(cancellationToken)
+            ?? throw new ApiException(
+                ErrorCodes.Unauthorized,
+                "Cần đăng nhập Supabase bằng tài khoản giáo viên trước khi thao tác dữ liệu PublicCloud.",
+                401);
+        if (session.Role is not ("Teacher" or "Admin")
+            || !Guid.TryParse(session.OrganizationId, out var sessionOrganization)
+            || sessionOrganization != GetRequiredOrganizationId())
+        {
+            throw new ApiException(
+                ErrorCodes.Forbidden,
+                "Phiên Supabase hiện tại không có quyền giáo viên trong tổ chức đang cấu hình.",
+                403);
+        }
+
+        using var request = CreateProjectRequest(
+            HttpMethod.Post,
+            $"/rest/v1/rpc/{rpcName}",
+            CloudCredential.Publishable,
+            session.AccessToken,
+            includeUserToken: false);
+        request.Content = JsonContent.Create(payload, options: JsonOptions);
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var traceId = response.Headers.TryGetValues("x-request-id", out var values)
+                ? values.FirstOrDefault()
+                : null;
+            traceId ??= Guid.NewGuid().ToString("N");
+            var status = response.StatusCode is HttpStatusCode.Unauthorized
+                ? 401
+                : response.StatusCode is HttpStatusCode.Forbidden
+                    ? 403
+                    : 502;
+            var code = status == 401
+                ? ErrorCodes.Unauthorized
+                : status == 403
+                    ? ErrorCodes.Forbidden
+                    : ErrorCodes.CloudUploadFailed;
+            throw new ApiException(
+                code,
+                $"Supabase RPC {rpcName} thất bại.",
+                status,
+                details: new { traceId, upstreamStatus = (int)response.StatusCode, response = content });
+        }
+
+        using var document = JsonDocument.Parse(content);
+        return document.RootElement.Clone();
+    }
+
+    private static bool IsAfterCursor(
+        long cloudVersion,
+        DateTimeOffset updatedAt,
+        string entityId,
+        CloudPullCursorValue cursor)
+    {
+        if (cloudVersion != cursor.CloudVersion)
+            return cloudVersion > cursor.CloudVersion;
+        if (!cursor.UpdatedAtUtc.HasValue)
+            return true;
+        var updatedComparison = updatedAt.CompareTo(cursor.UpdatedAtUtc.Value);
+        if (updatedComparison != 0)
+            return updatedComparison > 0;
+        return string.CompareOrdinal(entityId, cursor.EntityId ?? string.Empty) > 0;
+    }
+
+    private static CloudParticipantMutationResult ParseParticipantMutation(JsonElement result) =>
+        new(
+            result.GetProperty("participantId").GetGuid(),
+            result.GetProperty("sessionId").GetGuid(),
+            Enum.Parse<ParticipantStatus>(result.GetProperty("status").GetString()!, true),
+            OptionalDate(result, "approvedAt"),
+            result.GetProperty("extraTimeMinutes").GetInt32(),
+            result.GetProperty("resubmitAllowed").GetBoolean(),
+            OptionalString(result, "resubmitReason"),
+            result.GetProperty("cloudVersion").GetInt64(),
+            result.GetProperty("updatedAt").GetDateTimeOffset(),
+            OptionalDate(result, "effectiveDeadline"));
+
+    private static CloudEnrollmentMutationResult ParseEnrollmentMutation(JsonElement result) =>
+        new(
+            result.GetProperty("enrollmentRequestId").GetGuid(),
+            result.GetProperty("classId").GetGuid(),
+            result.GetProperty("status").GetString()!,
+            OptionalDate(result, "decidedAt"),
+            result.GetProperty("cloudVersion").GetInt64(),
+            result.GetProperty("updatedAt").GetDateTimeOffset());
+
+    private static string? OptionalString(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+            ? value.GetString()
+            : null;
+
+    private static DateTimeOffset? OptionalDate(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+            ? value.GetDateTimeOffset()
+            : null;
 
     public async Task<CloudLoginResult> LoginAsync(
         string email,

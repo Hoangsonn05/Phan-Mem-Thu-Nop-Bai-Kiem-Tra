@@ -13,6 +13,23 @@ namespace ExamTransfer.Infrastructure.Services;
 
 public sealed class QuizService(AppDbContext db, IOutboxService outbox) : IQuizService
 {
+    public async Task<IReadOnlyList<QuizAttemptDto>> ListAttemptsForSessionAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        var sessionExists = await db.ExamSessionsSet.AsNoTracking()
+            .AnyAsync(x => x.Id == sessionId, cancellationToken);
+        if (!sessionExists) throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phiên thi.", 404);
+
+        var attempts = await db.QuizAttemptsSet.AsNoTracking()
+            .Include(x => x.Answers)
+            .Where(x => x.SessionId == sessionId)
+            .ToListAsync(cancellationToken);
+        return attempts
+            .OrderByDescending(x => x.StartedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Select(ToDto)
+            .ToArray();
+    }
+
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan OfflineSyncGrace = TimeSpan.FromMinutes(15);
 
@@ -159,7 +176,42 @@ public sealed class QuizService(AppDbContext db, IOutboxService outbox) : IQuizS
         attempt.StartedAtUtc, attempt.DeadlineUtc, attempt.FinalizedAtUtc, attempt.Score, attempt.MaxScore,
         Snapshot(attempt), attempt.Answers.Select(ToAnswerDto).ToList());
     private static QuizAnswerDto ToAnswerDto(QuizAnswer x) => new(x.QuestionId, JsonSerializer.Deserialize<List<Guid>>(x.ChoiceIdsJson, Json) ?? [], x.Revision, x.ClientUpdatedAtUtc);
-    private static IReadOnlyList<QuizQuestionDto> Snapshot(QuizAttempt x) => JsonSerializer.Deserialize<List<QuizQuestionDto>>(x.SnapshotJson, Json) ?? [];
+    private static IReadOnlyList<QuizQuestionDto> Snapshot(QuizAttempt x)
+    {
+        using var document = JsonDocument.Parse(x.SnapshotJson);
+        if (document.RootElement.ValueKind != JsonValueKind.Array) return [];
+        return document.RootElement.EnumerateArray().Select(question =>
+        {
+            var choices = question.TryGetProperty("choices", out var choiceRows)
+                && choiceRows.ValueKind == JsonValueKind.Array
+                ? choiceRows.EnumerateArray().Select(choice => new QuizChoiceDto(
+                    choice.GetProperty("id").GetGuid(),
+                    StringProperty(choice, "text", "choiceText"),
+                    IntProperty(choice, "order", "sortOrder"))).ToList()
+                : [];
+            return new QuizQuestionDto(
+                question.GetProperty("id").GetGuid(),
+                StringProperty(question, "text", "questionText"),
+                IntProperty(question, "order", "sortOrder"),
+                question.TryGetProperty("points", out var points) ? points.GetDecimal() : 0,
+                question.TryGetProperty("multiple", out var multiple) && multiple.GetBoolean(),
+                choices);
+        }).ToList();
+    }
+
+    private static string StringProperty(JsonElement element, string primary, string fallback) =>
+        element.TryGetProperty(primary, out var value)
+            ? value.GetString() ?? string.Empty
+            : element.TryGetProperty(fallback, out value)
+                ? value.GetString() ?? string.Empty
+                : string.Empty;
+
+    private static int IntProperty(JsonElement element, string primary, string fallback) =>
+        element.TryGetProperty(primary, out var value)
+            ? value.GetInt32()
+            : element.TryGetProperty(fallback, out value)
+                ? value.GetInt32()
+                : 0;
     private static QuizQuestionDto ToQuestionDto(QuizQuestion x) => new(x.Id, x.Text, x.Order, x.Points, x.Multiple, x.Choices.OrderBy(c => c.Order).Select(c => new QuizChoiceDto(c.Id, c.Text, c.Order)).ToList());
     private static object QuestionCloud(QuizQuestion x) => new { id = x.Id, exam_id = x.ExamId, version = x.Version, sort_order = x.Order, question_text = x.Text, points = x.Points, multiple = x.Multiple, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
     private static object ChoiceCloud(QuizChoice x) => new { id = x.Id, question_id = x.QuestionId, sort_order = x.Order, choice_text = x.Text, is_correct = x.IsCorrect, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };

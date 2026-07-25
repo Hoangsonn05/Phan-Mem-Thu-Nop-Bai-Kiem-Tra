@@ -5,6 +5,7 @@ namespace ExamTransfer.Desktop.Services;
 public abstract class ProductPageBase : ObservableObject, IAsyncInitializable, IDisposable
 {
     private readonly CancellationTokenSource disposeCts = new();
+    private readonly Dictionary<string, Guid> pendingMutationRequestIds = new(StringComparer.Ordinal);
     private bool initialized;
     private bool disposed;
     private bool isBusy;
@@ -37,6 +38,21 @@ public abstract class ProductPageBase : ObservableObject, IAsyncInitializable, I
 
     protected CancellationToken DisposeToken => disposeCts.Token;
     protected bool IsDisposed => disposed;
+
+    protected Guid GetMutationRequestId(string operationKey)
+    {
+        if (string.IsNullOrWhiteSpace(operationKey))
+            throw new ArgumentException("Mutation operation key is required.", nameof(operationKey));
+        if (!pendingMutationRequestIds.TryGetValue(operationKey, out var requestId))
+        {
+            requestId = Guid.NewGuid();
+            pendingMutationRequestIds[operationKey] = requestId;
+        }
+        return requestId;
+    }
+
+    protected void CompleteMutationRequest(string operationKey) =>
+        pendingMutationRequestIds.Remove(operationKey);
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
@@ -114,6 +130,7 @@ public abstract class ProductPageBase : ObservableObject, IAsyncInitializable, I
         }
 
         disposed = true;
+        pendingMutationRequestIds.Clear();
         disposeCts.Cancel();
         disposeCts.Dispose();
     }

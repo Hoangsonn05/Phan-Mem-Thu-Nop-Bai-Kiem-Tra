@@ -10,7 +10,7 @@ using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SessionService(AppDbContext db, ISessionTokenService tokens, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, ILanAccessPolicy? lanAccessPolicy = null) : ISessionService
+public sealed class SessionService(AppDbContext db, ISessionTokenService tokens, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, ILanAccessPolicy? lanAccessPolicy = null, ICloudAdapter? cloud = null) : ISessionService
 {
     private readonly ExamTransferOptions _options = options.Value;
     private readonly ILanAccessPolicy _lanAccessPolicy = lanAccessPolicy ?? new Security.LanAccessPolicy(options);
@@ -219,13 +219,23 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         return CreateJoinResponse(session, participant);
     }
 
-    public async Task<ParticipantDto> ApproveAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken)
+    public async Task<ParticipantDto> ApproveAsync(Guid sessionId, Guid participantId, Guid mutationRequestId, CancellationToken cancellationToken)
     {
         var participant = await db.SessionParticipantsSet
             .Include(x => x.Session)
             .ThenInclude(x => x.Exam)
             .FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
+        if (participant.Session.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            if (mutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
+            var result = await RequireCloud().ApprovePublicParticipantAsync(
+                sessionId,
+                participantId,
+                mutationRequestId,
+                cancellationToken);
+            return ToMutationDto(participant, result);
+        }
         if (participant.Session.Status != SessionStatus.Waiting) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ duyệt trong phòng chờ.", 409);
         participant.Status = ParticipantStatus.Approved; participant.ApprovedAtUtc = DateTimeOffset.UtcNow; participant.Session.Sequence++;
         await db.SaveChangesAsync(cancellationToken);
@@ -247,10 +257,21 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         return participant.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds, ParticipantDeadline(participant));
     }
 
-    public async Task RejectAsync(Guid sessionId, Guid participantId, string? reason, CancellationToken cancellationToken)
+    public async Task RejectAsync(Guid sessionId, Guid participantId, string? reason, Guid mutationRequestId, CancellationToken cancellationToken)
     {
         var participant = await db.SessionParticipantsSet.Include(x => x.Session).FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
+        if (participant.Session.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            if (mutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
+            _ = await RequireCloud().RejectPublicParticipantAsync(
+                sessionId,
+                participantId,
+                reason,
+                mutationRequestId,
+                cancellationToken);
+            return;
+        }
         participant.Status = ParticipantStatus.Rejected; participant.Session.Sequence++;
         await db.SaveChangesAsync(cancellationToken);
         await audit.WriteAsync("ParticipantRejected", nameof(SessionParticipant), participant.Id.ToString(), sessionId, null, new { participant = ToCloud(participant), reason }, cancellationToken);
@@ -273,6 +294,21 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             .Include(x => x.Participants)
             .FirstOrDefaultAsync(x => x.Id == sessionId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
+
+        if (session.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            if (request.MutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
+            var result = await RequireCloud().BulkApprovePublicParticipantsAsync(
+                sessionId,
+                requestedIds,
+                request.MutationRequestId,
+                cancellationToken);
+            var localById = session.Participants.ToDictionary(x => x.Id);
+            return result.Participants
+                .Where(x => localById.ContainsKey(x.ParticipantId))
+                .Select(x => ToMutationDto(localById[x.ParticipantId], x))
+                .ToList();
+        }
 
         if (session.Status != SessionStatus.Waiting)
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ duyệt học sinh trong phòng chờ.", 409);
@@ -360,6 +396,18 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         if (request.Minutes <= 0 || string.IsNullOrWhiteSpace(request.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Số phút và lý do là bắt buộc.");
         var participant = await db.SessionParticipantsSet.Include(x => x.Session).ThenInclude(x => x.Exam).FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
+        if (participant.Session.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            if (request.MutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
+            var result = await RequireCloud().AddPublicParticipantExtraTimeAsync(
+                sessionId,
+                participantId,
+                request.Minutes,
+                request.Reason,
+                request.MutationRequestId,
+                cancellationToken);
+            return ToMutationDto(participant, result);
+        }
         if (participant.Session.Status is not (SessionStatus.InProgress or SessionStatus.Paused)) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ cộng giờ khi phòng đang thi hoặc tạm dừng.", 409);
         participant.ExtraTimeMinutes += request.Minutes; participant.Session.Sequence++;
         db.ParticipantExtraTimesSet.Add(new ParticipantExtraTime { ParticipantId = participantId, Minutes = request.Minutes, Reason = request.Reason });
@@ -462,6 +510,28 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         var minimumMinutes = Math.Max(60, _options.Security.TokenMinutes);
         var examMinutes = Math.Max(1, session.Exam.DurationMinutes);
         return TimeSpan.FromMinutes(Math.Max(minimumMinutes, examMinutes + 180));
+    }
+
+    private ICloudAdapter RequireCloud() =>
+        cloud ?? throw new ApiException(
+            ErrorCodes.CloudOffline,
+            "PublicCloud chưa được cấu hình cho thao tác giáo viên.",
+            503);
+
+    private ParticipantDto ToMutationDto(
+        SessionParticipant participant,
+        CloudParticipantMutationResult result)
+    {
+        var current = participant.ToDto(
+            DateTimeOffset.UtcNow,
+            _options.Session.DisconnectAfterSeconds,
+            result.EffectiveDeadlineUtc ?? ParticipantDeadline(participant));
+        return current with
+        {
+            Status = result.Status,
+            ExtraTimeMinutes = result.ExtraTimeMinutes,
+            EffectiveDeadlineUtc = result.EffectiveDeadlineUtc ?? current.EffectiveDeadlineUtc
+        };
     }
 
     private static object ToCloud(SessionParticipant x) => new
