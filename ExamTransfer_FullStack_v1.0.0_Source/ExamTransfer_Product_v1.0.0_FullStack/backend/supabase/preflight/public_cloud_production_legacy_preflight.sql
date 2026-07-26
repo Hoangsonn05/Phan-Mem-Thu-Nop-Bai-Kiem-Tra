@@ -281,10 +281,10 @@ begin
     raise notice 'WARNING|schema_version|examtransfer_cloud_meta is not installed yet';
   else
     execute 'select coalesce(max(schema_version),0) from public.examtransfer_cloud_meta' into v_count;
-    if v_count < 15 then
-      raise notice 'WARNING|schema_version|current=% required=15', v_count;
+    if v_count < 18 then
+      raise notice 'WARNING|schema_version|current=% required=18', v_count;
     else
-      raise notice 'PASS|schema_version|current=% required=15', v_count;
+      raise notice 'PASS|schema_version|current=% required=18', v_count;
     end if;
   end if;
 

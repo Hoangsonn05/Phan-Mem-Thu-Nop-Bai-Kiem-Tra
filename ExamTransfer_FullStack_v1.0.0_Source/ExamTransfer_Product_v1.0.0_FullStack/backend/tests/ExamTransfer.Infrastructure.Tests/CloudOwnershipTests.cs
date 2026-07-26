@@ -10,6 +10,7 @@ public sealed class CloudOwnershipTests
     [InlineData("session")]
     [InlineData("classes")]
     [InlineData("exam_files")]
+    [InlineData("quiz_import_sources")]
     [InlineData("grades")]
     public void Local_owned_entities_are_pushable(string entityType)
     {

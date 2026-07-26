@@ -474,7 +474,14 @@ public sealed class SupabaseCloudAdapter(
             OptionalString(result, "resubmitReason"),
             result.GetProperty("cloudVersion").GetInt64(),
             result.GetProperty("updatedAt").GetDateTimeOffset(),
-            OptionalDate(result, "effectiveDeadline"));
+            OptionalDate(result, "effectiveDeadline"),
+            OptionalGuid(result, "attemptId"),
+            OptionalString(result, "attemptStatus"),
+            OptionalDate(result, "attemptDeadline"),
+            OptionalInt64(result, "attemptRevision"),
+            OptionalDate(result, "serverNowUtc"),
+            OptionalInt64(result, "revision"),
+            OptionalGuid(result, "requestId"));
 
     private static CloudEnrollmentMutationResult ParseEnrollmentMutation(JsonElement result) =>
         new(
@@ -488,8 +495,20 @@ public sealed class SupabaseCloudAdapter(
     private static string? OptionalString(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var value)
         && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
-            ? value.GetString()
-            : null;
+        ? value.GetString()
+        : null;
+
+    private static Guid? OptionalGuid(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+        ? value.GetGuid()
+        : null;
+
+    private static long? OptionalInt64(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+        ? value.GetInt64()
+        : null;
 
     private static DateTimeOffset? OptionalDate(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var value)
@@ -1604,6 +1623,9 @@ public sealed class SupabaseCloudAdapter(
             "exam_file" or "exam_files" => new(
                 cloudOptions.ExamBucket,
                 $"{prefix}/exam-files/{safeEntityId}/{safeFileName}"),
+            "quiz_import_source" or "quiz_import_sources" => new(
+                cloudOptions.ExamBucket,
+                $"{prefix}/quiz-sources/{safeEntityId}/source.bin"),
             "submission_file" or "submission_files" => new(
                 cloudOptions.SubmissionBucket,
                 $"{prefix}/submission-files/{safeEntityId}/{safeFileName}"),
@@ -1630,6 +1652,7 @@ public sealed class SupabaseCloudAdapter(
             "public_class_assignment" or "public_class_assignments" => "public_class_assignments",
             "exam" or "exams" => "exams",
             "exam_file" or "exam_files" => "exam_files",
+            "quiz_import_source" or "quiz_import_sources" => "quiz_import_sources",
             "session" or "exam_session" or "exam_sessions" => "exam_sessions",
             "participant" or "session_participant" or "session_participants" => "session_participants",
             "submission" or "submissions" => "submissions",
@@ -1652,6 +1675,7 @@ public sealed class SupabaseCloudAdapter(
     private static bool IsFileBackedEntity(string entityType) =>
         entityType.Trim().ToLowerInvariant() is
             "exam_file" or "exam_files"
+            or "quiz_import_source" or "quiz_import_sources"
             or "submission_file" or "submission_files"
             or "graded_attachment" or "graded_attachments"
             or "export_job" or "export_jobs"

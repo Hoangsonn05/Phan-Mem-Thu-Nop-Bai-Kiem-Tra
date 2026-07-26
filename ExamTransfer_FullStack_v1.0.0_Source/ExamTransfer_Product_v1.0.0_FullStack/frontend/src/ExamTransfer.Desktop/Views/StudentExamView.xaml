@@ -43,6 +43,10 @@
                             Command="{Binding RefreshCommand}"
                             Style="{StaticResource SecondaryButton}"
                             Margin="8,0,0,0" />
+                    <Button Content="Tiếp tục kỳ thi"
+                            Command="{Binding ContinueExamCommand}"
+                            Style="{StaticResource PrimaryButton}"
+                            Margin="8,0,0,0" />
                     <Button Content="Kiểm tra kết nối"
                             Command="{Binding HeartbeatCommand}"
                             Style="{StaticResource SecondaryButton}"

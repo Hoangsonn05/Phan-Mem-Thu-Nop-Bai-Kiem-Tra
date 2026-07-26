@@ -403,6 +403,10 @@ public sealed class PublicCloudPullWorker(
                 entity.FinalizedAtUtc = NullableDate(row, "finalized_at");
                 entity.Score = NullableDecimal(row, "score");
                 entity.MaxScore = DecimalValue(row, "max_score");
+                entity.ResultPolicySnapshot = EnumValue(
+                    row,
+                    "result_policy",
+                    QuizResultPolicy.Hidden);
                 entity.SnapshotJson = RawOrNull(row, "snapshot_json") ?? "{}";
                 entity.FinalizeIdempotencyKey = NullableString(row, "finalize_idempotency_key");
                 Stamp(entity, record);

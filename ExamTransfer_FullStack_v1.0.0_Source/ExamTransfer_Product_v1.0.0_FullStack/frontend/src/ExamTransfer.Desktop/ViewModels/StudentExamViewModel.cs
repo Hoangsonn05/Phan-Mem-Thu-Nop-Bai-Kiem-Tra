@@ -1,8 +1,8 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Windows.Input;
-using System.Windows.Threading;
 using ExamTransfer.Desktop.Core;
+using ExamTransfer.Desktop.Infrastructure;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Shared.Contracts;
 
@@ -14,34 +14,61 @@ public sealed class StudentExamViewModel : ProductPageBase
     private readonly StudentSessionState state;
     private readonly IStudentHeartbeatService heartbeat;
     private readonly IStudentRealtimeService realtime;
-    private readonly DispatcherTimer timer;
+    private readonly IServerClock serverClock;
+    private readonly ServerTimelineCoordinator timelineCoordinator;
+    private readonly ICountdownTicker ticker;
     private FileSystemWatcher? watcher;
     private SessionDetailDto? session;
     private ParticipantDto? participant;
-    private TimeSpan remaining;
+    private TimeSpan? remaining;
+    private DateTimeOffset? publicDeadlineUtc;
+    private DateTimeOffset? publicStartedAtUtc;
+    private string? publicSessionStatus;
+    private int snapshotResyncRequested;
     private string connection = "Chưa kết nối phiên";
     private string workspaceFolder;
 
     public StudentExamViewModel(IBackendClient api, StudentSessionState state)
+        : this(
+            api,
+            state,
+            AppServices.StudentHeartbeat,
+            AppServices.StudentRealtime,
+            AppServices.ServerClock,
+            AppServices.CountdownTickers.Create(TimeSpan.FromSeconds(1)))
+    {
+    }
+
+    public StudentExamViewModel(
+        IBackendClient api,
+        StudentSessionState state,
+        IStudentHeartbeatService heartbeat,
+        IStudentRealtimeService realtime,
+        IServerClock serverClock,
+        ICountdownTicker ticker)
     {
         this.api = api ?? throw new ArgumentNullException(nameof(api));
         this.state = state ?? throw new ArgumentNullException(nameof(state));
-        heartbeat = AppServices.StudentHeartbeat;
+        this.heartbeat = heartbeat ?? throw new ArgumentNullException(nameof(heartbeat));
+        this.realtime = realtime ?? throw new ArgumentNullException(nameof(realtime));
+        this.serverClock = serverClock ?? throw new ArgumentNullException(nameof(serverClock));
+        timelineCoordinator = new ServerTimelineCoordinator(this.serverClock);
+        this.ticker = ticker ?? throw new ArgumentNullException(nameof(ticker));
         heartbeat.StateChanged += OnHeartbeatStateChanged;
-        realtime = AppServices.StudentRealtime;
         realtime.EventReceived += OnRealtimeEvent;
+        realtime.NotificationReceived += OnRealtimeNotification;
         workspaceFolder = AppServices.Preferences.Get("exam.workspace")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ExamTransfer", "Working");
 
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy && state.HasSession);
+        ContinueExamCommand = new AsyncRelayCommand(ContinueExamAsync, () => !IsBusy);
         HeartbeatCommand = new AsyncRelayCommand(HeartbeatAsync, () => !IsBusy && state.HasSession);
         BrowseWorkspaceCommand = new RelayCommand(BrowseWorkspace);
         OpenWorkspaceCommand = new RelayCommand(OpenWorkspace);
         RefreshWorkspaceCommand = new AsyncRelayCommand(LoadWorkspaceAsync, () => !IsBusy);
 
-        timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
-        timer.Tick += OnTick;
-        timer.Start();
+        ticker.Tick += OnTick;
+        ticker.Start();
     }
 
     public ObservableCollection<ExamStep> Steps { get; } = new()
@@ -55,25 +82,54 @@ public sealed class StudentExamViewModel : ProductPageBase
 
     public ObservableCollection<StudentMessage> Messages { get; } = new();
     public ObservableCollection<WorkspaceFileRow> WorkspaceFiles { get; } = new();
-    public string Title => Session?.Summary.Title ?? "Chưa có kỳ thi đang hoạt động";
+    public string Title => Session?.Summary.Title
+        ?? (state.AccessMode == SessionAccessMode.PublicCloud
+            ? "Kỳ thi PublicCloud hiện tại"
+            : "Chưa có kỳ thi đang hoạt động");
     public string Subject => state.ExamId.HasValue ? $"Mã đề {state.ExamId.Value.ToString("N")[..8].ToUpperInvariant()}" : "";
     public string Teacher => "Máy chủ phòng thi";
     public string RoomCode => state.RoomCode;
-    public string CandidateCount => Session is null ? "0" : Session.Participants.Count.ToString();
-    public string TimeLeft => $"{(int)Math.Max(0, remaining.TotalHours):00}:{Math.Max(0, remaining.Minutes):00}:{Math.Max(0, remaining.Seconds):00}";
-    private DateTimeOffset? EffectiveDeadlineUtc => Participant?.EffectiveDeadlineUtc ?? Session?.Summary.EffectiveDeadlineUtc;
-    public double TimeProgress => Session?.Summary.StartTimeUtc is null || EffectiveDeadlineUtc is null
+    public string CandidateCount => Session is null
+        ? (state.AccessMode == SessionAccessMode.PublicCloud ? "1" : "0")
+        : Session.Participants.Count.ToString();
+    public string TimeLeft => ServerCountdown.Format(remaining);
+    private DateTimeOffset? EffectiveDeadlineUtc => state.AccessMode == SessionAccessMode.PublicCloud
+        ? publicDeadlineUtc
+        : Participant?.EffectiveDeadlineUtc ?? Session?.Summary.EffectiveDeadlineUtc;
+    private DateTimeOffset? EffectiveStartUtc => state.AccessMode == SessionAccessMode.PublicCloud
+        ? publicStartedAtUtc
+        : Session?.Summary.StartTimeUtc;
+    public double TimeProgress => EffectiveStartUtc is null || EffectiveDeadlineUtc is null || remaining is null
         ? 0
-        : Math.Clamp(remaining.TotalSeconds / Math.Max(1, (EffectiveDeadlineUtc.Value - Session.Summary.StartTimeUtc.Value).TotalSeconds) * 100, 0, 100);
+        : Math.Clamp(remaining.Value.TotalSeconds / Math.Max(1, (EffectiveDeadlineUtc.Value - EffectiveStartUtc.Value).TotalSeconds) * 100, 0, 100);
     public SessionDetailDto? Session { get => session; private set { if (Set(ref session, value)) { Raise(nameof(Title)); Raise(nameof(Subject)); Raise(nameof(RoomCode)); Raise(nameof(CandidateCount)); } } }
     public ParticipantDto? Participant { get => participant; private set => Set(ref participant, value); }
     public string Connection { get => connection; private set => Set(ref connection, value); }
     public string WorkspaceFolder { get => workspaceFolder; set { if (Set(ref workspaceFolder, value)) AppServices.Preferences.Set("exam.workspace", value); } }
     public ICommand RefreshCommand { get; }
+    public ICommand ContinueExamCommand { get; }
     public ICommand HeartbeatCommand { get; }
     public ICommand BrowseWorkspaceCommand { get; }
     public ICommand OpenWorkspaceCommand { get; }
     public ICommand RefreshWorkspaceCommand { get; }
+
+    private async Task ContinueExamAsync()
+    {
+        var resolution = await AppServices.StudentExamFlow.ResolveAsync(
+            StudentExamEntryPoint.CurrentExam,
+            false,
+            DisposeToken);
+        if (!resolution.RequiresStartConfirmation)
+            return;
+        if (!AppServices.Dialogs.Confirm(
+                "Bắt đầu bài trắc nghiệm",
+                "Sau khi xác nhận, máy chủ sẽ tạo hoặc tiếp tục đúng một lượt làm bài. Bắt đầu ngay?"))
+            return;
+        _ = await AppServices.StudentExamFlow.ResolveAsync(
+            StudentExamEntryPoint.CurrentExam,
+            true,
+            DisposeToken);
+    }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
@@ -88,14 +144,27 @@ public sealed class StudentExamViewModel : ProductPageBase
 
         await RunAsync("Đang đồng bộ kỳ thi", "Thông tin kỳ thi đã được cập nhật", async token =>
         {
+            if (state.AccessMode == SessionAccessMode.PublicCloud)
+            {
+                var timeline = await AppServices.PublicCloud.GetStudentTimelineAsync(
+                    state.SessionId!.Value,
+                    token);
+                if (timeline.ParticipantId != state.ParticipantId)
+                    throw new InvalidDataException("PublicCloud timeline không thuộc thí sinh hiện tại.");
+                ApplyPublicTimeline(timeline);
+                Connection = $"Đã xác thực PublicCloud · {timeline.SessionStatus}";
+                UpdateSteps();
+                RaiseTime();
+                return;
+            }
+
             api.SetParticipantToken(state.AccessToken);
             Session = ApiGuard.Require(await api.GetSessionAsync(state.SessionId!.Value, token));
             Participant = ApiGuard.Require(await api.GetAsync<ParticipantDto>(
                 $"api/v1/sessions/{state.SessionId}/participants/{state.ParticipantId}", token));
             state.ExamId = Session.Summary.ExamId;
-            remaining = EffectiveDeadlineUtc.HasValue
-                ? EffectiveDeadlineUtc.Value - DateTimeOffset.UtcNow
-                : TimeSpan.Zero;
+            serverClock.Synchronize(Session.Summary.ServerNowUtc);
+            UpdateRemaining();
             Connection = $"Đã xác thực · {Session.Summary.Status}";
             UpdateSteps();
             RaiseTime();
@@ -127,8 +196,77 @@ public sealed class StudentExamViewModel : ProductPageBase
     private void OnRealtimeEvent(object? sender, string eventName)
     {
         if (IsDisposed) return;
-        if (eventName is RealtimeEvents.TimeExtended or RealtimeEvents.SessionStateChanged or RealtimeEvents.ParticipantApproved)
+        if (eventName is RealtimeEvents.TimeExtended or "Reconnected")
+        {
+            RequestSnapshotResync();
+            return;
+        }
+        if (state.AccessMode != SessionAccessMode.PublicCloud
+            && (eventName is RealtimeEvents.SessionStateChanged
+                or RealtimeEvents.ParticipantApproved))
             System.Windows.Application.Current.Dispatcher.InvokeAsync(() => LoadAsync(DisposeToken).SafeFireAndForget("StudentExam.RealtimeRefresh"));
+    }
+
+    private void OnRealtimeNotification(object? sender, StudentRealtimeNotification notification)
+    {
+        if (IsDisposed)
+            return;
+        System.Windows.Application.Current.Dispatcher.InvokeAsync(
+            () => TryApplyTimeExtended(notification));
+    }
+
+    public bool TryApplyTimeExtended(StudentRealtimeNotification notification)
+    {
+        var payload = notification.TimeExtended;
+        if (IsDisposed
+            || notification.EventName != RealtimeEvents.TimeExtended
+            || notification.SessionId != state.SessionId
+            || payload is null
+            || payload.ParticipantId != state.ParticipantId
+            || !payload.ServerNowUtc.HasValue
+            || !payload.Revision.HasValue)
+            return false;
+        if (!timelineCoordinator.TryApply(
+                payload.Revision.Value,
+                payload.EffectiveDeadlineUtc,
+                payload.ServerNowUtc.Value))
+            return false;
+        if (state.AccessMode == SessionAccessMode.PublicCloud)
+            publicDeadlineUtc = payload.EffectiveDeadlineUtc;
+        else if (Participant is not null)
+            Participant = Participant with { EffectiveDeadlineUtc = payload.EffectiveDeadlineUtc };
+        UpdateRemaining();
+        RaiseTime();
+        UpdateSteps();
+        return true;
+    }
+
+    private void ApplyPublicTimeline(PublicStudentTimeline timeline)
+    {
+        if (!timeline.EffectiveDeadlineUtc.HasValue)
+            throw new InvalidDataException("PublicCloud chưa trả deadline tuyệt đối.");
+        if (!timelineCoordinator.TryApply(
+                timeline.Revision,
+                timeline.EffectiveDeadlineUtc.Value,
+                timeline.ServerNowUtc))
+            return;
+        publicDeadlineUtc = timeline.EffectiveDeadlineUtc;
+        publicStartedAtUtc = timeline.StartedAtUtc;
+        publicSessionStatus = timeline.SessionStatus;
+        UpdateRemaining();
+        Raise(nameof(Title));
+        Raise(nameof(CandidateCount));
+    }
+
+    private void RequestSnapshotResync()
+    {
+        if (Interlocked.Exchange(ref snapshotResyncRequested, 1) != 0)
+            return;
+        System.Windows.Application.Current.Dispatcher.InvokeAsync(async () =>
+        {
+            try { await LoadAsync(DisposeToken); }
+            finally { Interlocked.Exchange(ref snapshotResyncRequested, 0); }
+        });
     }
 
     private async Task LoadWorkspaceAsync()
@@ -170,12 +308,14 @@ public sealed class StudentExamViewModel : ProductPageBase
 
     private void OnTick(object? sender, EventArgs e)
     {
-        if (IsDisposed || EffectiveDeadlineUtc is null) return;
-        remaining = EffectiveDeadlineUtc.Value - DateTimeOffset.UtcNow;
-        if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
+        if (IsDisposed) return;
+        UpdateRemaining();
         RaiseTime();
         UpdateSteps();
     }
+
+    private void UpdateRemaining() =>
+        remaining = ServerCountdown.Remaining(serverClock, EffectiveDeadlineUtc);
 
     private void StartWorkspaceWatcher()
     {
@@ -206,12 +346,19 @@ public sealed class StudentExamViewModel : ProductPageBase
 
     private void UpdateSteps()
     {
-        if (Session is null) return;
-        var active = Session.Summary.Status.ToString();
+        if (Session is null && state.AccessMode != SessionAccessMode.PublicCloud) return;
+        var active = state.AccessMode == SessionAccessMode.PublicCloud
+            ? publicSessionStatus ?? string.Empty
+            : Session!.Summary.Status.ToString();
         Steps[0] = Steps[0] with { Status = "Đã xác nhận", Completed = true, Active = false };
         Steps[1] = Steps[1] with { Status = state.ExamId.HasValue ? "Sẵn sàng nhận" : "Chờ phát đề", Completed = state.ExamId.HasValue, Active = false };
         Steps[2] = Steps[2] with { Status = WorkspaceFiles.Count > 0 ? $"{WorkspaceFiles.Count} file" : "Chưa có file", Completed = false, Active = active is "InProgress" or "Paused" };
-        Steps[3] = Steps[3] with { Status = remaining > TimeSpan.Zero ? "Có thể nộp" : "Đã hết giờ", Completed = state.LastSubmissionId.HasValue, Active = false };
+        Steps[3] = Steps[3] with
+        {
+            Status = remaining is null ? "Chưa đồng bộ giờ" : remaining > TimeSpan.Zero ? "Có thể nộp" : "Đã hết giờ",
+            Completed = state.LastSubmissionId.HasValue,
+            Active = false
+        };
         Steps[4] = Steps[4] with { Status = state.LastReceipt is null ? "Chưa có" : "Đã nhận", Completed = state.LastReceipt is not null, Active = false };
     }
 
@@ -225,11 +372,12 @@ public sealed class StudentExamViewModel : ProductPageBase
 
     public override void Dispose()
     {
-        timer.Stop();
-        timer.Tick -= OnTick;
+        ticker.Tick -= OnTick;
+        ticker.Dispose();
         watcher?.Dispose();
         heartbeat.StateChanged -= OnHeartbeatStateChanged;
         realtime.EventReceived -= OnRealtimeEvent;
+        realtime.NotificationReceived -= OnRealtimeNotification;
         base.Dispose();
     }
 }

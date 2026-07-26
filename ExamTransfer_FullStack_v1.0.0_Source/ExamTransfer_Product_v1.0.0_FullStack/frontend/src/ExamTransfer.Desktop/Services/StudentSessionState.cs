@@ -16,6 +16,16 @@ public sealed class StudentSessionState : ObservableObject
     private ReceiptDto? lastReceipt;
     private SessionAccessMode accessMode = SessionAccessMode.LanOnly;
     private string? serverId;
+    private int examVersion = 1;
+    private ExamDeliveryType deliveryType = ExamDeliveryType.FileSubmission;
+    private SupervisionMode supervisionMode = SupervisionMode.None;
+    private QuizResultPolicy resultPolicy = QuizResultPolicy.Hidden;
+    private SessionStatus? sessionStatus;
+    private ParticipantStatus? participantStatus;
+    private SubmissionStatus submissionStatus = SubmissionStatus.NotStarted;
+    private QuizAttemptDto? currentAttempt;
+    private long revision;
+    private string? routeIntent;
 
     public Guid? SessionId { get => sessionId; set => Set(ref sessionId, value); }
     public Guid? ParticipantId { get => participantId; set => Set(ref participantId, value); }
@@ -28,6 +38,16 @@ public sealed class StudentSessionState : ObservableObject
     public ReceiptDto? LastReceipt { get => lastReceipt; set => Set(ref lastReceipt, value); }
     public SessionAccessMode AccessMode { get => accessMode; set => Set(ref accessMode, value); }
     public string? ServerId { get => serverId; set => Set(ref serverId, value); }
+    public int ExamVersion { get => examVersion; set => Set(ref examVersion, value); }
+    public ExamDeliveryType DeliveryType { get => deliveryType; set => Set(ref deliveryType, value); }
+    public SupervisionMode SupervisionMode { get => supervisionMode; set => Set(ref supervisionMode, value); }
+    public QuizResultPolicy ResultPolicy { get => resultPolicy; set => Set(ref resultPolicy, value); }
+    public SessionStatus? SessionStatus { get => sessionStatus; set => Set(ref sessionStatus, value); }
+    public ParticipantStatus? ParticipantStatus { get => participantStatus; set => Set(ref participantStatus, value); }
+    public SubmissionStatus SubmissionStatus { get => submissionStatus; set => Set(ref submissionStatus, value); }
+    public QuizAttemptDto? CurrentAttempt { get => currentAttempt; set => Set(ref currentAttempt, value); }
+    public long Revision { get => revision; set => Set(ref revision, value); }
+    public string? RouteIntent { get => routeIntent; set => Set(ref routeIntent, value); }
 
     public bool HasSession => SessionId.HasValue && ParticipantId.HasValue;
     public event EventHandler? SessionChanged;
@@ -56,6 +76,16 @@ public sealed class StudentSessionState : ObservableObject
         LastReceipt = null;
         AccessMode = SessionAccessMode.LanOnly;
         ServerId = null;
+        ExamVersion = 1;
+        DeliveryType = ExamDeliveryType.FileSubmission;
+        SupervisionMode = SupervisionMode.None;
+        ResultPolicy = QuizResultPolicy.Hidden;
+        SessionStatus = null;
+        ParticipantStatus = null;
+        SubmissionStatus = SubmissionStatus.NotStarted;
+        CurrentAttempt = null;
+        Revision = 0;
+        RouteIntent = null;
         SessionChanged?.Invoke(this, EventArgs.Empty);
     }
 }

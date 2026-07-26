@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
@@ -8,10 +9,15 @@ using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class QuizService(AppDbContext db, IOutboxService outbox) : IQuizService
+public sealed class QuizService(
+    AppDbContext db,
+    IOutboxService outbox,
+    IStoragePaths? paths = null,
+    ILogger<QuizService>? logger = null) : IQuizService
 {
     public async Task<IReadOnlyList<QuizAttemptDto>> ListAttemptsForSessionAsync(Guid sessionId, CancellationToken cancellationToken)
     {
@@ -26,60 +32,224 @@ public sealed class QuizService(AppDbContext db, IOutboxService outbox) : IQuizS
         return attempts
             .OrderByDescending(x => x.StartedAtUtc)
             .ThenByDescending(x => x.Id)
-            .Select(ToDto)
+            .Select(ToTeacherDto)
             .ToArray();
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan OfflineSyncGrace = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan PreviewLifetime = TimeSpan.FromMinutes(20);
+    private const int MaxImportBytes = 10 * 1024 * 1024;
 
-    public async Task<QuizImportResultDto> ImportAsync(Guid examId, QuizImportFileRequest request, CancellationToken cancellationToken)
+    public async Task<QuizImportPreviewDto> PreviewImportAsync(
+        Guid examId,
+        Guid teacherId,
+        QuizImportPreviewRequest request,
+        CancellationToken cancellationToken)
     {
-        var exam = await db.ExamsSet.Include(x => x.QuizQuestions).ThenInclude(x => x.Choices)
+        var exam = await db.ExamsSet.AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == examId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy đề thi.", 404);
         if (exam.Status != ExamStatus.Draft)
-            throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ được nhập câu hỏi khi đề đang ở trạng thái nháp.", 409);
-        byte[] bytes;
-        try { bytes = Convert.FromBase64String(request.Base64Content); }
-        catch { throw new ApiException(ErrorCodes.ValidationFailed, "Nội dung tệp không phải Base64 hợp lệ."); }
-        if (bytes.Length == 0 || bytes.Length > 10 * 1024 * 1024)
-            throw new ApiException(ErrorCodes.ValidationFailed, "Tệp câu hỏi phải có dung lượng từ 1 byte đến 10 MB.");
+            throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ xem trước nguồn khi đề đang ở trạng thái nháp.", 409);
+        if (exam.DeliveryType != ExamDeliveryType.MultipleChoice)
+            throw new ApiException(ErrorCodes.InvalidStateTransition, "Hãy chọn loại bài Trắc nghiệm và lưu trước khi nhập nguồn.", 409);
+        var bytes = DecodeImportBytes(request.Base64Content);
+        var parsed = QuizDocumentParser.Parse(request.FileName, bytes);
+        var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var mimeType = MimeTypeFor(request.FileName);
+        var existing = await db.QuizQuestionsSet.AsNoTracking()
+            .AnyAsync(x => x.ExamId == examId && x.Version == exam.Version, cancellationToken);
+        if (parsed.Errors.Count > 0)
+            return new(string.Empty, request.FileName, mimeType, sha256, parsed.Document.Questions.Count,
+                parsed.Document.Questions.Sum(x => x.Points), PreviewQuestions(parsed.Document),
+                parsed.Warnings, parsed.Errors, DateTimeOffset.UtcNow, existing);
 
-        var document = ParseDocument(request.FileName, bytes);
-        Validate(document);
-        var replacedQuestions = exam.QuizQuestions.Where(x => x.Version == exam.Version).ToList();
-        var replacedChoices = replacedQuestions.SelectMany(x => x.Choices).ToList();
-        db.QuizQuestionsSet.RemoveRange(replacedQuestions);
-        var order = 0;
-        foreach (var input in document.Questions)
+        var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+        var temporaryRoot = paths?.TemporaryRoot
+            ?? Path.Combine(Path.GetTempPath(), "ExamTransfer", "quiz-import");
+        Directory.CreateDirectory(temporaryRoot);
+        var temporaryPath = Path.Combine(temporaryRoot,
+            $"quiz-preview-{Guid.NewGuid():N}{Path.GetExtension(request.FileName).ToLowerInvariant()}");
+        await File.WriteAllBytesAsync(temporaryPath, bytes, cancellationToken);
+        var expiresAt = DateTimeOffset.UtcNow.Add(PreviewLifetime);
+        db.QuizImportPreviewsSet.Add(new QuizImportPreview
         {
-            var question = new QuizQuestion
-            {
-                ExamId = exam.Id, Version = exam.Version, Order = ++order, Text = input.Text.Trim(),
-                Points = input.Points, Multiple = input.Multiple
-            };
-            for (var index = 0; index < input.Choices.Count; index++)
-                question.Choices.Add(new QuizChoice { Order = index + 1, Text = input.Choices[index].Trim(), IsCorrect = input.CorrectChoiceIndexes.Contains(index) });
-            db.QuizQuestionsSet.Add(question);
-        }
-        exam.DeliveryType = ExamDeliveryType.MultipleChoice;
+            TokenHash = HashToken(token),
+            ExamId = exam.Id,
+            ExamVersion = exam.Version,
+            TeacherId = teacherId,
+            ExamRowVersion = exam.RowVersion,
+            OriginalName = Path.GetFileName(request.FileName),
+            MimeType = mimeType,
+            SizeBytes = bytes.LongLength,
+            Sha256 = sha256,
+            TemporaryPath = temporaryPath,
+            DocumentJson = JsonSerializer.Serialize(parsed.Document, Json),
+            WarningsJson = JsonSerializer.Serialize(parsed.Warnings, Json),
+            ExpiresAtUtc = expiresAt
+        });
         await db.SaveChangesAsync(cancellationToken);
-        foreach (var choice in replacedChoices) await outbox.EnqueueAsync("quiz_choices", choice.Id.ToString(), "delete", new { id = choice.Id }, cancellationToken: cancellationToken);
-        foreach (var question in replacedQuestions) await outbox.EnqueueAsync("quiz_questions", question.Id.ToString(), "delete", new { id = question.Id }, cancellationToken: cancellationToken);
-        foreach (var question in await db.QuizQuestionsSet.AsNoTracking().Include(x => x.Choices).Where(x => x.ExamId == exam.Id && x.Version == exam.Version).ToListAsync(cancellationToken))
-        {
-            await outbox.EnqueueAsync("quiz_questions", question.Id.ToString(), "upsert", QuestionCloud(question), cancellationToken: cancellationToken);
-            foreach (var choice in question.Choices) await outbox.EnqueueAsync("quiz_choices", choice.Id.ToString(), "upsert", ChoiceCloud(choice), cancellationToken: cancellationToken);
-        }
-        return new(exam.Id, exam.Version, document.Questions.Count, document.Questions.Sum(x => x.Points));
+        return new(token, Path.GetFileName(request.FileName), mimeType, sha256,
+            parsed.Document.Questions.Count, parsed.Document.Questions.Sum(x => x.Points),
+            PreviewQuestions(parsed.Document), parsed.Warnings, [], expiresAt, existing);
     }
+
+    public async Task<QuizImportResultDto> CommitImportAsync(
+        Guid examId,
+        Guid teacherId,
+        QuizImportCommitRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.PreviewToken))
+            throw new ApiException(ErrorCodes.ValidationFailed, "Preview token là bắt buộc.");
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        string? committedPath = null;
+        try
+        {
+            var preview = await db.QuizImportPreviewsSet
+                .FirstOrDefaultAsync(x => x.TokenHash == HashToken(request.PreviewToken), cancellationToken)
+                ?? throw new ApiException(ErrorCodes.NotFound, "Preview token không tồn tại.", 404);
+            if (preview.ExamId != examId || preview.TeacherId != teacherId)
+                throw new ApiException(ErrorCodes.Forbidden, "Preview token không thuộc giáo viên hoặc bài kiểm tra này.", 403);
+            if (preview.CommittedAtUtc.HasValue)
+                throw new ApiException(ErrorCodes.InvalidStateTransition, "Preview token đã được commit.", 409);
+            if (preview.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+                throw new ApiException(ErrorCodes.InvalidStateTransition, "Preview token đã hết hạn; hãy xem trước lại.", 409);
+            var exam = await db.ExamsSet
+                .Include(x => x.QuizQuestions).ThenInclude(x => x.Choices)
+                .Include(x => x.QuizImportSources)
+                .FirstOrDefaultAsync(x => x.Id == examId, cancellationToken)
+                ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy đề thi.", 404);
+            if (exam.Status != ExamStatus.Draft || exam.DeliveryType != ExamDeliveryType.MultipleChoice)
+                throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài kiểm tra không còn là đề trắc nghiệm nháp.", 409);
+            if (exam.Version != preview.ExamVersion
+                || exam.RowVersion != preview.ExamRowVersion
+                || exam.RowVersion != request.ExamRowVersion)
+                throw new ApiException(ErrorCodes.ConcurrencyConflict, "Bài kiểm tra đã thay đổi sau khi xem trước.", 409);
+            if (!File.Exists(preview.TemporaryPath))
+                throw new ApiException(ErrorCodes.InvalidStateTransition, "File preview tạm không còn tồn tại; hãy xem trước lại.", 409);
+            await using (var source = File.OpenRead(preview.TemporaryPath))
+            {
+                var actualHash = Convert.ToHexString(await SHA256.HashDataAsync(source, cancellationToken)).ToLowerInvariant();
+                if (!actualHash.Equals(preview.Sha256, StringComparison.Ordinal))
+                    throw new ApiException(ErrorCodes.ValidationFailed, "Hash file preview không còn khớp.");
+            }
+            var document = JsonSerializer.Deserialize<QuizImportDocument>(preview.DocumentJson, Json)
+                ?? throw new ApiException(ErrorCodes.ValidationFailed, "Dữ liệu preview không hợp lệ.");
+            Validate(document);
+            var replacedQuestions = exam.QuizQuestions.Where(x => x.Version == exam.Version).ToList();
+            if (replacedQuestions.Count > 0 && !request.ConfirmReplace)
+                throw new ApiException(ErrorCodes.InvalidStateTransition, "Đề đã có câu hỏi; cần xác nhận thay thế.", 409);
+            var replacedChoices = replacedQuestions.SelectMany(x => x.Choices).ToList();
+            db.QuizQuestionsSet.RemoveRange(replacedQuestions);
+            AddQuestions(exam, document);
+
+            var oldSources = exam.QuizImportSources
+                .Where(x => x.ExamVersion == exam.Version)
+                .ToList();
+            var sourceCandidates = oldSources
+                .Select(x => new
+                {
+                    Entity = x,
+                    FullPath = TryResolveSourcePath(x.RelativePath)
+                })
+                .OrderByDescending(x =>
+                    x.Entity.Status == "Committed"
+                    && x.FullPath is not null
+                    && File.Exists(x.FullPath))
+                .ThenByDescending(x => x.Entity.ImportedAtUtc)
+                .ThenByDescending(x => x.Entity.UpdatedAtUtc)
+                .ThenByDescending(x => x.Entity.Id)
+                .ToList();
+            var sourceEntity = sourceCandidates.FirstOrDefault()?.Entity;
+            var oldLocalPaths = sourceCandidates
+                .Select(x => x.FullPath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (sourceEntity is not null)
+                db.QuizImportSourcesSet.RemoveRange(
+                    oldSources.Where(x => x.Id != sourceEntity.Id));
+            var destinationRoot = paths?.ExamVersionRoot(exam.Id, exam.Version)
+                ?? Path.Combine(Path.GetTempPath(), "ExamTransfer", "exams", exam.Id.ToString("N"), $"v{exam.Version}");
+            destinationRoot = Path.Combine(destinationRoot, "quiz-source");
+            Directory.CreateDirectory(destinationRoot);
+            committedPath = Path.Combine(destinationRoot,
+                $"{Guid.NewGuid():N}{Path.GetExtension(preview.OriginalName).ToLowerInvariant()}");
+            File.Copy(preview.TemporaryPath, committedPath, overwrite: false);
+            var importedAtUtc = DateTimeOffset.UtcNow;
+            if (sourceEntity is null)
+            {
+                sourceEntity = new QuizImportSource
+                {
+                    ExamId = exam.Id,
+                    ExamVersion = exam.Version
+                };
+                db.QuizImportSourcesSet.Add(sourceEntity);
+            }
+            sourceEntity.OriginalName = preview.OriginalName;
+            sourceEntity.MimeType = preview.MimeType;
+            sourceEntity.SizeBytes = preview.SizeBytes;
+            sourceEntity.Sha256 = preview.Sha256;
+            sourceEntity.RelativePath = paths is null
+                ? committedPath
+                : Path.GetRelativePath(paths.RootPath, committedPath);
+            sourceEntity.Status = "Committed";
+            sourceEntity.CreatedBy = teacherId;
+            sourceEntity.ImportedAtUtc = importedAtUtc;
+            sourceEntity.UpdatedAtUtc = importedAtUtc;
+            preview.CommittedAtUtc = importedAtUtc;
+            await db.SaveChangesAsync(cancellationToken);
+
+            foreach (var choice in replacedChoices)
+                await outbox.EnqueueAsync("quiz_choices", choice.Id.ToString(), "delete", new { id = choice.Id }, cancellationToken: cancellationToken);
+            foreach (var question in replacedQuestions)
+                await outbox.EnqueueAsync("quiz_questions", question.Id.ToString(), "delete", new { id = question.Id }, cancellationToken: cancellationToken);
+            foreach (var question in await db.QuizQuestionsSet.AsNoTracking().Include(x => x.Choices)
+                         .Where(x => x.ExamId == exam.Id && x.Version == exam.Version).ToListAsync(cancellationToken))
+            {
+                await outbox.EnqueueAsync("quiz_questions", question.Id.ToString(), "upsert", QuestionCloud(question), cancellationToken: cancellationToken);
+                foreach (var choice in question.Choices)
+                    await outbox.EnqueueAsync("quiz_choices", choice.Id.ToString(), "upsert", ChoiceCloud(choice), cancellationToken: cancellationToken);
+            }
+            await outbox.EnqueueAsync("quiz_import_sources", sourceEntity.Id.ToString(), "upsert",
+                SourceCloud(sourceEntity), committedPath, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            TryDelete(preview.TemporaryPath, "file preview tạm");
+            foreach (var oldLocalPath in oldLocalPaths.Where(x =>
+                         !string.Equals(
+                             Path.GetFullPath(x),
+                             Path.GetFullPath(committedPath),
+                             StringComparison.OrdinalIgnoreCase)))
+                TryDelete(oldLocalPath, "file nguồn trắc nghiệm cũ");
+            return new(exam.Id, exam.Version, document.Questions.Count, document.Questions.Sum(x => x.Points));
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            if (committedPath is not null)
+                TryDelete(committedPath, "file nguồn mới sau rollback");
+            throw;
+        }
+    }
+
+    public Task<QuizImportResultDto> ImportAsync(
+        Guid examId,
+        QuizImportFileRequest request,
+        CancellationToken cancellationToken) =>
+        Task.FromException<QuizImportResultDto>(new ApiException(
+            ErrorCodes.QuizImportLegacyDisabled,
+            "Endpoint nhập JSON/CSV/XLSX đã ngừng hoạt động; hãy dùng preview và commit nguồn DOCX/PDF.",
+            410));
 
     public async Task<QuizAttemptDto> StartOrGetAttemptAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken)
     {
         var existing = await db.QuizAttemptsSet.Include(x => x.Answers)
             .FirstOrDefaultAsync(x => x.SessionId == sessionId && x.ParticipantId == participantId, cancellationToken);
-        if (existing is not null) return ToDto(existing);
+        if (existing is not null) return ToStudentDto(existing);
 
         var participant = await db.SessionParticipantsSet.AsNoTracking()
             .Include(x => x.Session).ThenInclude(x => x.Exam).ThenInclude(x => x.QuizQuestions).ThenInclude(x => x.Choices)
@@ -90,22 +260,50 @@ public sealed class QuizService(AppDbContext db, IOutboxService outbox) : IQuizS
             throw new ApiException(ErrorCodes.Forbidden, "Lượt dự thi chưa được duyệt.", 403);
         if (session.Status is not (SessionStatus.InProgress or SessionStatus.Paused))
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài trắc nghiệm chưa bắt đầu.", 409);
-        if (session.Exam.DeliveryType != ExamDeliveryType.MultipleChoice)
+        if (session.DeliveryTypeSnapshot != ExamDeliveryType.MultipleChoice)
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Đề này không phải đề trắc nghiệm.", 409);
-        var questions = session.Exam.QuizQuestions.Where(x => x.Version == session.Exam.Version).OrderBy(x => x.Order).Select(ToQuestionDto).ToList();
+        if (session.SupervisionModeSnapshot != SupervisionMode.Standard)
+            throw new ApiException(ErrorCodes.Forbidden, "Phiên trắc nghiệm không có giám sát chuẩn hợp lệ.", 403);
+        var latestPolicyVersion = await db.ControlPoliciesSet.AsNoTracking()
+            .Where(x => x.SessionId == session.Id)
+            .MaxAsync(x => (int?)x.Version, cancellationToken);
+        var supervisionReady = latestPolicyVersion.HasValue
+            && await db.DevicePolicyStatusesSet.AsNoTracking().AnyAsync(
+                x => x.SessionId == session.Id
+                    && x.ParticipantId == participant.Id
+                    && x.PolicyVersion == latestPolicyVersion.Value
+                    && x.Status == PolicyApplyStatus.Applied,
+                cancellationToken);
+        if (!supervisionReady)
+            throw new ApiException(ErrorCodes.Forbidden, "Thiết bị chưa áp dụng xong chính sách giám sát chuẩn.", 403);
+        var questions = session.Exam.QuizQuestions.Where(x => x.Version == session.ExamVersionSnapshot).OrderBy(x => x.Order).Select(ToQuestionDto).ToList();
         if (questions.Count == 0) throw new ApiException(ErrorCodes.InvalidStateTransition, "Đề chưa có câu hỏi trắc nghiệm.", 409);
         var deadline = session.StartedAtUtc!.Value.AddMinutes(session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
         if (DateTimeOffset.UtcNow > deadline) throw new ApiException(ErrorCodes.DeadlinePassed, "Đã hết thời gian làm bài.", 409);
         var attempt = new QuizAttempt
         {
-            SessionId = sessionId, ParticipantId = participantId, ExamVersion = session.Exam.Version,
+            SessionId = sessionId, ParticipantId = participantId, ExamVersion = session.ExamVersionSnapshot,
             StartedAtUtc = DateTimeOffset.UtcNow, DeadlineUtc = deadline,
-            MaxScore = questions.Sum(x => x.Points), SnapshotJson = JsonSerializer.Serialize(questions, Json)
+            MaxScore = questions.Sum(x => x.Points), SnapshotJson = JsonSerializer.Serialize(questions, Json),
+            ResultPolicySnapshot = session.QuizResultPolicySnapshot
         };
         db.QuizAttemptsSet.Add(attempt);
         await db.SaveChangesAsync(cancellationToken);
         await outbox.EnqueueAsync("quiz_attempts", attempt.Id.ToString(), "upsert", AttemptCloud(attempt), cancellationToken: cancellationToken);
-        return ToDto(attempt);
+        return ToStudentDto(attempt);
+    }
+
+    public async Task<QuizAttemptDto?> GetAttemptAsync(
+        Guid sessionId,
+        Guid participantId,
+        CancellationToken cancellationToken)
+    {
+        var attempt = await db.QuizAttemptsSet.AsNoTracking()
+            .Include(x => x.Answers)
+            .FirstOrDefaultAsync(
+                x => x.SessionId == sessionId && x.ParticipantId == participantId,
+                cancellationToken);
+        return attempt is null ? null : ToStudentDto(attempt);
     }
 
     public async Task<SyncQuizAnswersResultDto> SyncAnswersAsync(Guid attemptId, Guid participantId, SyncQuizAnswersRequest request, CancellationToken cancellationToken)
@@ -146,7 +344,7 @@ public sealed class QuizService(AppDbContext db, IOutboxService outbox) : IQuizS
         if (string.IsNullOrWhiteSpace(request.IdempotencyKey) || request.IdempotencyKey.Length > 100)
             throw new ApiException(ErrorCodes.ValidationFailed, "Idempotency key không hợp lệ.");
         var attempt = await OwnedAttempt(attemptId, participantId, cancellationToken);
-        if (attempt.Status == QuizAttemptStatus.Finalized) return ToDto(attempt);
+        if (attempt.Status == QuizAttemptStatus.Finalized) return ToStudentDto(attempt);
         var questionIds = Snapshot(attempt).Select(x => x.Id).ToList();
         var questions = await db.QuizQuestionsSet.AsNoTracking().Include(x => x.Choices)
             .Where(x => questionIds.Contains(x.Id)).ToListAsync(cancellationToken);
@@ -164,17 +362,30 @@ public sealed class QuizService(AppDbContext db, IOutboxService outbox) : IQuizS
         attempt.FinalizeIdempotencyKey = request.IdempotencyKey.Trim();
         await db.SaveChangesAsync(cancellationToken);
         await outbox.EnqueueAsync("quiz_attempts", attempt.Id.ToString(), "upsert", AttemptCloud(attempt), cancellationToken: cancellationToken);
-        return ToDto(attempt);
+        return ToStudentDto(attempt);
     }
 
     private async Task<QuizAttempt> OwnedAttempt(Guid attemptId, Guid participantId, CancellationToken ct) =>
         await db.QuizAttemptsSet.Include(x => x.Answers).FirstOrDefaultAsync(x => x.Id == attemptId && x.ParticipantId == participantId, ct)
         ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài làm trắc nghiệm.", 404);
 
-    private static QuizAttemptDto ToDto(QuizAttempt attempt) => new(
+    private static QuizAttemptDto ToStudentDto(QuizAttempt attempt)
+    {
+        var scoreVisible = attempt.Status == QuizAttemptStatus.Finalized
+            && attempt.ResultPolicySnapshot == QuizResultPolicy.ShowAfterSubmission;
+        return new(
+            attempt.Id, attempt.SessionId, attempt.ParticipantId, attempt.Status, attempt.ExamVersion,
+            attempt.StartedAtUtc, attempt.DeadlineUtc, attempt.FinalizedAtUtc,
+            scoreVisible ? attempt.Score : null, attempt.MaxScore,
+            Snapshot(attempt), attempt.Answers.Select(ToAnswerDto).ToList(),
+            scoreVisible, attempt.ResultPolicySnapshot);
+    }
+
+    private static QuizAttemptDto ToTeacherDto(QuizAttempt attempt) => new(
         attempt.Id, attempt.SessionId, attempt.ParticipantId, attempt.Status, attempt.ExamVersion,
         attempt.StartedAtUtc, attempt.DeadlineUtc, attempt.FinalizedAtUtc, attempt.Score, attempt.MaxScore,
-        Snapshot(attempt), attempt.Answers.Select(ToAnswerDto).ToList());
+        Snapshot(attempt), attempt.Answers.Select(ToAnswerDto).ToList(),
+        attempt.Status == QuizAttemptStatus.Finalized, attempt.ResultPolicySnapshot);
     private static QuizAnswerDto ToAnswerDto(QuizAnswer x) => new(x.QuestionId, JsonSerializer.Deserialize<List<Guid>>(x.ChoiceIdsJson, Json) ?? [], x.Revision, x.ClientUpdatedAtUtc);
     private static IReadOnlyList<QuizQuestionDto> Snapshot(QuizAttempt x)
     {
@@ -215,8 +426,126 @@ public sealed class QuizService(AppDbContext db, IOutboxService outbox) : IQuizS
     private static QuizQuestionDto ToQuestionDto(QuizQuestion x) => new(x.Id, x.Text, x.Order, x.Points, x.Multiple, x.Choices.OrderBy(c => c.Order).Select(c => new QuizChoiceDto(c.Id, c.Text, c.Order)).ToList());
     private static object QuestionCloud(QuizQuestion x) => new { id = x.Id, exam_id = x.ExamId, version = x.Version, sort_order = x.Order, question_text = x.Text, points = x.Points, multiple = x.Multiple, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
     private static object ChoiceCloud(QuizChoice x) => new { id = x.Id, question_id = x.QuestionId, sort_order = x.Order, choice_text = x.Text, is_correct = x.IsCorrect, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
-    private static object AttemptCloud(QuizAttempt x) => new { id = x.Id, session_id = x.SessionId, participant_id = x.ParticipantId, exam_version = x.ExamVersion, status = x.Status.ToString(), started_at = x.StartedAtUtc, deadline_at = x.DeadlineUtc, finalized_at = x.FinalizedAtUtc, score = x.Score, max_score = x.MaxScore, snapshot_json = x.SnapshotJson, finalize_idempotency_key = x.FinalizeIdempotencyKey, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
+    private static object AttemptCloud(QuizAttempt x) => new { id = x.Id, session_id = x.SessionId, participant_id = x.ParticipantId, exam_version = x.ExamVersion, result_policy = x.ResultPolicySnapshot.ToString(), status = x.Status.ToString(), started_at = x.StartedAtUtc, deadline_at = x.DeadlineUtc, finalized_at = x.FinalizedAtUtc, score = x.Score, max_score = x.MaxScore, snapshot_json = x.SnapshotJson, finalize_idempotency_key = x.FinalizeIdempotencyKey, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
     private static object AnswerCloud(QuizAnswer x) => new { id = x.Id, attempt_id = x.AttemptId, question_id = x.QuestionId, choice_ids = x.ChoiceIdsJson, revision = x.Revision, client_updated_at = x.ClientUpdatedAtUtc, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
+    private static object SourceCloud(QuizImportSource x) => new
+    {
+        id = x.Id,
+        exam_id = x.ExamId,
+        exam_version = x.ExamVersion,
+        original_name = x.OriginalName,
+        mime_type = x.MimeType,
+        size_bytes = x.SizeBytes,
+        sha256 = x.Sha256,
+        status = x.Status,
+        created_by = x.CreatedBy,
+        imported_at = x.ImportedAtUtc,
+        created_at = x.CreatedAtUtc,
+        updated_at = x.UpdatedAtUtc
+    };
+
+    private void AddQuestions(Exam exam, QuizImportDocument document)
+    {
+        var order = 0;
+        foreach (var input in document.Questions)
+        {
+            var question = new QuizQuestion
+            {
+                ExamId = exam.Id,
+                Version = exam.Version,
+                Order = ++order,
+                Text = input.Text.Trim(),
+                Points = input.Points,
+                Multiple = input.Multiple
+            };
+            for (var index = 0; index < input.Choices.Count; index++)
+                question.Choices.Add(new QuizChoice
+                {
+                    Order = index + 1,
+                    Text = input.Choices[index].Trim(),
+                    IsCorrect = input.CorrectChoiceIndexes.Contains(index)
+                });
+            db.QuizQuestionsSet.Add(question);
+        }
+    }
+
+    private static IReadOnlyList<QuizQuestionDto> PreviewQuestions(QuizImportDocument document) =>
+        document.Questions.Select((question, questionIndex) =>
+        {
+            var choices = question.Choices.Select((text, choiceIndex) =>
+                new QuizChoiceDto(Guid.NewGuid(), text, choiceIndex + 1)).ToList();
+            return new QuizQuestionDto(Guid.NewGuid(), question.Text, questionIndex + 1,
+                question.Points, question.Multiple, choices);
+        }).ToList();
+
+    private static byte[] DecodeImportBytes(string base64)
+    {
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(base64);
+        }
+        catch (FormatException)
+        {
+            throw new ApiException(ErrorCodes.ValidationFailed, "Nội dung tệp không phải Base64 hợp lệ.");
+        }
+        if (bytes.Length is 0 or > MaxImportBytes)
+            throw new ApiException(ErrorCodes.ValidationFailed, "Tệp câu hỏi phải có dung lượng từ 1 byte đến 10 MB.");
+        return bytes;
+    }
+
+    private static string HashToken(string token) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
+
+    private static string MimeTypeFor(string fileName) => Path.GetExtension(fileName).ToLowerInvariant() switch
+    {
+        ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".pdf" => "application/pdf",
+        _ => "application/octet-stream"
+    };
+
+    private string? TryResolveSourcePath(string relativePath)
+    {
+        try
+        {
+            var fullPath = paths is null || Path.IsPathRooted(relativePath)
+                ? Path.GetFullPath(relativePath)
+                : Path.GetFullPath(Path.Combine(paths.RootPath, relativePath));
+            if (paths is null)
+                return fullPath;
+            var root = Path.GetFullPath(paths.RootPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            return fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+                ? fullPath
+                : null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            logger?.LogWarning(
+                ex,
+                "Không thể chuẩn hóa đường dẫn nguồn quiz cũ {RelativePath}.",
+                relativePath);
+            return null;
+        }
+    }
+
+    private void TryDelete(string path, string description)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(
+                ex,
+                "Không thể xóa {Description} tại {Path}; metadata đã đạt trạng thái cuối.",
+                description,
+                path);
+        }
+    }
 
     private static QuizImportDocument ParseDocument(string fileName, byte[] bytes)
     {

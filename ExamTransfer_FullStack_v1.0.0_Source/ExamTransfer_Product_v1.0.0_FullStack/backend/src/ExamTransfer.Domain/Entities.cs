@@ -95,12 +95,15 @@ public sealed class Exam : EntityBase
     public string? Description { get; set; }
     public int DurationMinutes { get; set; }
     public ExamDeliveryType DeliveryType { get; set; } = ExamDeliveryType.FileSubmission;
+    public QuizResultPolicy QuizResultPolicy { get; set; } = QuizResultPolicy.Hidden;
+    public SupervisionMode SupervisionMode { get; set; } = SupervisionMode.None;
     public string FileRuleJson { get; set; } = "{}";
     public ExamStatus Status { get; set; } = ExamStatus.Draft;
     public int Version { get; set; } = 1;
     public Guid? CreatedBy { get; set; }
     public ICollection<ExamFile> Files { get; set; } = new List<ExamFile>();
     public ICollection<QuizQuestion> QuizQuestions { get; set; } = new List<QuizQuestion>();
+    public ICollection<QuizImportSource> QuizImportSources { get; set; } = new List<QuizImportSource>();
 }
 
 public sealed class QuizQuestion : EntityBase
@@ -141,6 +144,7 @@ public sealed class QuizAttempt : EntityBase
     public DateTimeOffset? FinalizedAtUtc { get; set; }
     public decimal? Score { get; set; }
     public decimal MaxScore { get; set; }
+    public QuizResultPolicy ResultPolicySnapshot { get; set; } = QuizResultPolicy.Hidden;
     public string SnapshotJson { get; set; } = "{}";
     public string? FinalizeIdempotencyKey { get; set; }
     public ICollection<QuizAnswer> Answers { get; set; } = new List<QuizAnswer>();
@@ -181,6 +185,39 @@ public sealed class ExamFile : EntityBase
     public string? CloudObjectPath { get; set; }
 }
 
+public sealed class QuizImportSource : EntityBase
+{
+    public Guid ExamId { get; set; }
+    public Exam Exam { get; set; } = null!;
+    public int ExamVersion { get; set; }
+    public string OriginalName { get; set; } = string.Empty;
+    public string MimeType { get; set; } = "application/octet-stream";
+    public long SizeBytes { get; set; }
+    public string Sha256 { get; set; } = string.Empty;
+    public string RelativePath { get; set; } = string.Empty;
+    public string Status { get; set; } = "Committed";
+    public Guid CreatedBy { get; set; }
+    public DateTimeOffset ImportedAtUtc { get; set; }
+}
+
+public sealed class QuizImportPreview : EntityBase
+{
+    public string TokenHash { get; set; } = string.Empty;
+    public Guid ExamId { get; set; }
+    public int ExamVersion { get; set; }
+    public Guid TeacherId { get; set; }
+    public string ExamRowVersion { get; set; } = string.Empty;
+    public string OriginalName { get; set; } = string.Empty;
+    public string MimeType { get; set; } = "application/octet-stream";
+    public long SizeBytes { get; set; }
+    public string Sha256 { get; set; } = string.Empty;
+    public string TemporaryPath { get; set; } = string.Empty;
+    public string DocumentJson { get; set; } = "{}";
+    public string WarningsJson { get; set; } = "[]";
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+    public DateTimeOffset? CommittedAtUtc { get; set; }
+}
+
 public sealed class ExamSession : EntityBase
 {
     public Guid ExamId { get; set; }
@@ -192,6 +229,10 @@ public sealed class ExamSession : EntityBase
     public DateTimeOffset? PlannedStartUtc { get; set; }
     public DateTimeOffset? StartedAtUtc { get; set; }
     public DateTimeOffset? EndedAtUtc { get; set; }
+    public ExamDeliveryType DeliveryTypeSnapshot { get; set; } = ExamDeliveryType.FileSubmission;
+    public SupervisionMode SupervisionModeSnapshot { get; set; } = SupervisionMode.None;
+    public QuizResultPolicy QuizResultPolicySnapshot { get; set; } = QuizResultPolicy.Hidden;
+    public int ExamVersionSnapshot { get; set; } = 1;
     public string SettingsJson { get; set; } = "{}";
     public bool AutoApprove { get; set; }
     public SessionAccessMode AccessMode { get; set; } = SessionAccessMode.LanOnly;

@@ -1,5 +1,5 @@
 begin;
-select plan(55);
+select plan(56);
 
 select has_function('public', 'join_public_session', array['uuid','text','text','text','jsonb'], 'join RPC exists');
 select has_function('public', 'init_public_submission', array['uuid','text','text','bigint','text'], 'submission init RPC exists');
@@ -48,14 +48,14 @@ insert into public.profiles(id,organization_id,display_name,role,username,studen
 insert into public.classes(id,organization_id,name,code,school_year,status,access_mode,created_at,updated_at) values
   ('11000000-0000-0000-0000-000000000000','10000000-0000-0000-0000-000000000000','Class One','C1','2026','Active','Public',now(),now()),
   ('22000000-0000-0000-0000-000000000000','20000000-0000-0000-0000-000000000000','Class Two','C2','2026','Active','Public',now(),now());
-insert into public.exams(id,organization_id,class_id,title,subject,duration_minutes,status,version,created_by,delivery_type,created_at,updated_at) values
-  ('12000000-0000-0000-0000-000000000000','10000000-0000-0000-0000-000000000000','11000000-0000-0000-0000-000000000000','File Exam','IT',60,'Published',1,'10000000-0000-0000-0000-000000000001','FileSubmission',now(),now()),
-  ('12000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000000','11000000-0000-0000-0000-000000000000','Quiz Exam','IT',60,'Published',1,'10000000-0000-0000-0000-000000000001','MultipleChoice',now(),now()),
-  ('22000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000000','22000000-0000-0000-0000-000000000000','Other Exam','IT',60,'Published',1,null,'FileSubmission',now(),now());
-insert into public.exam_sessions(id,organization_id,exam_id,class_id,room_code,status,started_at,access_mode,auto_approve,accepting_participants,created_at,updated_at) values
-  ('13000000-0000-0000-0000-000000000000','10000000-0000-0000-0000-000000000000','12000000-0000-0000-0000-000000000000','11000000-0000-0000-0000-000000000000','FILE1','Waiting',now(),'PublicCloud',true,true,now(),now()),
-  ('13000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000000','12000000-0000-0000-0000-000000000001','11000000-0000-0000-0000-000000000000','QUIZ1','Waiting',now(),'PublicCloud',true,true,now(),now()),
-  ('23000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000000','22000000-0000-0000-0000-000000000001','22000000-0000-0000-0000-000000000000','OTHER','Waiting',now(),'PublicCloud',true,true,now(),now());
+insert into public.exams(id,organization_id,class_id,title,subject,duration_minutes,status,version,created_by,delivery_type,supervision_mode,quiz_result_policy,created_at,updated_at) values
+  ('12000000-0000-0000-0000-000000000000','10000000-0000-0000-0000-000000000000','11000000-0000-0000-0000-000000000000','File Exam','IT',60,'Published',1,'10000000-0000-0000-0000-000000000001','FileSubmission','None','Hidden',now(),now()),
+  ('12000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000000','11000000-0000-0000-0000-000000000000','Quiz Exam','IT',60,'Published',1,'10000000-0000-0000-0000-000000000001','MultipleChoice','Standard','Hidden',now(),now()),
+  ('22000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000000','22000000-0000-0000-0000-000000000000','Other Exam','IT',60,'Published',1,null,'FileSubmission','None','Hidden',now(),now());
+insert into public.exam_sessions(id,organization_id,exam_id,class_id,room_code,status,started_at,access_mode,auto_approve,accepting_participants,delivery_type,supervision_mode,quiz_result_policy,exam_version,created_at,updated_at) values
+  ('13000000-0000-0000-0000-000000000000','10000000-0000-0000-0000-000000000000','12000000-0000-0000-0000-000000000000','11000000-0000-0000-0000-000000000000','FILE1','Waiting',now(),'PublicCloud',true,true,'FileSubmission','None','Hidden',1,now(),now()),
+  ('13000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000000','12000000-0000-0000-0000-000000000001','11000000-0000-0000-0000-000000000000','QUIZ1','Waiting',now(),'PublicCloud',true,true,'MultipleChoice','Standard','Hidden',1,now(),now()),
+  ('23000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000000','22000000-0000-0000-0000-000000000001','22000000-0000-0000-0000-000000000000','OTHER','Waiting',now(),'PublicCloud',true,true,'FileSubmission','None','Hidden',1,now(),now());
 insert into public.class_members(id,organization_id,class_id,user_id,student_code,display_name,created_at,updated_at) values
   (gen_random_uuid(),'10000000-0000-0000-0000-000000000000','11000000-0000-0000-0000-000000000000','10000000-0000-0000-0000-000000000002','S001','Student One',now(),now()),
   (gen_random_uuid(),'20000000-0000-0000-0000-000000000000','22000000-0000-0000-0000-000000000000','20000000-0000-0000-0000-000000000002','S002','Student Two',now(),now());
@@ -86,8 +86,12 @@ select throws_ok($$update public.public_device_connections set policy_state='App
 select ok(public.report_public_violation('13000000-0000-0000-0000-000000000000','device-one','FocusLost','{}') is not null, 'violation RPC creates server-owned evidence row');
 select is((select source_mode from public.violations order by created_at desc limit 1), 'PublicCloud', 'violation authority is PublicCloud');
 insert into tap_values values ('quiz_participant', public.join_public_session('13000000-0000-0000-0000-000000000001','device-quiz','test','1','{}'));
+insert into tap_values values ('quiz_connection', public.upsert_public_device_heartbeat('13000000-0000-0000-0000-000000000001','device-quiz','Online','ExamTransfer','[]','1','1'));
 
 reset role;
+update public.public_device_connections
+set policy_state='Applied', policy_lease_expires_at=now()+interval '2 hours'
+where id=(select value from tap_values where key='quiz_connection');
 insert into public.public_device_commands(command_id,organization_id,session_id,device_id,command_type,payload,created_at,expires_at,issued_by,signature)
 values ('16000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000000','13000000-0000-0000-0000-000000000000','device-one','ShowWarning','{}',now(),now()+interval '5 minutes','10000000-0000-0000-0000-000000000001',repeat('a',64));
 update public.exam_sessions set status='InProgress' where id in ('13000000-0000-0000-0000-000000000000','13000000-0000-0000-0000-000000000001');
@@ -107,14 +111,20 @@ insert into tap_values values ('quiz_attempt', public.start_public_quiz_attempt(
 select is(public.start_public_quiz_attempt('13000000-0000-0000-0000-000000000001','quiz-start-0001'), (select value from tap_values where key='quiz_attempt'), 'quiz start is idempotent');
 select is(public.save_public_quiz_answers((select value from tap_values where key='quiz_attempt'),'14000000-0000-0000-0000-000000000001','["15000000-0000-4000-8000-000000000001"]',1,now()), 1::bigint, 'quiz answer revision is accepted');
 select is(public.save_public_quiz_answers((select value from tap_values where key='quiz_attempt'),'14000000-0000-0000-0000-000000000001','["15000000-0000-4000-8000-000000000002"]',1,now()), 1::bigint, 'stale quiz revision is idempotently ignored');
-select is(public.finalize_public_quiz_attempt((select value from tap_values where key='quiz_attempt'),'quiz-final-0001'), 1::numeric, 'quiz is scored on the server');
-select is(public.finalize_public_quiz_attempt((select value from tap_values where key='quiz_attempt'),'quiz-final-0001'), 1::numeric, 'quiz finalize is idempotent');
+select is((public.finalize_public_quiz_attempt((select value from tap_values where key='quiz_attempt'),'quiz-final-0001')->>'scoreVisible')::boolean, false, 'hidden quiz score is masked after server grading');
+select is(public.finalize_public_quiz_attempt((select value from tap_values where key='quiz_attempt'),'quiz-final-0001')->>'score', null::text, 'quiz finalize is idempotent without leaking hidden score');
 select results_eq($$with changed as (update public.quiz_attempts set score=999,status='Finalized' where id=(select value from tap_values where key='quiz_attempt') returning 1) select count(*)::bigint from changed$$, array[0::bigint], 'Student cannot directly set quiz status or score');
 
 reset role;
 set local role authenticated;
 select set_config('request.jwt.claims','{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}',true);
 select is(public.current_examtransfer_role(), 'Teacher', 'Teacher JWT context retains staff access');
+select is((
+  select score
+  from public.get_teacher_quiz_attempts('13000000-0000-0000-0000-000000000001')
+  where id=(select value from tap_values where key='quiz_attempt')),
+  1::numeric,
+  'teacher retains access to server score through the staff-only projection');
 
 select * from finish();
 rollback;

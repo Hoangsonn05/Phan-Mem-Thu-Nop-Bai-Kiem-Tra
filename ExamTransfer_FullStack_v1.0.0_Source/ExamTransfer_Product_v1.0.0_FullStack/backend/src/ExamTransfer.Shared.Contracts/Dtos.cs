@@ -33,12 +33,12 @@ public sealed record ClassEnrollmentRequestDto(
     DateTimeOffset? DecidedAtUtc,
     long CloudVersion);
 
-public sealed record ExamSummaryDto(Guid Id, Guid? ClassId, string Title, string Subject, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, int FileCount, string RowVersion);
-public sealed record ExamDetailDto(Guid Id, Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, FileRuleDto FileRule, IReadOnlyList<FileDescriptorDto> Files, string RowVersion);
+public sealed record ExamSummaryDto(Guid Id, Guid? ClassId, string Title, string Subject, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, int FileCount, string RowVersion, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None, bool HasCommittedQuizSource = false, int QuizQuestionCount = 0);
+public sealed record ExamDetailDto(Guid Id, Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, FileRuleDto FileRule, IReadOnlyList<FileDescriptorDto> Files, string RowVersion, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None, QuizImportSourceDto? QuizSource = null, int QuizQuestionCount = 0);
 public sealed record ExamManifestDto(Guid ExamId, int Version, DateTimeOffset GeneratedAtUtc, IReadOnlyList<FileDescriptorDto> Files);
 
 public sealed record SessionCountsDto(int Total, int Pending, int Approved, int Connected, int Submitted, int Uploading, int Disconnected);
-public sealed record SessionSummaryDto(Guid Id, Guid ExamId, string Title, string RoomCode, SessionStatus Status, DateTimeOffset ServerNowUtc, DateTimeOffset? StartTimeUtc, DateTimeOffset? EndTimeUtc, DateTimeOffset? EffectiveDeadlineUtc, SessionCountsDto Counts, long Sequence, string RowVersion, SessionAccessMode AccessMode = SessionAccessMode.LanOnly, bool AutoApprove = false);
+public sealed record SessionSummaryDto(Guid Id, Guid ExamId, string Title, string RoomCode, SessionStatus Status, DateTimeOffset ServerNowUtc, DateTimeOffset? StartTimeUtc, DateTimeOffset? EndTimeUtc, DateTimeOffset? EffectiveDeadlineUtc, SessionCountsDto Counts, long Sequence, string RowVersion, SessionAccessMode AccessMode = SessionAccessMode.LanOnly, bool AutoApprove = false, ExamDeliveryType DeliveryType = ExamDeliveryType.FileSubmission, SupervisionMode SupervisionMode = SupervisionMode.None, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, int ExamVersion = 1);
 public sealed record SessionDetailDto(SessionSummaryDto Summary, IReadOnlyList<ParticipantDto> Participants, string SettingsJson, DateTimeOffset? PlannedStartUtc = null, int? Capacity = null);
 
 public sealed record OpenSessionDiscoveryDto(

@@ -154,7 +154,7 @@ public sealed class StudentConnectViewModel : ProductPageBase
                 cloudJoin.SessionId,
                 Environment.MachineName + "-" + Environment.UserName,
                 cloudJoin.AccessToken,
-                async token => _ = await AppServices.PublicCloud.GetParticipantStatusAsync(cloudJoin.ParticipantId, token),
+                async token => _ = await AppServices.PublicCloud.GetStudentTimelineAsync(cloudJoin.SessionId, token),
                 ct);
             Status = cloudJoin.Status == ParticipantStatus.Approved
                 ? "Đã tham gia phòng PublicCloud."

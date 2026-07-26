@@ -69,6 +69,9 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             var exam = await db.ExamsSet.FirstOrDefaultAsync(x => x.Id == request.ExamId, cancellationToken)
                 ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
             if (exam.Status != ExamStatus.Published) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ tạo phòng từ bài kiểm tra đã phát hành.", 409);
+            if (exam.DeliveryType == ExamDeliveryType.MultipleChoice
+                && exam.SupervisionMode != SupervisionMode.Standard)
+                throw new ApiException(ErrorCodes.InvalidStateTransition, "Trắc nghiệm bắt buộc dùng giám sát chuẩn.", 409);
             ValidateSessionConfiguration(request.SettingsJson, request.Capacity);
             var effectiveClassId = request.ClassId ?? exam.ClassId;
             if (request.ClassId.HasValue && exam.ClassId.HasValue && request.ClassId.Value != exam.ClassId.Value)
@@ -90,7 +93,11 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
                 ExamId = request.ExamId, ClassId = effectiveClassId, RoomCode = roomCode,
                 HostDeviceId = hostDeviceId, PlannedStartUtc = request.PlannedStartUtc, SettingsJson = string.IsNullOrWhiteSpace(request.SettingsJson) ? "{}" : request.SettingsJson,
                 AutoApprove = request.AutoApprove, Capacity = request.Capacity, Status = SessionStatus.Draft, AcceptingParticipants = true,
-                AccessMode = request.AccessMode
+                AccessMode = request.AccessMode,
+                DeliveryTypeSnapshot = exam.DeliveryType,
+                SupervisionModeSnapshot = exam.SupervisionMode,
+                QuizResultPolicySnapshot = exam.QuizResultPolicy,
+                ExamVersionSnapshot = exam.Version
             };
             db.ExamSessionsSet.Add(session); await db.SaveChangesAsync(cancellationToken);
             session.Exam = exam;
@@ -406,13 +413,44 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
                 request.Reason,
                 request.MutationRequestId,
                 cancellationToken);
+            if (!result.EffectiveDeadlineUtc.HasValue
+                || !result.ServerNowUtc.HasValue
+                || !result.Revision.HasValue)
+            {
+                throw new ApiException(
+                    ErrorCodes.CloudUploadFailed,
+                    "Supabase không trả đủ contract thời gian PublicCloud.",
+                    502);
+            }
+            await realtime.PublishSessionAsync(
+                sessionId,
+                RealtimeEvents.TimeExtended,
+                result.Revision.Value,
+                new TimeExtendedEvent(
+                    participantId,
+                    request.Minutes,
+                    result.EffectiveDeadlineUtc.Value,
+                    result.AttemptId,
+                    result.ServerNowUtc,
+                    result.Revision,
+                    result.RequestId ?? request.MutationRequestId),
+                cancellationToken);
             return ToMutationDto(participant, result);
         }
         if (participant.Session.Status is not (SessionStatus.InProgress or SessionStatus.Paused)) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ cộng giờ khi phòng đang thi hoặc tạm dừng.", 409);
         participant.ExtraTimeMinutes += request.Minutes; participant.Session.Sequence++;
+        var deadline = participant.Session.StartedAtUtc!.Value.AddMinutes(participant.Session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
+        var activeQuizAttempts = await db.QuizAttemptsSet
+            .Where(x => x.SessionId == sessionId
+                && x.ParticipantId == participantId
+                && x.Status == QuizAttemptStatus.InProgress)
+            .ToListAsync(cancellationToken);
+        foreach (var attempt in activeQuizAttempts)
+        {
+            attempt.DeadlineUtc = deadline;
+        }
         db.ParticipantExtraTimesSet.Add(new ParticipantExtraTime { ParticipantId = participantId, Minutes = request.Minutes, Reason = request.Reason });
         await db.SaveChangesAsync(cancellationToken);
-        var deadline = participant.Session.StartedAtUtc!.Value.AddMinutes(participant.Session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
         await audit.WriteAsync("ParticipantExtraTimeAdded", nameof(SessionParticipant), participant.Id.ToString(), sessionId, null, request, cancellationToken);
         await outbox.EnqueueAsync(
             "session_participants",
@@ -436,13 +474,14 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         return dto;
     }
 
-    public async Task HeartbeatAsync(Guid sessionId, Guid participantId, string deviceId, HeartbeatRequest request, CancellationToken cancellationToken)
+    public async Task<HeartbeatResponse> HeartbeatAsync(Guid sessionId, Guid participantId, string deviceId, HeartbeatRequest request, CancellationToken cancellationToken)
     {
         var participant = await db.SessionParticipantsSet.Include(x => x.Session).FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
         if (!participant.DeviceId.Equals(deviceId, StringComparison.Ordinal)) throw new ApiException(ErrorCodes.Forbidden, "Token không thuộc thiết bị này.", 403);
+        var serverNowUtc = DateTimeOffset.UtcNow;
         var wasDisconnected = participant.Status == ParticipantStatus.Disconnected;
-        participant.LastSeenUtc = DateTimeOffset.UtcNow;
+        participant.LastSeenUtc = serverNowUtc;
         if (wasDisconnected) participant.Status = participant.ApprovedAtUtc.HasValue ? ParticipantStatus.Approved : ParticipantStatus.Connected;
         if (wasDisconnected) participant.Session.Sequence++;
         await db.SaveChangesAsync(cancellationToken);
@@ -450,6 +489,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         {
             await realtime.PublishSessionAsync(sessionId, RealtimeEvents.ParticipantConnectionChanged, participant.Session.Sequence, new ParticipantConnectionChangedEvent(participantId, ConnectionState.Online, participant.LastSeenUtc.Value), cancellationToken);
         }
+        return new HeartbeatResponse(serverNowUtc);
     }
 
     public async Task<ParticipantDto> GetParticipantAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken)
@@ -490,7 +530,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
     {
         var p = s.Participants; var now = DateTimeOffset.UtcNow;
         var counts = new SessionCountsDto(p.Count, p.Count(x => x.Status == ParticipantStatus.PendingApproval), p.Count(x => x.Status == ParticipantStatus.Approved), p.Count(x => x.LastSeenUtc.HasValue && now - x.LastSeenUtc <= TimeSpan.FromSeconds(_options.Session.DisconnectAfterSeconds)), p.Count(x => x.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted), p.Count(x => x.SubmissionStatus == SubmissionStatus.Uploading), p.Count(x => x.Status == ParticipantStatus.Disconnected));
-        return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion, s.AccessMode, s.AutoApprove);
+        return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion, s.AccessMode, s.AutoApprove, s.DeliveryTypeSnapshot, s.SupervisionModeSnapshot, s.QuizResultPolicySnapshot, s.ExamVersionSnapshot);
     }
     private static DateTimeOffset? EffectiveDeadline(ExamSession s) => s.StartedAtUtc?.AddMinutes(s.Exam.DurationMinutes);
     private static DateTimeOffset? ParticipantDeadline(SessionParticipant participant) =>
@@ -571,6 +611,10 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         planned_start_at = x.PlannedStartUtc,
         started_at = x.StartedAtUtc,
         ended_at = x.EndedAtUtc,
+        delivery_type = x.DeliveryTypeSnapshot.ToString(),
+        supervision_mode = x.SupervisionModeSnapshot.ToString(),
+        quiz_result_policy = x.QuizResultPolicySnapshot.ToString(),
+        exam_version = x.ExamVersionSnapshot,
         settings_json = x.SettingsJson,
         auto_approve = x.AutoApprove,
         access_mode = x.AccessMode.ToString(),

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Text.Json;
 using System.Windows.Input;
 using ExamTransfer.Desktop.Core;
+using ExamTransfer.Desktop.Infrastructure;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Shared.Contracts;
 
@@ -11,44 +12,131 @@ public sealed class StudentQuizViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
     private readonly StudentSessionState session;
+    private readonly IServerClock serverClock;
+    private readonly ServerTimelineCoordinator timelineCoordinator;
+    private readonly ICountdownTicker ticker;
+    private readonly IStudentRealtimeService realtime;
+    private readonly IStudentExamFlowCoordinator flowCoordinator;
     private readonly SemaphoreSlim syncGate = new(1, 1);
     private readonly Dictionary<Guid, QuizAnswerDto> localAnswers = [];
     private QuizAttemptDto? attempt;
+    private TimeSpan? remaining;
     private bool applying;
+    private int expiredSnapshotRefreshRequested;
+    private int realtimeSnapshotRefreshRequested;
 
     public StudentQuizViewModel(IBackendClient api, StudentSessionState session)
+        : this(
+            api,
+            session,
+            AppServices.ServerClock,
+            AppServices.CountdownTickers.Create(TimeSpan.FromSeconds(1)),
+            AppServices.StudentRealtime,
+            AppServices.StudentExamFlow)
     {
-        this.api = api; this.session = session;
+    }
+
+    public StudentQuizViewModel(
+        IBackendClient api,
+        StudentSessionState session,
+        IServerClock serverClock,
+        ICountdownTicker ticker,
+        IStudentRealtimeService realtime,
+        IStudentExamFlowCoordinator? flowCoordinator = null)
+    {
+        this.api = api ?? throw new ArgumentNullException(nameof(api));
+        this.session = session ?? throw new ArgumentNullException(nameof(session));
+        this.serverClock = serverClock ?? throw new ArgumentNullException(nameof(serverClock));
+        timelineCoordinator = new ServerTimelineCoordinator(this.serverClock);
+        this.ticker = ticker ?? throw new ArgumentNullException(nameof(ticker));
+        this.realtime = realtime ?? throw new ArgumentNullException(nameof(realtime));
+        this.flowCoordinator = flowCoordinator ?? AppServices.StudentExamFlow;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy && session.HasSession);
-        SyncCommand = new AsyncRelayCommand(() => SyncAsync(DisposeToken, true), () => !IsBusy && Attempt is not null && Attempt.Status == QuizAttemptStatus.InProgress);
+        SyncCommand = new AsyncRelayCommand(() => SyncAsync(DisposeToken, true), () => !IsBusy && CanEditAnswers);
         FinalizeCommand = new AsyncRelayCommand(FinalizeAsync, () => !IsBusy && Attempt is not null && Attempt.Status == QuizAttemptStatus.InProgress);
+        ExitQuizCommand = new RelayCommand(
+            () => this.flowCoordinator.ReturnToCurrentExam(),
+            () => Attempt?.Status == QuizAttemptStatus.Finalized);
+        ticker.Tick += OnTick;
+        ticker.Start();
+        realtime.EventReceived += OnRealtimeEvent;
+        realtime.NotificationReceived += OnRealtimeNotification;
     }
 
     public ObservableCollection<QuizQuestionState> Questions { get; } = new();
-    public QuizAttemptDto? Attempt { get => attempt; private set { if (Set(ref attempt, value)) { Raise(nameof(Result)); RaiseCommands(); } } }
-    public string Result => Attempt?.Status == QuizAttemptStatus.Finalized ? $"Đã chốt · {Attempt.Score:0.##}/{Attempt.MaxScore:0.##} điểm" : "Đáp án được lưu cục bộ và tự đồng bộ khi có mạng";
+    public QuizAttemptDto? Attempt
+    {
+        get => attempt;
+        private set
+        {
+            if (Set(ref attempt, value))
+            {
+                UpdateCountdown();
+                Raise(nameof(Result));
+                Raise(nameof(AnsweredCount));
+                Raise(nameof(UnansweredCount));
+                Raise(nameof(ProgressText));
+                RaiseCommands();
+            }
+        }
+    }
+    public string Result => Attempt?.Status == QuizAttemptStatus.Finalized
+        ? Attempt.ScoreVisible && Attempt.Score.HasValue
+            ? $"Đã nộp · {Attempt.Score:0.##}/{Attempt.MaxScore:0.##} điểm"
+            : "Đã nộp bài thành công"
+        : "Đáp án được lưu cục bộ và tự đồng bộ khi có mạng";
+    public int AnsweredCount => Questions.Count(x => x.Choices.Any(choice => choice.IsSelected));
+    public int UnansweredCount => Math.Max(0, Questions.Count - AnsweredCount);
+    public string ProgressText => $"Đã trả lời {AnsweredCount}/{Questions.Count} câu";
+    public string TimeLeft => ServerCountdown.Format(remaining);
+    public string ClockStatus => serverClock.IsSynchronized ? "Đã đồng bộ giờ máy chủ" : "Chưa đồng bộ giờ máy chủ";
+    public bool CanEditAnswers => Attempt?.Status == QuizAttemptStatus.InProgress
+        && remaining is { } value
+        && value > TimeSpan.Zero;
     public ICommand RefreshCommand { get; }
     public ICommand SyncCommand { get; }
     public ICommand FinalizeCommand { get; }
+    public ICommand ExitQuizCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
         if (!session.HasSession) { Status = "Hãy tham gia phòng trước."; StatusTone = "warning"; return; }
         await RunAsync("Đang mở bài trắc nghiệm", "Bài trắc nghiệm đã sẵn sàng", async token =>
         {
-            if (session.AccessMode == SessionAccessMode.PublicCloud)
-                Attempt = await AppServices.PublicCloud.StartQuizAttemptAsync(session.SessionId!.Value, token);
-            else
+            var resolution = await flowCoordinator.ResolveAsync(
+                StudentExamEntryPoint.QuizTab,
+                false,
+                token);
+            if (resolution.RequiresStartConfirmation)
             {
-                api.SetParticipantToken(session.AccessToken);
-                Attempt = ApiGuard.Require(await api.PostAsync<object, QuizAttemptDto>($"api/v1/student/quiz/sessions/{session.SessionId}/attempt", new { }, token));
+                if (!AppServices.Dialogs.Confirm(
+                        "Bắt đầu bài trắc nghiệm",
+                        "Sau khi xác nhận, máy chủ sẽ tạo đúng một lượt làm bài và bắt đầu tính thời gian. Bắt đầu ngay?"))
+                    return;
+                resolution = await flowCoordinator.ResolveAsync(
+                    StudentExamEntryPoint.QuizTab,
+                    true,
+                    token);
             }
+            if (resolution.RouteKey != "S-06")
+            {
+                Status = resolution.Message;
+                StatusTone = "warning";
+                return;
+            }
+            var loadedAttempt = session.CurrentAttempt
+                ?? throw new InvalidDataException("Coordinator chưa cung cấp snapshot lượt làm bài an toàn.");
+            Attempt = loadedAttempt;
             localAnswers.Clear();
             foreach (var answer in Attempt.Answers) localAnswers[answer.QuestionId] = answer;
             foreach (var answer in await QuizLocalStore.LoadAsync(Attempt.Id, token))
                 if (!localAnswers.TryGetValue(answer.QuestionId, out var current) || answer.Revision > current.Revision) localAnswers[answer.QuestionId] = answer;
             ApplyQuestions();
             if (Attempt.Status == QuizAttemptStatus.InProgress) await SyncAsync(token, false);
+            UpdateCountdown();
+            Interlocked.Exchange(
+                ref expiredSnapshotRefreshRequested,
+                remaining is { } value && value <= TimeSpan.Zero ? 1 : 0);
         });
     }
 
@@ -70,7 +158,8 @@ public sealed class StudentQuizViewModel : ProductPageBase
 
     private void ChoiceChanged(QuizQuestionState question)
     {
-        if (applying || Attempt?.Status != QuizAttemptStatus.InProgress) return;
+        var activeAttempt = Attempt;
+        if (applying || activeAttempt is null || !CanEditAnswers) return;
         applying = true;
         if (!question.Multiple)
         {
@@ -79,8 +168,15 @@ public sealed class StudentQuizViewModel : ProductPageBase
         }
         applying = false;
         var revision = localAnswers.TryGetValue(question.Id, out var previous) ? previous.Revision + 1 : 1;
-        localAnswers[question.Id] = new(question.Id, question.Choices.Where(x => x.IsSelected).Select(x => x.Id).ToList(), revision, DateTimeOffset.UtcNow);
-        QuizLocalStore.SaveAsync(Attempt.Id, localAnswers.Values, DisposeToken).SafeFireAndForget("Quiz.LocalSave");
+        localAnswers[question.Id] = new(
+            question.Id,
+            question.Choices.Where(x => x.IsSelected).Select(x => x.Id).ToList(),
+            revision,
+            RequiredServerNowUtc());
+        Raise(nameof(AnsweredCount));
+        Raise(nameof(UnansweredCount));
+        Raise(nameof(ProgressText));
+        QuizLocalStore.SaveAsync(activeAttempt.Id, localAnswers.Values, DisposeToken).SafeFireAndForget("Quiz.LocalSave");
         SyncAsync(DisposeToken, false).SafeFireAndForget("Quiz.AutoSync");
     }
 
@@ -92,11 +188,17 @@ public sealed class StudentQuizViewModel : ProductPageBase
         {
             var payload = localAnswers.Values.OrderBy(x => x.QuestionId).ToList();
             var response = session.AccessMode == SessionAccessMode.PublicCloud
-                ? await AppServices.PublicCloud.SaveQuizAnswersAsync(Attempt.Id, payload, ct)
+                ? await AppServices.PublicCloud.SaveQuizAnswersAsync(
+                    session.SessionId!.Value,
+                    Attempt.Id,
+                    payload,
+                    ct)
                 : ApiGuard.Require(await api.PutAsync<SyncQuizAnswersRequest, SyncQuizAnswersResultDto>(
                     $"api/v1/student/quiz/attempts/{Attempt.Id}/answers", new(payload), ct));
+            serverClock.Synchronize(response.ServerNowUtc);
             foreach (var answer in response.Answers) localAnswers[answer.QuestionId] = answer;
             await QuizLocalStore.SaveAsync(Attempt.Id, localAnswers.Values, ct);
+            UpdateCountdown();
             if (showStatus) { Status = "Đã đồng bộ đáp án với máy chủ"; StatusTone = "success"; }
         }
         catch when (!showStatus)
@@ -108,19 +210,168 @@ public sealed class StudentQuizViewModel : ProductPageBase
 
     private Task FinalizeAsync() => RunAsync("Đang chốt bài", "Bài trắc nghiệm đã được chấm trên máy chủ", async ct =>
     {
-        if (Attempt is null || !AppServices.Dialogs.Confirm("Chốt bài trắc nghiệm", "Sau khi chốt sẽ không thể sửa đáp án. Tiếp tục?")) return;
+        if (Attempt is null) return;
+        var unanswered = UnansweredCount > 0
+            ? $"Còn {UnansweredCount} câu chưa trả lời. "
+            : string.Empty;
+        if (!AppServices.Dialogs.Confirm(
+                "Chốt bài trắc nghiệm",
+                $"{unanswered}Sau khi chốt sẽ không thể sửa đáp án. Tiếp tục?"))
+            return;
         await SyncAsync(ct, true);
         var idempotencyKey = Guid.NewGuid().ToString("N");
         Attempt = session.AccessMode == SessionAccessMode.PublicCloud
             ? await AppServices.PublicCloud.FinalizeQuizAttemptAsync(Attempt.Id, idempotencyKey, ct)
             : ApiGuard.Require(await api.PostAsync<FinalizeQuizAttemptRequest, QuizAttemptDto>(
-                $"api/v1/student/quiz/attempts/{Attempt.Id}/finalize", new(idempotencyKey, DateTimeOffset.UtcNow), ct));
+                $"api/v1/student/quiz/attempts/{Attempt.Id}/finalize", new(idempotencyKey, RequiredServerNowUtc()), ct));
+        session.CurrentAttempt = Attempt;
         Raise(nameof(Result));
     });
+
+    private DateTimeOffset RequiredServerNowUtc()
+    {
+        if (serverClock.TryGetUtcNow(out var serverNowUtc))
+        {
+            return serverNowUtc;
+        }
+
+        throw new InvalidOperationException(
+            "Chưa đồng bộ giờ máy chủ; không thể tạo mốc thời gian đáp án hoặc chốt bài.");
+    }
+
+    private void OnTick(object? sender, EventArgs e)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        var wasPositive = remaining is { } previous && previous > TimeSpan.Zero;
+        UpdateCountdown();
+        if (wasPositive
+            && remaining is { } current
+            && current <= TimeSpan.Zero
+            && Attempt?.Status == QuizAttemptStatus.InProgress
+            && Interlocked.Exchange(ref expiredSnapshotRefreshRequested, 1) == 0)
+        {
+            LoadAsync(DisposeToken).SafeFireAndForget("StudentQuiz.ExpiredSnapshotRefresh");
+        }
+    }
+
+    private void OnRealtimeEvent(object? sender, string eventName)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        if (eventName is RealtimeEvents.TimeExtended or "Reconnected")
+            RequestSnapshotResync();
+    }
+
+    private void OnRealtimeNotification(object? sender, StudentRealtimeNotification notification)
+    {
+        if (IsDisposed)
+            return;
+        var payload = notification.TimeExtended;
+        if (notification.SessionId != session.SessionId
+            || (payload?.ParticipantId.HasValue == true
+                && payload.ParticipantId != session.ParticipantId)
+            || (payload?.AttemptId.HasValue == true
+                && Attempt is not null
+                && payload.AttemptId != Attempt.Id))
+            return;
+        System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+        {
+            if (payload is null
+                || !payload.ServerNowUtc.HasValue
+                || !payload.Revision.HasValue
+                || !payload.AttemptId.HasValue)
+                RequestSnapshotResync();
+            else
+                _ = TryApplyTimeExtended(notification);
+        });
+    }
+
+    public bool TryApplyTimeExtended(StudentRealtimeNotification notification)
+    {
+        var payload = notification.TimeExtended;
+        if (IsDisposed
+            || notification.EventName != RealtimeEvents.TimeExtended
+            || notification.SessionId != session.SessionId
+            || payload is null
+            || payload.ParticipantId != session.ParticipantId
+            || !payload.ServerNowUtc.HasValue
+            || !payload.Revision.HasValue)
+            return false;
+        if (Attempt is null
+            || !payload.AttemptId.HasValue
+            || payload.AttemptId != Attempt.Id)
+            return false;
+        if (!timelineCoordinator.TryApply(
+                payload.Revision.Value,
+                payload.EffectiveDeadlineUtc,
+                payload.ServerNowUtc.Value)
+            || Attempt is null)
+            return false;
+        Attempt = Attempt with { DeadlineUtc = payload.EffectiveDeadlineUtc };
+        Interlocked.Exchange(ref expiredSnapshotRefreshRequested, 0);
+        UpdateCountdown();
+        return true;
+    }
+
+    private QuizAttemptDto ApplyTimelineSnapshot(
+        QuizAttemptDto loadedAttempt,
+        PublicStudentTimeline timeline)
+    {
+        if (timeline.SessionId != session.SessionId
+            || timeline.ParticipantId != session.ParticipantId
+            || timeline.AttemptId != loadedAttempt.Id
+            || !timeline.AttemptDeadlineUtc.HasValue)
+            throw new InvalidDataException("PublicCloud quiz timeline không khớp attempt hiện tại.");
+        if (timelineCoordinator.TryApply(
+                timeline.Revision,
+                timeline.AttemptDeadlineUtc.Value,
+                timeline.ServerNowUtc))
+            return loadedAttempt with { DeadlineUtc = timeline.AttemptDeadlineUtc.Value };
+        return timelineCoordinator.DeadlineUtc.HasValue
+            ? loadedAttempt with { DeadlineUtc = timelineCoordinator.DeadlineUtc.Value }
+            : loadedAttempt;
+    }
+
+    private void RequestSnapshotResync()
+    {
+        if (Interlocked.Exchange(ref realtimeSnapshotRefreshRequested, 1) != 0)
+            return;
+        System.Windows.Application.Current.Dispatcher.InvokeAsync(async () =>
+        {
+            try { await LoadAsync(DisposeToken); }
+            finally { Interlocked.Exchange(ref realtimeSnapshotRefreshRequested, 0); }
+        });
+    }
+
+    private void UpdateCountdown()
+    {
+        remaining = ServerCountdown.Remaining(serverClock, Attempt?.DeadlineUtc);
+        Raise(nameof(TimeLeft));
+        Raise(nameof(ClockStatus));
+        Raise(nameof(CanEditAnswers));
+        RaiseCommands();
+    }
 
     protected override void RaiseCommands()
     {
         foreach (var command in new[] { RefreshCommand, SyncCommand, FinalizeCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        (ExitQuizCommand as RelayCommand)?.RaiseCanExecuteChanged();
+    }
+
+    public override void Dispose()
+    {
+        realtime.EventReceived -= OnRealtimeEvent;
+        realtime.NotificationReceived -= OnRealtimeNotification;
+        ticker.Tick -= OnTick;
+        ticker.Dispose();
+        base.Dispose();
     }
 }
 

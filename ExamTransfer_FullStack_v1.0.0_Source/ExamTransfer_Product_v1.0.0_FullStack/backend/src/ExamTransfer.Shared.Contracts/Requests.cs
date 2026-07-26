@@ -19,8 +19,8 @@ public sealed record ImportRowErrorDto(int RowNumber, string Field, string Code,
 public sealed record ImportPreviewDto(string PreviewToken, int TotalRows, int ValidRows, int InvalidRows, IReadOnlyList<StudentDto> PreviewStudents, IReadOnlyList<ImportRowErrorDto> Errors);
 public sealed record ImportCommitResultDto(int Inserted, int Skipped, IReadOnlyList<ImportRowErrorDto> Errors);
 
-public sealed record CreateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule);
-public sealed record UpdateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule, string RowVersion);
+public sealed record CreateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule, ExamDeliveryType DeliveryType = ExamDeliveryType.FileSubmission, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None);
+public sealed record UpdateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule, string RowVersion, ExamDeliveryType DeliveryType = ExamDeliveryType.FileSubmission, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None);
 public sealed record InitFileUploadRequest(string FileName, long SizeBytes, string Sha256, string MimeType, int? ChunkSizeBytes = null);
 public sealed record InitFileUploadResponse(Guid FileId, int ChunkSizeBytes, int TotalChunks, IReadOnlyList<int> MissingChunks);
 public sealed record FinalizeFileUploadRequest(string Sha256);
@@ -36,6 +36,7 @@ public sealed record SendMessageRequest(Guid? ReceiverParticipantId, MessageType
 public sealed record EndSessionRequest(bool Force, string? Reason);
 public sealed record BulkApproveRequest(IReadOnlyList<Guid> ParticipantIds, Guid MutationRequestId);
 public sealed record HeartbeatRequest(string DeviceStatus, DateTimeOffset ClientNowUtc, long SequenceAck);
+public sealed record HeartbeatResponse(DateTimeOffset ServerNowUtc);
 
 public sealed record InitSubmissionFileRequest(string ClientFileId, string Name, long SizeBytes, string Sha256, string MimeType);
 public sealed record InitSubmissionRequest(Guid SessionId, Guid ParticipantId, string IdempotencyKey, IReadOnlyList<InitSubmissionFileRequest> Files, DateTimeOffset ClientSubmittedAtUtc);

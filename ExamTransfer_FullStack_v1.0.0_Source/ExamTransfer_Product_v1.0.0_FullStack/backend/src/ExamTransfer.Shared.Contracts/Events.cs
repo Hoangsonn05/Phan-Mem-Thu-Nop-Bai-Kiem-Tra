@@ -37,7 +37,14 @@ public sealed record DownloadProgressEvent(Guid ParticipantId, double Percent, l
 public sealed record TransferProgressEvent(Guid TransferId, TransferDirection Direction, long Bytes, double BytesPerSecond, TransferStatus Status);
 public sealed record SubmissionAcceptedEvent(Guid SubmissionId, Guid ParticipantId, string ReceiptCode, bool IsLate);
 public sealed record SubmissionRejectedEvent(Guid SubmissionId, string Reason);
-public sealed record TimeExtendedEvent(Guid? ParticipantId, int Minutes, DateTimeOffset EffectiveDeadlineUtc);
+public sealed record TimeExtendedEvent(
+    Guid? ParticipantId,
+    int Minutes,
+    DateTimeOffset EffectiveDeadlineUtc,
+    Guid? AttemptId = null,
+    DateTimeOffset? ServerNowUtc = null,
+    long? Revision = null,
+    Guid? RequestId = null);
 public sealed record TeacherMessageEvent(Guid MessageId, string Content, Guid? TargetParticipantId);
 public sealed record ForceSubmitEvent(DateTimeOffset DeadlineUtc, string Reason);
 public sealed record ControlPolicyChangedEvent(int Version, PolicyApplyStatus ApplyStatus);

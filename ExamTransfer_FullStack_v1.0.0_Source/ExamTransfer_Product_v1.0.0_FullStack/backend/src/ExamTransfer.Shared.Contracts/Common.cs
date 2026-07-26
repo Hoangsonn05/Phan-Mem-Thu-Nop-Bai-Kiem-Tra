@@ -114,6 +114,8 @@ public static class ErrorCodes
     public const string SyncConflict = "SYNC_CONFLICT";
     public const string CloudUploadFailed = "CLOUD_UPLOAD_FAILED";
     public const string ConcurrencyConflict = "CONCURRENCY_CONFLICT";
+    public const string QuizImportLegacyDisabled = "QUIZ_IMPORT_LEGACY_DISABLED";
+    public const string ExamDurationImmutable = "EXAM_DURATION_IMMUTABLE";
     public const string InvalidCredentials = "INVALID_CREDENTIALS";
     public const string AccountInactive = "ACCOUNT_INACTIVE";
     public const string StudentIdentityConfirmationRequired = "STUDENT_IDENTITY_CONFIRMATION_REQUIRED";

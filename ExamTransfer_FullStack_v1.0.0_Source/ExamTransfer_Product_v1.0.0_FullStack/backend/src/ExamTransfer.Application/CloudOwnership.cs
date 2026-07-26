@@ -12,7 +12,7 @@ public enum CloudEntityAuthority
 
 public static class CloudSchemaCompatibility
 {
-    public const int RequiredVersion = 15;
+    public const int RequiredVersion = 18;
     public static readonly IReadOnlySet<string> CriticalRpcs = new HashSet<string>(StringComparer.Ordinal)
     {
         "join_public_session",
@@ -23,6 +23,8 @@ public static class CloudSchemaCompatibility
         "start_public_quiz_attempt",
         "save_public_quiz_answers",
         "finalize_public_quiz_attempt",
+        "get_public_quiz_attempt",
+        "get_teacher_quiz_attempts",
         "verify_public_submission_archive",
         "get_public_exam_file_download",
         "approve_public_participant",
@@ -32,7 +34,8 @@ public static class CloudSchemaCompatibility
         "allow_public_resubmission",
         "reject_public_submission",
         "approve_public_enrollment_request",
-        "reject_public_enrollment_request"
+        "reject_public_enrollment_request",
+        "get_public_student_timeline"
     };
 }
 
@@ -46,6 +49,7 @@ public static class CloudEntityOwnershipRegistry
             ["exam_files"] = CloudEntityAuthority.LocalOwned,
             ["quiz_questions"] = CloudEntityAuthority.LocalOwned,
             ["quiz_choices"] = CloudEntityAuthority.LocalOwned,
+            ["quiz_import_sources"] = CloudEntityAuthority.LocalOwned,
             ["public_class_assignments"] = CloudEntityAuthority.LocalOwned,
             ["exam_sessions"] = CloudEntityAuthority.LocalOwned,
             ["control_policies"] = CloudEntityAuthority.LocalOwned,
@@ -80,7 +84,8 @@ public static class CloudEntityOwnershipRegistry
             ["graded_attachment"] = "graded_attachments", ["control_policy"] = "control_policies",
             ["violation"] = "violations", ["audit"] = "audit_logs", ["audit_log"] = "audit_logs",
             ["backup"] = "backups", ["export_job"] = "export_jobs",
-            ["quiz_attempt"] = "quiz_attempts", ["quiz_answer"] = "quiz_answers"
+            ["quiz_attempt"] = "quiz_attempts", ["quiz_answer"] = "quiz_answers",
+            ["quiz_import_source"] = "quiz_import_sources"
         };
 
     public static string Normalize(string entityType)

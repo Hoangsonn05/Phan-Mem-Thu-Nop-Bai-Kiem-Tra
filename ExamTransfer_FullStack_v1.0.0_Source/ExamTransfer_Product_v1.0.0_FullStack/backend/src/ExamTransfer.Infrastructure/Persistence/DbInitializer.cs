@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "7";
+    public const string SchemaVersion = "8";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -68,6 +68,8 @@ public static class DbInitializer
         await EnsureColumnAsync(db, "user_login_sessions", "OrganizationId", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "user_login_sessions", "EncryptedRefreshToken", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "exams", "DeliveryType", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exams", "QuizResultPolicy", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exams", "SupervisionMode", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "classes", "AccessMode", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "classes", "EnrollmentOpen", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "classes", "RequireEnrollmentApproval", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
@@ -76,7 +78,24 @@ public static class DbInitializer
         await EnsureColumnAsync(db, "classes", "EnrollmentClosedAtUtc", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "classes", "PublicVersion", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exam_sessions", "AccessMode", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exam_sessions", "DeliveryTypeSnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exam_sessions", "SupervisionModeSnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exam_sessions", "QuizResultPolicySnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exam_sessions", "ExamVersionSnapshot", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            UPDATE "exam_sessions"
+            SET "DeliveryTypeSnapshot" = COALESCE((SELECT "DeliveryType" FROM "exams" WHERE "exams"."Id" = "exam_sessions"."ExamId"), 0),
+                "SupervisionModeSnapshot" = COALESCE((SELECT "SupervisionMode" FROM "exams" WHERE "exams"."Id" = "exam_sessions"."ExamId"), 0),
+                "QuizResultPolicySnapshot" = COALESCE((SELECT "QuizResultPolicy" FROM "exams" WHERE "exams"."Id" = "exam_sessions"."ExamId"), 0),
+                "ExamVersionSnapshot" = COALESCE((SELECT "Version" FROM "exams" WHERE "exams"."Id" = "exam_sessions"."ExamId"), 1)
+            WHERE "ExamVersionSnapshot" = 1
+              AND "DeliveryTypeSnapshot" = 0
+              AND "SupervisionModeSnapshot" = 0
+              AND "QuizResultPolicySnapshot" = 0;
+            """, cancellationToken);
         await EnsureQuizTablesAsync(db, cancellationToken);
+        await EnsureColumnAsync(db, "quiz_attempts", "ResultPolicySnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureQuizImportTablesAsync(db, cancellationToken);
         foreach (var table in new[] { "class_members", "session_participants", "submissions", "submission_files", "violations", "quiz_attempts", "quiz_answers" })
         {
             await EnsureColumnAsync(db, table, "SourceMode", "TEXT NOT NULL DEFAULT 'Lan'", cancellationToken);
@@ -222,6 +241,55 @@ public static class DbInitializer
                 CONSTRAINT "FK_quiz_answers_quiz_attempts_AttemptId" FOREIGN KEY ("AttemptId") REFERENCES "quiz_attempts" ("Id") ON DELETE CASCADE,
                 CONSTRAINT "FK_quiz_answers_quiz_questions_QuestionId" FOREIGN KEY ("QuestionId") REFERENCES "quiz_questions" ("Id") ON DELETE RESTRICT);
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_quiz_answers_AttemptId_QuestionId" ON "quiz_answers" ("AttemptId", "QuestionId");
+            """;
+        await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureQuizImportTablesAsync(AppDbContext db, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            CREATE TABLE IF NOT EXISTS "quiz_import_sources" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_import_sources" PRIMARY KEY,
+                "ExamId" TEXT NOT NULL, "ExamVersion" INTEGER NOT NULL,
+                "OriginalName" TEXT NOT NULL, "MimeType" TEXT NOT NULL,
+                "SizeBytes" INTEGER NOT NULL, "Sha256" TEXT NOT NULL,
+                "RelativePath" TEXT NOT NULL, "Status" TEXT NOT NULL,
+                "CreatedBy" TEXT NOT NULL, "ImportedAtUtc" TEXT NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL,
+                CONSTRAINT "FK_quiz_import_sources_exams_ExamId" FOREIGN KEY ("ExamId") REFERENCES "exams" ("Id") ON DELETE CASCADE);
+            DELETE FROM "quiz_import_sources"
+            WHERE "rowid" IN (
+                SELECT "rowid"
+                FROM (
+                    SELECT "rowid",
+                           ROW_NUMBER() OVER (
+                               PARTITION BY "ExamId", "ExamVersion"
+                               ORDER BY CASE WHEN "Status" = 'Committed' THEN 0 ELSE 1 END,
+                                        "ImportedAtUtc" DESC,
+                                        "UpdatedAtUtc" DESC,
+                                        "Id" DESC
+                           ) AS "duplicate_rank"
+                    FROM "quiz_import_sources"
+                )
+                WHERE "duplicate_rank" > 1
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_quiz_import_sources_ExamId_ExamVersion"
+                ON "quiz_import_sources" ("ExamId", "ExamVersion");
+
+            CREATE TABLE IF NOT EXISTS "quiz_import_previews" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_import_previews" PRIMARY KEY,
+                "TokenHash" TEXT NOT NULL, "ExamId" TEXT NOT NULL, "ExamVersion" INTEGER NOT NULL,
+                "TeacherId" TEXT NOT NULL, "ExamRowVersion" TEXT NOT NULL,
+                "OriginalName" TEXT NOT NULL, "MimeType" TEXT NOT NULL,
+                "SizeBytes" INTEGER NOT NULL, "Sha256" TEXT NOT NULL,
+                "TemporaryPath" TEXT NOT NULL, "DocumentJson" TEXT NOT NULL,
+                "WarningsJson" TEXT NOT NULL, "ExpiresAtUtc" TEXT NOT NULL,
+                "CommittedAtUtc" TEXT NULL,
+                "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_quiz_import_previews_TokenHash"
+                ON "quiz_import_previews" ("TokenHash");
+            CREATE INDEX IF NOT EXISTS "IX_quiz_import_previews_ExpiresAtUtc"
+                ON "quiz_import_previews" ("ExpiresAtUtc");
             """;
         await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
     }

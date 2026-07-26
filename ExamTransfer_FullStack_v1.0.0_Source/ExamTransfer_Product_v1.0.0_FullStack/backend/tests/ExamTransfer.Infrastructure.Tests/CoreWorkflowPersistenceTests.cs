@@ -229,6 +229,126 @@ public sealed class CoreWorkflowPersistenceTests
     }
 
     [Fact]
+    public async Task SessionHeartbeat_ReturnsTheServerTimestampPersistedAsLastSeen()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var exam = new Exam
+        {
+            Title = "Heartbeat",
+            Subject = "Clock",
+            DurationMinutes = 30,
+            Status = ExamStatus.Published
+        };
+        var session = new ExamSession
+        {
+            Exam = exam,
+            ExamId = exam.Id,
+            RoomCode = "CLOCK01",
+            Status = SessionStatus.InProgress,
+            StartedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1)
+        };
+        var participant = new SessionParticipant
+        {
+            Session = session,
+            SessionId = session.Id,
+            StudentCode = "CLOCK-STUDENT",
+            DisplayName = "Clock Student",
+            DeviceId = "clock-device",
+            MachineName = "clock-machine",
+            AppVersion = "1.0",
+            Status = ParticipantStatus.Approved,
+            ApprovedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1)
+        };
+        database.Context.ExamsSet.Add(exam);
+        database.Context.ExamSessionsSet.Add(session);
+        database.Context.SessionParticipantsSet.Add(participant);
+        await database.Context.SaveChangesAsync();
+
+        var before = DateTimeOffset.UtcNow;
+        var response = await Services(database.Context).Sessions.HeartbeatAsync(
+            session.Id,
+            participant.Id,
+            participant.DeviceId,
+            new HeartbeatRequest("Ready", before, 0),
+            CancellationToken.None);
+        var after = DateTimeOffset.UtcNow;
+
+        database.Context.ChangeTracker.Clear();
+        var persistedLastSeen = await database.Context.SessionParticipantsSet
+            .Where(x => x.Id == participant.Id)
+            .Select(x => x.LastSeenUtc)
+            .SingleAsync();
+        Assert.InRange(response.ServerNowUtc, before, after);
+        Assert.Equal(response.ServerNowUtc, persistedLastSeen);
+    }
+
+    [Fact]
+    public async Task SessionExtraTime_UpdatesExistingLocalQuizAttemptDeadline()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var startedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var exam = new Exam
+        {
+            Title = "Extra time",
+            Subject = "Quiz",
+            DurationMinutes = 30,
+            DeliveryType = ExamDeliveryType.MultipleChoice,
+            Status = ExamStatus.Published
+        };
+        var session = new ExamSession
+        {
+            Exam = exam,
+            ExamId = exam.Id,
+            RoomCode = "EXTIME01",
+            Status = SessionStatus.InProgress,
+            StartedAtUtc = startedAtUtc
+        };
+        var participant = new SessionParticipant
+        {
+            Session = session,
+            SessionId = session.Id,
+            StudentCode = "EXTRA-STUDENT",
+            DisplayName = "Extra Student",
+            DeviceId = "extra-device",
+            MachineName = "extra-machine",
+            AppVersion = "1.0",
+            Status = ParticipantStatus.Approved,
+            ApprovedAtUtc = startedAtUtc
+        };
+        var attempt = new QuizAttempt
+        {
+            Session = session,
+            SessionId = session.Id,
+            Participant = participant,
+            ParticipantId = participant.Id,
+            Status = QuizAttemptStatus.InProgress,
+            StartedAtUtc = startedAtUtc,
+            DeadlineUtc = startedAtUtc.AddMinutes(exam.DurationMinutes),
+            SnapshotJson = "[]"
+        };
+        database.Context.ExamsSet.Add(exam);
+        database.Context.ExamSessionsSet.Add(session);
+        database.Context.SessionParticipantsSet.Add(participant);
+        database.Context.QuizAttemptsSet.Add(attempt);
+        await database.Context.SaveChangesAsync();
+
+        var updated = await Services(database.Context).Sessions.AddExtraTimeAsync(
+            session.Id,
+            participant.Id,
+            new ExtraTimeRequest(10, "Hỗ trợ kỹ thuật", Guid.NewGuid()),
+            CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var persistedDeadline = await database.Context.QuizAttemptsSet
+            .Where(x => x.Id == attempt.Id)
+            .Select(x => x.DeadlineUtc)
+            .SingleAsync();
+        Assert.Equal(10, updated.ExtraTimeMinutes);
+        Assert.Equal(startedAtUtc.AddMinutes(40), updated.EffectiveDeadlineUtc);
+        Assert.Equal(updated.EffectiveDeadlineUtc, persistedDeadline);
+    }
+
+    [Fact]
     public async Task RealtimeFailure_AfterCommit_DoesNotTurnLocalTransitionIntoFailure()
     {
         await using var database = await FileDatabase.CreateAsync();
@@ -311,6 +431,244 @@ public sealed class CoreWorkflowPersistenceTests
         Assert.Equal(SessionStatus.Waiting, (await restarted.ExamSessionsSet.SingleAsync(x => x.Id == session.Summary.Id)).Status);
     }
 
+    [Fact]
+    public async Task ExamPolicies_AreTypedNormalizedAndImmutableAfterSession()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var fileRule = new FileRuleDto([".txt"], 1024 * 1024, 2 * 1024 * 1024, 2, false, false);
+
+        var invalid = await Assert.ThrowsAsync<ApiException>(() => services.Exams.CreateAsync(
+            new(null, "Invalid quiz", "Rules", null, 30, fileRule,
+                ExamDeliveryType.MultipleChoice,
+                QuizResultPolicy.Hidden,
+                SupervisionMode.None),
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.ValidationFailed, invalid.Code);
+
+        var fileExam = await services.Exams.CreateAsync(
+            new(null, "Essay", "Rules", null, 45, fileRule,
+                ExamDeliveryType.FileSubmission,
+                QuizResultPolicy.ShowAfterSubmission,
+                SupervisionMode.Standard),
+            CancellationToken.None);
+        Assert.Equal(QuizResultPolicy.Hidden, fileExam.QuizResultPolicy);
+        Assert.Equal(SupervisionMode.Standard, fileExam.SupervisionMode);
+
+        await services.Exams.PublishAsync(fileExam.Id, CancellationToken.None);
+        var createdSession = await services.Sessions.CreateAsync(
+            SessionRequest(fileExam.Id, null, "POLICY1"),
+            "host",
+            CancellationToken.None);
+        Assert.Equal(ExamDeliveryType.FileSubmission, createdSession.Summary.DeliveryType);
+        Assert.Equal(SupervisionMode.Standard, createdSession.Summary.SupervisionMode);
+        Assert.Equal(QuizResultPolicy.Hidden, createdSession.Summary.QuizResultPolicy);
+        Assert.Equal(fileExam.Version, createdSession.Summary.ExamVersion);
+
+        var immutable = await Assert.ThrowsAsync<ApiException>(() => services.Exams.UpdateAsync(
+            fileExam.Id,
+            new(
+                null,
+                fileExam.Title,
+                fileExam.Subject,
+                fileExam.Description,
+                fileExam.DurationMinutes,
+                fileRule,
+                (database.Context.ExamsSet.Single(x => x.Id == fileExam.Id)).RowVersion,
+                ExamDeliveryType.MultipleChoice,
+                QuizResultPolicy.Hidden,
+                SupervisionMode.Standard),
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.InvalidStateTransition, immutable.Code);
+    }
+
+    [Fact]
+    public async Task ExamDuration_IsEditableOnlyBeforePublishSessionOrAttempt_AndCloneRemainsEditable()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var rule = new FileRuleDto([".txt"], 1024 * 1024, 2 * 1024 * 1024, 2, false, false);
+        var draft = await services.Exams.CreateAsync(
+            new(null, "Duration", "Rules", null, 30, rule),
+            CancellationToken.None);
+
+        var draftUpdated = await services.Exams.UpdateAsync(
+            draft.Id,
+            new(null, draft.Title, draft.Subject, draft.Description, 45, rule, draft.RowVersion),
+            CancellationToken.None);
+        Assert.Equal(45, draftUpdated.DurationMinutes);
+
+        var published = await services.Exams.PublishAsync(draft.Id, CancellationToken.None);
+        var publishedError = await Assert.ThrowsAsync<ApiException>(() => services.Exams.UpdateAsync(
+            published.Id,
+            new(null, published.Title, published.Subject, published.Description, 50, rule, published.RowVersion),
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.ExamDurationImmutable, publishedError.Code);
+        Assert.Equal(409, publishedError.StatusCode);
+        Assert.Contains("nhân bản", publishedError.Message, StringComparison.OrdinalIgnoreCase);
+
+        var titleUpdated = await services.Exams.UpdateAsync(
+            published.Id,
+            new(null, "Duration renamed", published.Subject, published.Description, 45, rule, published.RowVersion),
+            CancellationToken.None);
+        Assert.Equal("Duration renamed", titleUpdated.Title);
+        Assert.Equal(45, titleUpdated.DurationMinutes);
+
+        var cloned = await services.Exams.CloneAsync(titleUpdated.Id, CancellationToken.None);
+        Assert.Equal(ExamStatus.Draft, cloned.Status);
+        var cloneUpdated = await services.Exams.UpdateAsync(
+            cloned.Id,
+            new(null, cloned.Title, cloned.Subject, cloned.Description, 75, rule, cloned.RowVersion),
+            CancellationToken.None);
+        Assert.Equal(75, cloneUpdated.DurationMinutes);
+
+        var sessionDraft = await services.Exams.CreateAsync(
+            new(null, "Session duration", "Rules", null, 30, rule),
+            CancellationToken.None);
+        database.Context.ExamSessionsSet.Add(new ExamSession
+        {
+            ExamId = sessionDraft.Id,
+            RoomCode = "DURSESS",
+            HostDeviceId = "host",
+            Status = SessionStatus.Draft
+        });
+        await database.Context.SaveChangesAsync();
+        var sessionError = await Assert.ThrowsAsync<ApiException>(() => services.Exams.UpdateAsync(
+            sessionDraft.Id,
+            new(null, sessionDraft.Title, sessionDraft.Subject, sessionDraft.Description, 31, rule,
+                database.Context.ExamsSet.Single(x => x.Id == sessionDraft.Id).RowVersion),
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.ExamDurationImmutable, sessionError.Code);
+
+        var attemptDraft = await services.Exams.CreateAsync(
+            new(null, "Attempt duration", "Rules", null, 30, rule,
+                ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.Standard),
+            CancellationToken.None);
+        var attemptSession = new ExamSession
+        {
+            ExamId = attemptDraft.Id,
+            RoomCode = "DURATT",
+            HostDeviceId = "host",
+            Status = SessionStatus.InProgress
+        };
+        var participant = new SessionParticipant
+        {
+            Session = attemptSession,
+            StudentCode = "SV-DURATION",
+            DisplayName = "Duration Student",
+            DeviceId = "device",
+            MachineName = "machine",
+            AppVersion = "1",
+            Status = ParticipantStatus.Approved
+        };
+        database.Context.QuizAttemptsSet.Add(new QuizAttempt
+        {
+            Session = attemptSession,
+            Participant = participant,
+            ExamVersion = 1,
+            StartedAtUtc = DateTimeOffset.UtcNow,
+            DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+            MaxScore = 1
+        });
+        await database.Context.SaveChangesAsync();
+        var attemptError = await Assert.ThrowsAsync<ApiException>(() => services.Exams.UpdateAsync(
+            attemptDraft.Id,
+            new(null, attemptDraft.Title, attemptDraft.Subject, attemptDraft.Description, 31, rule,
+                database.Context.ExamsSet.Single(x => x.Id == attemptDraft.Id).RowVersion,
+                ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.Standard),
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.ExamDurationImmutable, attemptError.Code);
+    }
+
+    [Fact]
+    public async Task CloneMultipleChoice_CopiesIndependentSourceAndEnqueuesCompleteOrderedCloudGraph()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var db = database.Context;
+        var storageRoot = Path.Combine(Path.GetDirectoryName(db.Database.GetDbConnection().DataSource)!, "storage");
+        var paths = new TestStoragePaths(storageRoot);
+        paths.EnsureCreated();
+        var sourceExam = new Exam
+        {
+            Title = "Quiz clone source",
+            Subject = "Math",
+            DurationMinutes = 40,
+            DeliveryType = ExamDeliveryType.MultipleChoice,
+            QuizResultPolicy = QuizResultPolicy.ShowAfterSubmission,
+            SupervisionMode = SupervisionMode.Standard,
+            Status = ExamStatus.Published,
+            Version = 3
+        };
+        var question = new QuizQuestion
+        {
+            Version = 3,
+            Order = 1,
+            Text = "2 + 2?",
+            Points = 1,
+            Multiple = false
+        };
+        question.Choices.Add(new QuizChoice { Order = 1, Text = "4", IsCorrect = true });
+        sourceExam.QuizQuestions.Add(question);
+        var sourcePath = Path.Combine(paths.ExamVersionRoot(sourceExam.Id, sourceExam.Version), "quiz-source", "original.docx");
+        Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+        await File.WriteAllTextAsync(sourcePath, "quiz source");
+        var sourceDocument = new QuizImportSource
+        {
+            ExamVersion = 3,
+            OriginalName = "source.docx",
+            MimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            SizeBytes = new FileInfo(sourcePath).Length,
+            Sha256 = "abc123",
+            RelativePath = Path.GetRelativePath(paths.RootPath, sourcePath),
+            Status = "Committed",
+            CreatedBy = Guid.NewGuid(),
+            ImportedAtUtc = DateTimeOffset.UtcNow
+        };
+        sourceExam.QuizImportSources.Add(sourceDocument);
+        db.ExamsSet.Add(sourceExam);
+        await db.SaveChangesAsync();
+
+        var outbox = new RecordingOutbox();
+        var service = new ExamService(
+            db,
+            paths,
+            new ChunkStorage(),
+            new AuditService(db, new HttpContextAccessor()),
+            outbox,
+            new NoOpRealtimePublisher(),
+            Options.Create(new ExamTransferOptions()),
+            NullLogger<ExamService>.Instance);
+
+        var clone = await service.CloneAsync(sourceExam.Id, CancellationToken.None);
+
+        Assert.Equal(ExamStatus.Draft, clone.Status);
+        Assert.Equal(sourceExam.DeliveryType, clone.DeliveryType);
+        Assert.Equal(sourceExam.QuizResultPolicy, clone.QuizResultPolicy);
+        Assert.Equal(sourceExam.SupervisionMode, clone.SupervisionMode);
+        Assert.Equal(sourceExam.DurationMinutes, clone.DurationMinutes);
+        var clonedEntity = await db.ExamsSet.AsNoTracking()
+            .Include(x => x.QuizQuestions).ThenInclude(x => x.Choices)
+            .Include(x => x.QuizImportSources)
+            .SingleAsync(x => x.Id == clone.Id);
+        var clonedSource = Assert.Single(clonedEntity.QuizImportSources);
+        var clonedPath = Path.GetFullPath(Path.Combine(paths.RootPath, clonedSource.RelativePath));
+        Assert.NotEqual(sourceDocument.Id, clonedSource.Id);
+        Assert.NotEqual(Path.GetFullPath(sourcePath), clonedPath);
+        Assert.True(File.Exists(clonedPath));
+        Assert.Single(clonedEntity.QuizQuestions);
+        Assert.Single(clonedEntity.QuizQuestions.Single().Choices);
+
+        Assert.Equal(
+            ["exams", "quiz_questions", "quiz_choices", "quiz_import_sources"],
+            outbox.Calls.Select(x => x.EntityType).ToArray());
+        Assert.Equal(clone.Id.ToString(), outbox.Calls[0].EntityId);
+        Assert.Equal(clonedSource.Id.ToString(), outbox.Calls[3].EntityId);
+        Assert.Equal(clonedPath, outbox.Calls[3].FilePath);
+        Assert.False(await db.ExamSessionsSet.AnyAsync(x => x.ExamId == clone.Id));
+        Assert.False(await db.QuizAttemptsSet.AnyAsync(x => x.Session.ExamId == clone.Id));
+        Assert.False(await db.SubmissionsSet.AnyAsync(x => x.Session.ExamId == clone.Id));
+    }
+
     private static CreateExamRequest ExamRequest(Guid? classId, bool requireFile) => new(
         classId,
         "Core workflow exam",
@@ -343,6 +701,30 @@ public sealed class CoreWorkflowPersistenceTests
     }
 
     private sealed record ServiceSet(ClassService Classes, ExamService Exams, SessionService Sessions);
+
+    private sealed class RecordingOutbox : IOutboxService
+    {
+        public List<OutboxCall> Calls { get; } = [];
+
+        public Task EnqueueAsync(
+            string entityType,
+            string entityId,
+            string operation,
+            object payload,
+            string? filePath = null,
+            CancellationToken cancellationToken = default)
+        {
+            Calls.Add(new(entityType, entityId, operation, payload, filePath));
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed record OutboxCall(
+        string EntityType,
+        string EntityId,
+        string Operation,
+        object Payload,
+        string? FilePath);
 
     private sealed class NoOpRealtimePublisher : IRealtimePublisher
     {

@@ -14,6 +14,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<ClassEnrollmentRequest> ClassEnrollmentRequestsSet => Set<ClassEnrollmentRequest>();
     public DbSet<Exam> ExamsSet => Set<Exam>();
     public DbSet<ExamFile> ExamFilesSet => Set<ExamFile>();
+    public DbSet<QuizImportSource> QuizImportSourcesSet => Set<QuizImportSource>();
+    public DbSet<QuizImportPreview> QuizImportPreviewsSet => Set<QuizImportPreview>();
     public DbSet<QuizQuestion> QuizQuestionsSet => Set<QuizQuestion>();
     public DbSet<QuizChoice> QuizChoicesSet => Set<QuizChoice>();
     public DbSet<QuizAttempt> QuizAttemptsSet => Set<QuizAttempt>();
@@ -102,6 +104,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureEntity<ClassEnrollmentRequest>(modelBuilder, "class_enrollment_requests");
         ConfigureEntity<Exam>(modelBuilder, "exams");
         ConfigureEntity<ExamFile>(modelBuilder, "exam_files");
+        ConfigureEntity<QuizImportSource>(modelBuilder, "quiz_import_sources");
+        ConfigureEntity<QuizImportPreview>(modelBuilder, "quiz_import_previews");
         ConfigureEntity<QuizQuestion>(modelBuilder, "quiz_questions");
         ConfigureEntity<QuizChoice>(modelBuilder, "quiz_choices");
         ConfigureEntity<QuizAttempt>(modelBuilder, "quiz_attempts");
@@ -145,6 +149,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<ClassEnrollmentRequest>().HasIndex(x => new { x.ClassId, x.Status, x.RequestedAtUtc });
         modelBuilder.Entity<Exam>().HasIndex(x => new { x.Status, x.ClassId });
         modelBuilder.Entity<ExamFile>().HasIndex(x => new { x.ExamId, x.Version, x.StoredName }).IsUnique();
+        modelBuilder.Entity<QuizImportSource>().HasIndex(x => new { x.ExamId, x.ExamVersion }).IsUnique();
+        modelBuilder.Entity<QuizImportPreview>().HasIndex(x => x.TokenHash).IsUnique();
+        modelBuilder.Entity<QuizImportPreview>().HasIndex(x => x.ExpiresAtUtc);
         modelBuilder.Entity<QuizQuestion>().HasIndex(x => new { x.ExamId, x.Version, x.Order }).IsUnique();
         modelBuilder.Entity<QuizChoice>().HasIndex(x => new { x.QuestionId, x.Order }).IsUnique();
         modelBuilder.Entity<QuizAttempt>().HasIndex(x => new { x.SessionId, x.ParticipantId }).IsUnique();
@@ -176,6 +183,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<ClassMember>().HasOne(x => x.Class).WithMany(x => x.Members).HasForeignKey(x => x.ClassId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<Exam>().HasOne(x => x.Class).WithMany().HasForeignKey(x => x.ClassId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<ExamFile>().HasOne(x => x.Exam).WithMany(x => x.Files).HasForeignKey(x => x.ExamId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<QuizImportSource>().HasOne(x => x.Exam).WithMany(x => x.QuizImportSources).HasForeignKey(x => x.ExamId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<QuizQuestion>().HasOne(x => x.Exam).WithMany(x => x.QuizQuestions).HasForeignKey(x => x.ExamId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<QuizChoice>().HasOne(x => x.Question).WithMany(x => x.Choices).HasForeignKey(x => x.QuestionId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<QuizAttempt>().HasOne(x => x.Session).WithMany().HasForeignKey(x => x.SessionId).OnDelete(DeleteBehavior.Restrict);

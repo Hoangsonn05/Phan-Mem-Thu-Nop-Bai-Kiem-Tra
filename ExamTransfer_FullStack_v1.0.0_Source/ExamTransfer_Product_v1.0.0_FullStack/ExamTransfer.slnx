@@ -10,5 +10,6 @@
   </Folder>
   <Folder Name="/frontend/">
     <Project Path="frontend/src/ExamTransfer.Desktop/ExamTransfer.Desktop.csproj" />
+    <Project Path="frontend/tests/ExamTransfer.Desktop.Tests/ExamTransfer.Desktop.Tests.csproj" />
   </Folder>
 </Solution>

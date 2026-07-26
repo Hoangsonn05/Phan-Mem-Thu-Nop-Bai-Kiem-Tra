@@ -6,6 +6,8 @@ public enum ClassAccessMode { Private, Public }
 public enum SessionAccessMode { LanOnly, PublicCloud }
 public enum ExamStatus { Draft, Published, Archived, Cancelled }
 public enum ExamDeliveryType { FileSubmission, MultipleChoice }
+public enum QuizResultPolicy { Hidden, ShowAfterSubmission }
+public enum SupervisionMode { None, Standard }
 public enum QuizAttemptStatus { InProgress, Finalized }
 public enum SessionStatus { Draft, Waiting, Distributing, InProgress, Paused, Collecting, Finished, Archived, Cancelled }
 public enum ParticipantStatus { NotConnected, Connected, PendingApproval, Approved, Rejected, Disconnected }

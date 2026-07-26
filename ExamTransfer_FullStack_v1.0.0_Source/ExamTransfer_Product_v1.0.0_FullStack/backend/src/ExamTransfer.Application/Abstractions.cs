@@ -282,7 +282,14 @@ public sealed record CloudParticipantMutationResult(
     string? ResubmitReason,
     long CloudVersion,
     DateTimeOffset UpdatedAtUtc,
-    DateTimeOffset? EffectiveDeadlineUtc = null);
+    DateTimeOffset? EffectiveDeadlineUtc = null,
+    Guid? AttemptId = null,
+    string? AttemptStatus = null,
+    DateTimeOffset? AttemptDeadlineUtc = null,
+    long? AttemptRevision = null,
+    DateTimeOffset? ServerNowUtc = null,
+    long? Revision = null,
+    Guid? RequestId = null);
 
 public sealed record CloudBulkParticipantMutationResult(
     int ApprovedCount,
@@ -386,7 +393,7 @@ public interface ISessionService
     Task<IReadOnlyList<ParticipantDto>> BulkApproveAsync(Guid sessionId, BulkApproveRequest request, CancellationToken cancellationToken);
     Task<ParticipantDto> AddExtraTimeAsync(Guid sessionId, Guid participantId, ExtraTimeRequest request, CancellationToken cancellationToken);
     Task<MessageDto> SendMessageAsync(Guid sessionId, SendMessageRequest request, CancellationToken cancellationToken);
-    Task HeartbeatAsync(Guid sessionId, Guid participantId, string deviceId, HeartbeatRequest request, CancellationToken cancellationToken);
+    Task<HeartbeatResponse> HeartbeatAsync(Guid sessionId, Guid participantId, string deviceId, HeartbeatRequest request, CancellationToken cancellationToken);
     Task<ParticipantDto> GetParticipantAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken);
 }
 
@@ -460,7 +467,10 @@ public interface ISystemService
 public interface IQuizService
 {
     Task<QuizImportResultDto> ImportAsync(Guid examId, QuizImportFileRequest request, CancellationToken cancellationToken);
+    Task<QuizImportPreviewDto> PreviewImportAsync(Guid examId, Guid teacherId, QuizImportPreviewRequest request, CancellationToken cancellationToken);
+    Task<QuizImportResultDto> CommitImportAsync(Guid examId, Guid teacherId, QuizImportCommitRequest request, CancellationToken cancellationToken);
     Task<IReadOnlyList<QuizAttemptDto>> ListAttemptsForSessionAsync(Guid sessionId, CancellationToken cancellationToken);
+    Task<QuizAttemptDto?> GetAttemptAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken);
     Task<QuizAttemptDto> StartOrGetAttemptAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken);
     Task<SyncQuizAnswersResultDto> SyncAnswersAsync(Guid attemptId, Guid participantId, SyncQuizAnswersRequest request, CancellationToken cancellationToken);
     Task<QuizAttemptDto> FinalizeAsync(Guid attemptId, Guid participantId, FinalizeQuizAttemptRequest request, CancellationToken cancellationToken);

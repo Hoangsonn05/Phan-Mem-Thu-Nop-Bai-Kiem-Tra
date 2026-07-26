@@ -9,6 +9,8 @@ namespace ExamTransfer.Desktop.ViewModels;
 public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, IDisposable
 {
     private readonly IBackendClient api;
+    private readonly IServerClock serverClock;
+    private readonly ICountdownTicker ticker;
     private readonly CancellationTokenSource disposeCts = new();
     private string status = "Chưa có dữ liệu tổng quan";
     private bool isBusy;
@@ -17,10 +19,19 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
     private bool disposed;
 
     public DashboardViewModel(IBackendClient api)
+        : this(api, AppServices.ServerClock, AppServices.CountdownTickers.Create(TimeSpan.FromSeconds(1)))
     {
-        this.api = api;
+    }
+
+    public DashboardViewModel(IBackendClient api, IServerClock serverClock, ICountdownTicker ticker)
+    {
+        this.api = api ?? throw new ArgumentNullException(nameof(api));
+        this.serverClock = serverClock ?? throw new ArgumentNullException(nameof(serverClock));
+        this.ticker = ticker ?? throw new ArgumentNullException(nameof(ticker));
         RefreshCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
         ShowEmptyMetrics();
+        ticker.Tick += OnTick;
+        ticker.Start();
     }
 
     public ObservableCollection<MetricCard> Metrics { get; } = new();
@@ -76,7 +87,14 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
 
     public void Dispose()
     {
+        if (disposed)
+        {
+            return;
+        }
+
         disposed = true;
+        ticker.Tick -= OnTick;
+        ticker.Dispose();
         disposeCts.Cancel();
         disposeCts.Dispose();
     }
@@ -144,6 +162,11 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
         Activities.Clear();
         Raise(nameof(HasActivities));
 
+        if (data.RecentSessions.FirstOrDefault() is { } synchronizedSession)
+        {
+            serverClock.Synchronize(synchronizedSession.ServerNowUtc);
+        }
+
         ActiveSession = data.RecentSessions.FirstOrDefault() is { } session
             ? new ActiveSessionCard(
                 session.Title,
@@ -152,7 +175,8 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
                 session.Counts.Total,
                 session.Counts.Connected,
                 session.Counts.Submitted,
-                FormatRemaining(session.EffectiveDeadlineUtc, session.ServerNowUtc))
+                session.EffectiveDeadlineUtc,
+                serverClock)
             : null;
         Raise(nameof(ActiveSession));
         Raise(nameof(HasActiveSession));
@@ -208,28 +232,63 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
         return dispatcher.InvokeAsync(action).Task;
     }
 
-    private static string FormatRemaining(DateTimeOffset? deadline, DateTimeOffset now)
+    private void OnTick(object? sender, EventArgs e)
     {
-        if (deadline is null)
+        if (disposed)
         {
-            return "--:--:--";
+            return;
         }
 
-        var remaining = deadline.Value - now;
-        if (remaining < TimeSpan.Zero)
-        {
-            remaining = TimeSpan.Zero;
-        }
-
-        return $"{(int)remaining.TotalHours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}";
+        ActiveSession?.RefreshTime();
     }
 }
 
 public sealed record MetricCard(string Title, string Value, string Subtitle, string Glyph, string Tone, string Trend);
 public sealed record ActivityItem(string Time, string Title, string Description, string Tone, string Glyph);
 public sealed record AlertItem(string Title, string Description, string Tone, string Glyph);
-public sealed record ActiveSessionCard(string Title, string RoomCode, string Status, int Total, int Connected, int Submitted, string TimeLeft)
+public sealed class ActiveSessionCard : ObservableObject
 {
+    private readonly IServerClock serverClock;
+    private DateTimeOffset? effectiveDeadlineUtc;
+    private string timeLeft;
+
+    public ActiveSessionCard(
+        string title,
+        string roomCode,
+        string status,
+        int total,
+        int connected,
+        int submitted,
+        DateTimeOffset? effectiveDeadlineUtc,
+        IServerClock serverClock)
+    {
+        Title = title;
+        RoomCode = roomCode;
+        Status = status;
+        Total = total;
+        Connected = connected;
+        Submitted = submitted;
+        this.effectiveDeadlineUtc = effectiveDeadlineUtc;
+        this.serverClock = serverClock;
+        timeLeft = ServerCountdown.Format(ServerCountdown.Remaining(serverClock, effectiveDeadlineUtc));
+    }
+
+    public string Title { get; }
+    public string RoomCode { get; }
+    public string Status { get; }
+    public int Total { get; }
+    public int Connected { get; }
+    public int Submitted { get; }
+    public string TimeLeft { get => timeLeft; private set => Set(ref timeLeft, value); }
     public double ConnectedPercent => Total <= 0 ? 0 : Connected * 100d / Total;
     public double SubmittedPercent => Total <= 0 ? 0 : Submitted * 100d / Total;
+
+    public void UpdateDeadline(DateTimeOffset? deadlineUtc)
+    {
+        effectiveDeadlineUtc = deadlineUtc;
+        RefreshTime();
+    }
+
+    public void RefreshTime() =>
+        TimeLeft = ServerCountdown.Format(ServerCountdown.Remaining(serverClock, effectiveDeadlineUtc));
 }

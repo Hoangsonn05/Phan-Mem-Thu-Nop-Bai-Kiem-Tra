@@ -60,12 +60,15 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                 Entity = x,
                 FileCount = x.Files.Count(f =>
                     f.TransferStatus == TransferStatus.Completed
-                    && f.Version == x.Version)
+                    && f.Version == x.Version),
+                HasCommittedQuizSource = x.QuizImportSources.Any(source =>
+                    source.ExamVersion == x.Version && source.Status == "Committed"),
+                QuizQuestionCount = x.QuizQuestions.Count(question => question.Version == x.Version)
             })
             .ToListAsync(cancellationToken);
         var items = rows
             .OrderBy(x => position[x.Entity.Id])
-            .Select(x => x.Entity.ToSummary(x.FileCount))
+            .Select(x => x.Entity.ToSummary(x.FileCount, x.HasCommittedQuizSource, x.QuizQuestionCount))
             .ToList();
 
         return new(items, page, pageSize, total);
@@ -73,7 +76,11 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
     public async Task<ExamDetailDto> GetAsync(Guid id, CancellationToken cancellationToken)
     {
-        var exam = await db.ExamsSet.AsNoTracking().Include(x => x.Files).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+        var exam = await db.ExamsSet.AsNoTracking()
+            .Include(x => x.Files)
+            .Include(x => x.QuizImportSources)
+            .Include(x => x.QuizQuestions)
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
         return ToDetail(exam);
     }
@@ -83,12 +90,15 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         return await InTransactionAsync(async () =>
         {
             Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
+            var policy = ValidateExamPolicy(request.DeliveryType, request.QuizResultPolicy, request.SupervisionMode);
             if (request.ClassId.HasValue && !await db.ClassesSet.AnyAsync(x => x.Id == request.ClassId, cancellationToken))
                 throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
             var exam = new Exam
             {
                 ClassId = request.ClassId, Title = request.Title.Trim(), Subject = request.Subject.Trim(), Description = request.Description?.Trim(),
-                DurationMinutes = request.DurationMinutes, FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions), Status = ExamStatus.Draft, Version = 1
+                DurationMinutes = request.DurationMinutes, DeliveryType = request.DeliveryType,
+                QuizResultPolicy = policy.ResultPolicy, SupervisionMode = policy.SupervisionMode,
+                FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions), Status = ExamStatus.Draft, Version = 1
             };
             db.ExamsSet.Add(exam); await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamCreated", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
@@ -102,15 +112,32 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         var detail = await InTransactionAsync(async () =>
         {
             Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
-            var exam = await db.ExamsSet.Include(x => x.Files).Include(x => x.QuizQuestions).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+            var policy = ValidateExamPolicy(request.DeliveryType, request.QuizResultPolicy, request.SupervisionMode);
+            var exam = await db.ExamsSet.Include(x => x.Files).Include(x => x.QuizQuestions).Include(x => x.QuizImportSources).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
             EnsureRowVersion(exam.RowVersion, request.RowVersion);
             if (exam.Status == ExamStatus.Archived) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể sửa bài kiểm tra đã lưu trữ.", 409);
             if (request.ClassId.HasValue && !await db.ClassesSet.AnyAsync(x => x.Id == request.ClassId.Value, cancellationToken))
                 throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
+            var hasSession = await db.ExamSessionsSet.AnyAsync(x => x.ExamId == exam.Id, cancellationToken);
+            var hasAttempt = await db.QuizAttemptsSet.AnyAsync(x => x.Session.ExamId == exam.Id, cancellationToken);
+            if ((exam.Status == ExamStatus.Published || hasSession || hasAttempt)
+                && exam.DurationMinutes != request.DurationMinutes)
+                throw new ApiException(
+                    ErrorCodes.ExamDurationImmutable,
+                    "Không thể đổi thời lượng sau khi phát hành/có phiên/có attempt; hãy nhân bản bài kiểm tra để đặt thời lượng mới.",
+                    409);
+            if ((exam.Status == ExamStatus.Published || hasSession || hasAttempt)
+                && (exam.DeliveryType != request.DeliveryType
+                    || exam.QuizResultPolicy != policy.ResultPolicy
+                    || exam.SupervisionMode != policy.SupervisionMode))
+                throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể đổi loại bài, chính sách điểm hoặc giám sát sau khi phát hành/có phiên/có attempt; hãy nhân bản bài kiểm tra.", 409);
             var before = new { exam.Title, exam.Subject, exam.Description, exam.DurationMinutes, exam.FileRuleJson, exam.Version };
             exam.ClassId = request.ClassId; exam.Title = request.Title.Trim(); exam.Subject = request.Subject.Trim(); exam.Description = request.Description?.Trim();
             exam.DurationMinutes = request.DurationMinutes; exam.FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions);
+            exam.DeliveryType = request.DeliveryType;
+            exam.QuizResultPolicy = policy.ResultPolicy;
+            exam.SupervisionMode = policy.SupervisionMode;
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamUpdated", nameof(Exam), exam.Id.ToString(), null, before, ToAudit(exam), cancellationToken);
             await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
@@ -124,13 +151,17 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
     {
         var detail = await InTransactionAsync(async () =>
         {
-            var exam = await db.ExamsSet.Include(x => x.Files).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+            var exam = await db.ExamsSet.Include(x => x.Files).Include(x => x.QuizQuestions).Include(x => x.QuizImportSources).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
             if (exam.Status is ExamStatus.Archived or ExamStatus.Cancelled) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể phát hành bài kiểm tra ở trạng thái hiện tại.", 409);
             var rule = exam.ParseFileRule();
             var completed = exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).ToList();
             if (exam.DeliveryType == ExamDeliveryType.FileSubmission && rule.RequireAtLeastOneFile && completed.Count == 0) throw new ApiException(ErrorCodes.ValidationFailed, "Bài kiểm tra yêu cầu ít nhất một file đề.", 422);
-            if (exam.DeliveryType == ExamDeliveryType.MultipleChoice && !exam.QuizQuestions.Any(x => x.Version == exam.Version)) throw new ApiException(ErrorCodes.ValidationFailed, "Đề trắc nghiệm phải có ít nhất một câu hỏi.", 422);
+            if (exam.DeliveryType == ExamDeliveryType.MultipleChoice
+                && (exam.SupervisionMode != SupervisionMode.Standard
+                    || !exam.QuizQuestions.Any(x => x.Version == exam.Version)
+                    || !exam.QuizImportSources.Any(x => x.ExamVersion == exam.Version && x.Status == "Committed")))
+                throw new ApiException(ErrorCodes.ValidationFailed, "Đề trắc nghiệm phải có giám sát chuẩn, nguồn DOCX/PDF đã commit và ít nhất một câu hỏi.", 422);
             exam.Status = ExamStatus.Published;
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamPublished", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
@@ -151,13 +182,36 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
     public async Task<ExamDetailDto> CloneAsync(Guid id, CancellationToken cancellationToken)
     {
-        var source = await db.ExamsSet.AsNoTracking().Include(x => x.Files).Include(x => x.QuizQuestions).ThenInclude(x => x.Choices).FirstOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
-        var clone = new Exam { ClassId = source.ClassId, Title = source.Title + " - Bản sao", Subject = source.Subject, Description = source.Description, DurationMinutes = source.DurationMinutes, DeliveryType = source.DeliveryType, FileRuleJson = source.FileRuleJson, Status = ExamStatus.Draft, Version = 1 };
+        var source = await db.ExamsSet.AsNoTracking().Include(x => x.Files).Include(x => x.QuizImportSources).Include(x => x.QuizQuestions).ThenInclude(x => x.Choices).FirstOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
+        var clone = new Exam { ClassId = source.ClassId, Title = source.Title + " - Bản sao", Subject = source.Subject, Description = source.Description, DurationMinutes = source.DurationMinutes, DeliveryType = source.DeliveryType, QuizResultPolicy = source.QuizResultPolicy, SupervisionMode = source.SupervisionMode, FileRuleJson = source.FileRuleJson, Status = ExamStatus.Draft, Version = 1 };
         foreach (var sourceQuestion in source.QuizQuestions.Where(x => x.Version == source.Version).OrderBy(x => x.Order))
         {
             var question = new QuizQuestion { Version = 1, Order = sourceQuestion.Order, Text = sourceQuestion.Text, Points = sourceQuestion.Points, Multiple = sourceQuestion.Multiple };
             foreach (var choice in sourceQuestion.Choices.OrderBy(x => x.Order)) question.Choices.Add(new QuizChoice { Order = choice.Order, Text = choice.Text, IsCorrect = choice.IsCorrect });
             clone.QuizQuestions.Add(question);
+        }
+        foreach (var sourceDocument in source.QuizImportSources.Where(x => x.ExamVersion == source.Version && x.Status == "Committed"))
+        {
+            var sourcePath = Path.GetFullPath(Path.Combine(paths.RootPath, sourceDocument.RelativePath));
+            EnsureInsideRoot(sourcePath);
+            if (!File.Exists(sourcePath))
+                throw new ApiException(ErrorCodes.NotFound, "File nguồn trắc nghiệm không tồn tại; không thể nhân bản an toàn.", 409);
+            var destinationRoot = Path.Combine(paths.ExamVersionRoot(clone.Id, 1), "quiz-source");
+            Directory.CreateDirectory(destinationRoot);
+            var destinationPath = Path.Combine(destinationRoot, $"{Guid.NewGuid():N}{Path.GetExtension(sourceDocument.OriginalName).ToLowerInvariant()}");
+            await CopyFileAsync(sourcePath, destinationPath, cancellationToken);
+            clone.QuizImportSources.Add(new QuizImportSource
+            {
+                ExamVersion = 1,
+                OriginalName = sourceDocument.OriginalName,
+                MimeType = sourceDocument.MimeType,
+                SizeBytes = sourceDocument.SizeBytes,
+                Sha256 = sourceDocument.Sha256,
+                RelativePath = Path.GetRelativePath(paths.RootPath, destinationPath),
+                Status = "Committed",
+                CreatedBy = sourceDocument.CreatedBy,
+                ImportedAtUtc = DateTimeOffset.UtcNow
+            });
         }
         db.ExamsSet.Add(clone);
         await db.SaveChangesAsync(cancellationToken);
@@ -167,7 +221,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             clone.Id.ToString(),
             null,
             new { sourceId = source.Id },
-            clone,
+            ToAudit(clone),
             cancellationToken);
         await outbox.EnqueueAsync(
             "exams",
@@ -175,6 +229,36 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             "upsert",
             ToCloud(clone),
             cancellationToken: cancellationToken);
+        foreach (var question in clone.QuizQuestions.OrderBy(x => x.Order))
+        {
+            await outbox.EnqueueAsync(
+                "quiz_questions",
+                question.Id.ToString(),
+                "upsert",
+                QuizQuestionToCloud(question),
+                cancellationToken: cancellationToken);
+            foreach (var choice in question.Choices.OrderBy(x => x.Order))
+                await outbox.EnqueueAsync(
+                    "quiz_choices",
+                    choice.Id.ToString(),
+                    "upsert",
+                    QuizChoiceToCloud(choice),
+                    cancellationToken: cancellationToken);
+        }
+        foreach (var sourceDocument in clone.QuizImportSources
+                     .Where(x => x.ExamVersion == clone.Version && x.Status == "Committed")
+                     .OrderBy(x => x.Id))
+        {
+            var sourcePath = Path.GetFullPath(Path.Combine(paths.RootPath, sourceDocument.RelativePath));
+            EnsureInsideRoot(sourcePath);
+            await outbox.EnqueueAsync(
+                "quiz_import_sources",
+                sourceDocument.Id.ToString(),
+                "upsert",
+                QuizSourceToCloud(sourceDocument),
+                sourcePath,
+                cancellationToken);
+        }
         return ToDetail(clone);
     }
 
@@ -577,7 +661,19 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         }
     }
 
-    private ExamDetailDto ToDetail(Exam exam) => exam.ToDetail(exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).Select(ToFileDto).ToList());
+    private ExamDetailDto ToDetail(Exam exam)
+    {
+        var source = exam.QuizImportSources
+            .Where(x => x.ExamVersion == exam.Version && x.Status == "Committed")
+            .OrderByDescending(x => x.ImportedAtUtc)
+            .Select(x => new QuizImportSourceDto(x.Id, x.OriginalName, x.MimeType, x.SizeBytes,
+                x.Sha256, x.ExamVersion, x.Status, x.ImportedAtUtc))
+            .FirstOrDefault();
+        return exam.ToDetail(
+            exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).Select(ToFileDto).ToList(),
+            source,
+            exam.QuizQuestions.Count(x => x.Version == exam.Version));
+    }
     private static FileDescriptorDto ToFileDto(ExamFile x) => new(x.Id, x.OriginalName, x.SizeBytes, x.Sha256, x.MimeType, $"/api/v1/exams/{x.ExamId}/files/{x.Id}/content");
     private static object ToAudit(Exam x) => new
     {
@@ -588,6 +684,8 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         description = x.Description,
         duration_minutes = x.DurationMinutes,
         delivery_type = x.DeliveryType.ToString(),
+        quiz_result_policy = x.QuizResultPolicy.ToString(),
+        supervision_mode = x.SupervisionMode.ToString(),
         file_rule_json = x.FileRuleJson,
         status = x.Status.ToString(),
         version = x.Version,
@@ -626,10 +724,52 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         description = x.Description,
         duration_minutes = x.DurationMinutes,
         delivery_type = x.DeliveryType.ToString(),
+        quiz_result_policy = x.QuizResultPolicy.ToString(),
+        supervision_mode = x.SupervisionMode.ToString(),
         file_rule_json = x.FileRuleJson,
         status = x.Status.ToString(),
         version = x.Version,
         created_by = x.CreatedBy,
+        created_at = x.CreatedAtUtc,
+        updated_at = x.UpdatedAtUtc
+    };
+
+    private static object QuizQuestionToCloud(QuizQuestion x) => new
+    {
+        id = x.Id,
+        exam_id = x.ExamId,
+        version = x.Version,
+        sort_order = x.Order,
+        question_text = x.Text,
+        points = x.Points,
+        multiple = x.Multiple,
+        created_at = x.CreatedAtUtc,
+        updated_at = x.UpdatedAtUtc
+    };
+
+    private static object QuizChoiceToCloud(QuizChoice x) => new
+    {
+        id = x.Id,
+        question_id = x.QuestionId,
+        sort_order = x.Order,
+        choice_text = x.Text,
+        is_correct = x.IsCorrect,
+        created_at = x.CreatedAtUtc,
+        updated_at = x.UpdatedAtUtc
+    };
+
+    private static object QuizSourceToCloud(QuizImportSource x) => new
+    {
+        id = x.Id,
+        exam_id = x.ExamId,
+        exam_version = x.ExamVersion,
+        original_name = x.OriginalName,
+        mime_type = x.MimeType,
+        size_bytes = x.SizeBytes,
+        sha256 = x.Sha256,
+        status = x.Status,
+        created_by = x.CreatedBy,
+        imported_at = x.ImportedAtUtc,
         created_at = x.CreatedAtUtc,
         updated_at = x.UpdatedAtUtc
     };
@@ -654,6 +794,21 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
     {
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(subject) || duration <= 0) throw new ApiException(ErrorCodes.ValidationFailed, "Tiêu đề, môn học và thời lượng hợp lệ là bắt buộc.");
         if (rule.MaxFileSizeBytes <= 0 || rule.MaxTotalSizeBytes <= 0 || rule.MaxFileCount <= 0) throw new ApiException(ErrorCodes.ValidationFailed, "Quy tắc file không hợp lệ.");
+    }
+    private static (QuizResultPolicy ResultPolicy, SupervisionMode SupervisionMode) ValidateExamPolicy(
+        ExamDeliveryType deliveryType,
+        QuizResultPolicy resultPolicy,
+        SupervisionMode supervisionMode)
+    {
+        if (!Enum.IsDefined(deliveryType) || !Enum.IsDefined(resultPolicy) || !Enum.IsDefined(supervisionMode))
+            throw new ApiException(ErrorCodes.ValidationFailed, "Loại bài hoặc chính sách không hợp lệ.");
+        if (deliveryType == ExamDeliveryType.MultipleChoice)
+        {
+            if (supervisionMode != SupervisionMode.Standard)
+                throw new ApiException(ErrorCodes.ValidationFailed, "Trắc nghiệm bắt buộc dùng giám sát chuẩn.");
+            return (resultPolicy, SupervisionMode.Standard);
+        }
+        return (QuizResultPolicy.Hidden, supervisionMode);
     }
     private static void ValidateFile(string name, long size, string sha)
     {

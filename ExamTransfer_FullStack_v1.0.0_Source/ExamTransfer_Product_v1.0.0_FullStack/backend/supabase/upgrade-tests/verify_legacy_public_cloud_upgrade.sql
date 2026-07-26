@@ -96,8 +96,8 @@ select ok(
 
 select is(
   (select schema_version from public.examtransfer_cloud_meta where id=1),
-  15,
-  'upgrade reaches schema compatibility version 15');
+  18,
+  'upgrade reaches schema compatibility version 18');
 
 select has_column('public', 'submissions', 'cloud_version',
   'cloud_version exists after upgrade');

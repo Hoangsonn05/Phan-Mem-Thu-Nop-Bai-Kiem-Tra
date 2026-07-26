@@ -24,10 +24,10 @@ function Add-Result {
         [string]$Detail
     )
     $results.Add([pscustomobject]@{
-        Step = $Name
-        Result = $Result
-        Detail = $Detail
-    })
+            Step   = $Name
+            Result = $Result
+            Detail = $Detail
+        })
 }
 
 function Invoke-BaselineStep {

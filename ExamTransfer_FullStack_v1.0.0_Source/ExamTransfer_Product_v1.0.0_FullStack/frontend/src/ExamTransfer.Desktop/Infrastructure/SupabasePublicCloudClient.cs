@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using ExamTransfer.Desktop.Services;
 using ExamTransfer.Shared.Contracts;
 
 namespace ExamTransfer.Desktop.Infrastructure;
@@ -11,12 +12,25 @@ namespace ExamTransfer.Desktop.Infrastructure;
 public sealed class SupabasePublicCloudClient
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private readonly HttpClient http = new() { Timeout = TimeSpan.FromMinutes(10) };
-    private readonly string? url = Environment.GetEnvironmentVariable("EXAMTRANSFER_SUPABASE_URL")?.TrimEnd('/');
-    private readonly string? key = Environment.GetEnvironmentVariable("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY");
+    private readonly HttpClient http;
+    private readonly IServerClock serverClock;
+    private readonly string? url;
+    private readonly string? key;
     private string? accessToken;
     private string? refreshToken;
     private DateTimeOffset expiresAtUtc;
+
+    public SupabasePublicCloudClient(
+        HttpClient? http = null,
+        IServerClock? serverClock = null,
+        string? supabaseUrl = null,
+        string? publishableKey = null)
+    {
+        this.http = http ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        this.serverClock = serverClock ?? new ServerClock();
+        url = (supabaseUrl ?? Environment.GetEnvironmentVariable("EXAMTRANSFER_SUPABASE_URL"))?.TrimEnd('/');
+        key = publishableKey ?? Environment.GetEnvironmentVariable("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY");
+    }
 
     public bool Configured => Uri.TryCreate(url, UriKind.Absolute, out _) && !string.IsNullOrWhiteSpace(key);
     public bool Authenticated => !string.IsNullOrWhiteSpace(accessToken);
@@ -30,7 +44,7 @@ public sealed class SupabasePublicCloudClient
         var email = account.Contains('@') ? account.Trim() : $"{account.Trim()}@{domain.Trim().TrimStart('@')}";
         using var request = ProjectRequest(HttpMethod.Post, "/auth/v1/token?grant_type=password", false);
         request.Content = JsonContent.Create(new { email = email.ToLowerInvariant(), password });
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "Supabase Auth", cancellationToken);
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         accessToken = document.RootElement.GetProperty("access_token").GetString();
@@ -48,7 +62,7 @@ public sealed class SupabasePublicCloudClient
         }, cancellationToken);
         using var request = ProjectRequest(HttpMethod.Get,
             $"/rest/v1/class_enrollment_requests?select=id,status&id=eq.{requestId}&limit=1");
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "PublicCloud enrollment status", cancellationToken);
         var rows = JsonSerializer.Deserialize<List<EnrollmentRow>>(
             await response.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
@@ -66,7 +80,7 @@ public sealed class SupabasePublicCloudClient
         await EnsureFreshSessionAsync(cancellationToken);
         using var request = ProjectRequest(HttpMethod.Get,
             $"/rest/v1/exam_sessions?select=id,exam_id,room_code,status&access_mode=eq.PublicCloud&room_code=eq.{Uri.EscapeDataString(roomCode)}&limit=2");
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "PublicCloud session lookup", cancellationToken);
         var sessions = JsonSerializer.Deserialize<List<PublicSessionRow>>(
             await response.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
@@ -83,7 +97,7 @@ public sealed class SupabasePublicCloudClient
         }, cancellationToken);
         using var participantRequest = ProjectRequest(HttpMethod.Get,
             $"/rest/v1/session_participants?select=status&id=eq.{participantId}&limit=1");
-        using var participantResponse = await http.SendAsync(participantRequest, cancellationToken);
+        using var participantResponse = await SendAsync(participantRequest, cancellationToken);
         await EnsureSuccessAsync(participantResponse, "PublicCloud participant snapshot", cancellationToken);
         var participants = JsonSerializer.Deserialize<List<ParticipantStatusRow>>(
             await participantResponse.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
@@ -99,7 +113,7 @@ public sealed class SupabasePublicCloudClient
         await EnsureFreshSessionAsync(cancellationToken);
         using var request = ProjectRequest(HttpMethod.Get,
             $"/rest/v1/session_participants?select=status&id=eq.{participantId}&limit=1");
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "PublicCloud participant snapshot", cancellationToken);
         var rows = JsonSerializer.Deserialize<List<ParticipantStatusRow>>(
             await response.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
@@ -113,7 +127,7 @@ public sealed class SupabasePublicCloudClient
         await EnsureFreshSessionAsync(cancellationToken);
         using var request = ProjectRequest(HttpMethod.Post, "/functions/v1/get-public-exam-file-url");
         request.Content = JsonContent.Create(new { sessionId, fileId });
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "PublicCloud signed exam URL", cancellationToken);
         return (await response.Content.ReadFromJsonAsync<PublicExamFileUrl>(Json, cancellationToken))
             ?? throw new InvalidDataException("Signed URL response is empty.");
@@ -124,7 +138,7 @@ public sealed class SupabasePublicCloudClient
         await EnsureFreshSessionAsync(cancellationToken);
         using var request = ProjectRequest(HttpMethod.Get,
             $"/rest/v1/exam_files?select=id,name,size_bytes,sha256,mime_type&exam_id=eq.{examId}&order=created_at.asc");
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "PublicCloud exam manifest", cancellationToken);
         var rows = JsonSerializer.Deserialize<List<ExamFileRow>>(
             await response.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
@@ -150,7 +164,7 @@ public sealed class SupabasePublicCloudClient
         }, cancellationToken);
         using var request = ProjectRequest(HttpMethod.Get,
             $"/rest/v1/submission_files?select=id,cloud_object_path&submission_id=eq.{submissionId}&source_mode=eq.PublicCloud&limit=2");
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "PublicCloud submission file plan", cancellationToken);
         var rows = JsonSerializer.Deserialize<List<SubmissionFilePlanRow>>(
             await response.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
@@ -170,7 +184,7 @@ public sealed class SupabasePublicCloudClient
         request.Content = new StreamContent(stream);
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         request.Content.Headers.ContentLength = stream.Length;
-        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         // A retry after an uncertain response may find the immutable object
         // already present. Verification below remains the source of truth.
         if (response.StatusCode != HttpStatusCode.Conflict)
@@ -185,12 +199,12 @@ public sealed class SupabasePublicCloudClient
         await EnsureFreshSessionAsync(cancellationToken);
         using var request = ProjectRequest(HttpMethod.Post, "/functions/v1/verify-public-submission-archive");
         request.Content = JsonContent.Create(new { submissionId = plan.SubmissionId, idempotencyKey });
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "PublicCloud archive verification", cancellationToken);
 
         using var snapshotRequest = ProjectRequest(HttpMethod.Get,
             $"/rest/v1/submissions?select=id,receipt_code,receipt_signature,server_received_at,is_late,submission_files(id,name,size_bytes,sha256,mime_type)&id=eq.{plan.SubmissionId}&limit=1");
-        using var snapshotResponse = await http.SendAsync(snapshotRequest, cancellationToken);
+        using var snapshotResponse = await SendAsync(snapshotRequest, cancellationToken);
         await EnsureSuccessAsync(snapshotResponse, "PublicCloud receipt snapshot", cancellationToken);
         var rows = JsonSerializer.Deserialize<List<ReceiptRow>>(
             await snapshotResponse.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
@@ -211,10 +225,13 @@ public sealed class SupabasePublicCloudClient
             p_session_id = sessionId,
             p_idempotency_key = $"start-{sessionId:N}"
         }, cancellationToken);
-        return await GetQuizAttemptAsync(attemptId, cancellationToken);
+        var attempt = await GetQuizAttemptAsync(attemptId, cancellationToken);
+        var timeline = await GetStudentTimelineAsync(sessionId, cancellationToken);
+        return ApplyTimeline(attempt, timeline);
     }
 
     public async Task<SyncQuizAnswersResultDto> SaveQuizAnswersAsync(
+        Guid sessionId,
         Guid attemptId,
         IReadOnlyList<QuizAnswerDto> answers,
         CancellationToken cancellationToken)
@@ -232,7 +249,10 @@ public sealed class SupabasePublicCloudClient
             }, cancellationToken);
             accepted.Add(answer with { Revision = revision });
         }
-        return new SyncQuizAnswersResultDto(attemptId, accepted, DateTimeOffset.UtcNow);
+        var timeline = await GetStudentTimelineAsync(sessionId, cancellationToken);
+        if (timeline.AttemptId != attemptId)
+            throw new InvalidDataException("PublicCloud timeline does not match the active quiz attempt.");
+        return new SyncQuizAnswersResultDto(attemptId, accepted, timeline.ServerNowUtc);
     }
 
     public async Task<QuizAttemptDto> FinalizeQuizAttemptAsync(
@@ -240,31 +260,73 @@ public sealed class SupabasePublicCloudClient
         string idempotencyKey,
         CancellationToken cancellationToken)
     {
-        _ = await RpcAsync<decimal>("finalize_public_quiz_attempt", new
+        var snapshot = await RpcAsync<PublicQuizAttemptSnapshot>("finalize_public_quiz_attempt", new
         {
             p_attempt_id = attemptId,
             p_idempotency_key = idempotencyKey
         }, cancellationToken);
-        return await GetQuizAttemptAsync(attemptId, cancellationToken);
+        var attempt = ToQuizAttempt(snapshot);
+        var timeline = await GetStudentTimelineAsync(attempt.SessionId, cancellationToken);
+        return ApplyTimeline(attempt, timeline);
     }
 
-    private async Task<QuizAttemptDto> GetQuizAttemptAsync(Guid attemptId, CancellationToken cancellationToken)
+    public async Task<PublicStudentTimeline> GetStudentTimelineAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
     {
-        using var request = ProjectRequest(HttpMethod.Get,
-            $"/rest/v1/quiz_attempts?select=id,session_id,participant_id,status,exam_version,started_at,deadline_at,finalized_at,score,max_score,snapshot_json,quiz_answers(question_id,choice_ids,revision,client_updated_at)&id=eq.{attemptId}&limit=1");
-        using var response = await http.SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, "PublicCloud quiz snapshot", cancellationToken);
-        var rows = JsonSerializer.Deserialize<List<QuizAttemptRow>>(
-            await response.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
-        if (rows.Count != 1) throw new InvalidDataException("PublicCloud quiz attempt was not found.");
-        var row = rows[0];
-        var questions = JsonSerializer.Deserialize<List<QuizSnapshotQuestion>>(row.SnapshotJson.GetRawText(), Json) ?? [];
-        return new QuizAttemptDto(row.Id, row.SessionId, row.ParticipantId,
+        var timeline = await RpcAsync<PublicStudentTimeline>(
+            "get_public_student_timeline",
+            new { p_session_id = sessionId },
+            cancellationToken);
+        if (timeline.SessionId != sessionId
+            || timeline.ParticipantId == Guid.Empty
+            || timeline.Revision <= 0
+            || timeline.ServerNowUtc == default)
+            throw new InvalidDataException("PublicCloud student timeline is invalid.");
+        serverClock.Synchronize(timeline.ServerNowUtc);
+        return timeline;
+    }
+
+    public async Task<QuizAttemptDto> GetQuizAttemptAsync(Guid attemptId, CancellationToken cancellationToken)
+    {
+        var snapshot = await RpcAsync<PublicQuizAttemptSnapshot>(
+            "get_public_quiz_attempt",
+            new { p_attempt_id = attemptId },
+            cancellationToken);
+        return ToQuizAttempt(snapshot);
+    }
+
+    private static QuizAttemptDto ToQuizAttempt(PublicQuizAttemptSnapshot row) =>
+        new(row.Id, row.SessionId, row.ParticipantId,
             Enum.Parse<QuizAttemptStatus>(row.Status, true), row.ExamVersion,
-            row.StartedAt, row.DeadlineAt, row.FinalizedAt, row.Score, row.MaxScore,
-            questions.Select(q => new QuizQuestionDto(q.Id, q.QuestionText, q.SortOrder, q.Points, q.Multiple,
+            row.StartedAtUtc, row.DeadlineUtc, row.FinalizedAtUtc,
+            row.ScoreVisible ? row.Score : null, row.MaxScore,
+            row.Questions.Select(q => new QuizQuestionDto(q.Id, q.QuestionText, q.SortOrder, q.Points, q.Multiple,
                 q.Choices.Select(c => new QuizChoiceDto(c.Id, c.ChoiceText, c.SortOrder)).ToList())).ToList(),
-            row.QuizAnswers.Select(a => new QuizAnswerDto(a.QuestionId, a.ChoiceIds, a.Revision, a.ClientUpdatedAt)).ToList());
+            row.Answers.Select(a => new QuizAnswerDto(a.QuestionId, a.ChoiceIds, a.Revision, a.ClientUpdatedAtUtc)).ToList(),
+            row.ScoreVisible,
+            Enum.TryParse<QuizResultPolicy>(row.ResultPolicy, true, out var policy) ? policy : QuizResultPolicy.Hidden);
+
+    private static QuizAttemptDto ApplyTimeline(
+        QuizAttemptDto attempt,
+        PublicStudentTimeline timeline)
+    {
+        if (timeline.SessionId != attempt.SessionId
+            || timeline.ParticipantId != attempt.ParticipantId
+            || timeline.AttemptId != attempt.Id
+            || !timeline.AttemptDeadlineUtc.HasValue)
+            throw new InvalidDataException("PublicCloud quiz snapshot and timeline do not match.");
+        var status = Enum.TryParse<QuizAttemptStatus>(
+            timeline.AttemptStatus,
+            true,
+            out var parsed)
+            ? parsed
+            : attempt.Status;
+        return attempt with
+        {
+            Status = status,
+            DeadlineUtc = timeline.AttemptDeadlineUtc.Value
+        };
     }
 
     public async Task DownloadVerifiedAsync(PublicExamFileUrl file, string destinationPath, CancellationToken cancellationToken)
@@ -274,7 +336,7 @@ public sealed class SupabasePublicCloudClient
         var offset = File.Exists(partial) ? new FileInfo(partial).Length : 0;
         using var request = new HttpRequestMessage(HttpMethod.Get, file.Url);
         if (offset > 0) request.Headers.Range = new RangeHeaderValue(offset, null);
-        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var response = await SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (offset > 0 && response.StatusCode == HttpStatusCode.OK)
         {
             File.Delete(partial);
@@ -299,7 +361,7 @@ public sealed class SupabasePublicCloudClient
         await EnsureFreshSessionAsync(cancellationToken);
         using var request = ProjectRequest(HttpMethod.Post, $"/rest/v1/rpc/{name}");
         request.Content = JsonContent.Create(payload, options: Json);
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, $"PublicCloud RPC {name}", cancellationToken);
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
         return JsonSerializer.Deserialize<T>(content, Json)
@@ -313,7 +375,7 @@ public sealed class SupabasePublicCloudClient
             throw new InvalidOperationException("Phiên Supabase đã hết hạn; hãy đăng nhập lại.");
         using var request = ProjectRequest(HttpMethod.Post, "/auth/v1/token?grant_type=refresh_token", false);
         request.Content = JsonContent.Create(new { refresh_token = refreshToken });
-        using var response = await http.SendAsync(request, cancellationToken);
+        using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "Supabase refresh", cancellationToken);
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         accessToken = document.RootElement.GetProperty("access_token").GetString();
@@ -334,6 +396,21 @@ public sealed class SupabasePublicCloudClient
     {
         if (!Configured) throw new InvalidOperationException(
             "PublicCloud chưa cấu hình EXAMTRANSFER_SUPABASE_URL và EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY.");
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        return await http.SendAsync(request, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        HttpCompletionOption completionOption,
+        CancellationToken cancellationToken)
+    {
+        return await http.SendAsync(request, completionOption, cancellationToken);
     }
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, string operation, CancellationToken cancellationToken)
@@ -369,26 +446,53 @@ public sealed class SupabasePublicCloudClient
     private sealed record QuizSnapshotChoice(Guid Id, int SortOrder, string ChoiceText);
     private sealed record QuizSnapshotQuestion(Guid Id, int SortOrder, string QuestionText,
         decimal Points, bool Multiple, IReadOnlyList<QuizSnapshotChoice> Choices);
-    private sealed record QuizAnswerRow(
-        [property: JsonPropertyName("question_id")] Guid QuestionId,
-        [property: JsonPropertyName("choice_ids")] IReadOnlyList<Guid> ChoiceIds,
+    private sealed record PublicQuizAnswerSnapshot(
+        Guid QuestionId,
+        IReadOnlyList<Guid> ChoiceIds,
         long Revision,
-        [property: JsonPropertyName("client_updated_at")] DateTimeOffset ClientUpdatedAt);
-    private sealed record QuizAttemptRow(Guid Id,
-        [property: JsonPropertyName("session_id")] Guid SessionId,
-        [property: JsonPropertyName("participant_id")] Guid ParticipantId,
+        DateTimeOffset ClientUpdatedAtUtc);
+    private sealed record PublicQuizAttemptSnapshot(
+        Guid Id,
+        Guid SessionId,
+        Guid ParticipantId,
         string Status,
-        [property: JsonPropertyName("exam_version")] int ExamVersion,
-        [property: JsonPropertyName("started_at")] DateTimeOffset StartedAt,
-        [property: JsonPropertyName("deadline_at")] DateTimeOffset DeadlineAt,
-        [property: JsonPropertyName("finalized_at")] DateTimeOffset? FinalizedAt,
+        int ExamVersion,
+        string ResultPolicy,
+        DateTimeOffset StartedAtUtc,
+        DateTimeOffset DeadlineUtc,
+        DateTimeOffset? FinalizedAtUtc,
+        bool ScoreVisible,
         decimal? Score,
-        [property: JsonPropertyName("max_score")] decimal MaxScore,
-        [property: JsonPropertyName("snapshot_json")] JsonElement SnapshotJson,
-        [property: JsonPropertyName("quiz_answers")] IReadOnlyList<QuizAnswerRow> QuizAnswers);
+        decimal MaxScore,
+        IReadOnlyList<QuizSnapshotQuestion> Questions,
+        IReadOnlyList<PublicQuizAnswerSnapshot> Answers);
 }
 
 public sealed record PublicCloudJoinResult(Guid SessionId, Guid ExamId, Guid ParticipantId, ParticipantStatus Status, string AccessToken);
 public sealed record PublicExamFileUrl(Uri Url, int ExpiresIn, string FileName, long SizeBytes, string Sha256);
 public sealed record PublicSubmissionPlan(Guid SubmissionId, Guid FileId, string CloudObjectPath);
 public sealed record PublicEnrollmentState(Guid RequestId, string Status);
+public sealed record PublicStudentTimeline(
+    Guid SessionId,
+    Guid ParticipantId,
+    string SessionStatus,
+    DateTimeOffset? StartedAtUtc,
+    int DurationMinutes,
+    int ExtraTimeMinutes,
+    DateTimeOffset? EffectiveDeadlineUtc,
+    Guid? AttemptId,
+    string? AttemptStatus,
+    DateTimeOffset? AttemptDeadlineUtc,
+    DateTimeOffset ServerNowUtc,
+    long Revision,
+    DateTimeOffset UpdatedAtUtc,
+    string? ParticipantStatus = null,
+    Guid? ExamId = null,
+    int ExamVersion = 1,
+    string DeliveryType = "FileSubmission",
+    string SupervisionMode = "None",
+    string ResultPolicy = "Hidden",
+    bool ScoreVisible = false,
+    decimal? Score = null,
+    decimal? MaxScore = null,
+    string SubmissionStatus = "NotStarted");

@@ -17,14 +17,16 @@ public sealed class StudentHeartbeatService : IStudentHeartbeatService
 
     private readonly IBackendClient api;
     private readonly StudentSessionState session;
+    private readonly IServerClock serverClock;
     private readonly object gate = new();
     private CancellationTokenSource? loopCts;
     private StudentConnectionState state = StudentConnectionState.Stopped;
 
-    public StudentHeartbeatService(IBackendClient api, StudentSessionState session)
+    public StudentHeartbeatService(IBackendClient api, StudentSessionState session, IServerClock serverClock)
     {
         this.api = api;
         this.session = session;
+        this.serverClock = serverClock;
         session.SessionChanged += OnSessionChanged;
     }
 
@@ -57,10 +59,15 @@ public sealed class StudentHeartbeatService : IStudentHeartbeatService
         if (!session.SessionId.HasValue || !session.ParticipantId.HasValue || string.IsNullOrWhiteSpace(session.AccessToken))
             return false;
         api.SetParticipantToken(session.AccessToken);
-        var response = await api.PostAsync<HeartbeatRequest, object>(
+        var response = await api.PostAsync<HeartbeatRequest, HeartbeatResponse>(
             $"api/v1/sessions/{session.SessionId}/participants/{session.ParticipantId}/heartbeat",
-            new HeartbeatRequest("Ready", DateTimeOffset.UtcNow, 0), ct);
-        return response?.Success == true;
+            new HeartbeatRequest("Ready", ClientNowUtc(), 0), ct);
+        if (response?.Success == true && response.Data is not null)
+        {
+            serverClock.Synchronize(response.Data.ServerNowUtc);
+            return true;
+        }
+        return false;
     }
 
     private async Task RunAsync(CancellationToken ct)
@@ -72,11 +79,12 @@ public sealed class StudentHeartbeatService : IStudentHeartbeatService
             {
                 if (!session.HasSession || string.IsNullOrWhiteSpace(session.AccessToken)) break;
                 api.SetParticipantToken(session.AccessToken);
-                var response = await api.PostAsync<HeartbeatRequest, object>(
+                var response = await api.PostAsync<HeartbeatRequest, HeartbeatResponse>(
                     $"api/v1/sessions/{session.SessionId}/participants/{session.ParticipantId}/heartbeat",
-                    new HeartbeatRequest("Ready", DateTimeOffset.UtcNow, 0), ct);
-                if (response?.Success == true)
+                    new HeartbeatRequest("Ready", ClientNowUtc(), 0), ct);
+                if (response?.Success == true && response.Data is not null)
                 {
+                    serverClock.Synchronize(response.Data.ServerNowUtc);
                     failures = 0;
                     SetState(StudentConnectionState.Online);
                     await Task.Delay(HealthyInterval, ct);
@@ -108,6 +116,9 @@ public sealed class StudentHeartbeatService : IStudentHeartbeatService
     {
         if (session.HasSession) Start(); else Stop();
     }
+
+    private DateTimeOffset ClientNowUtc() =>
+        serverClock.TryGetUtcNow(out var serverNowUtc) ? serverNowUtc : DateTimeOffset.UtcNow;
 
     private void StopCore()
     {

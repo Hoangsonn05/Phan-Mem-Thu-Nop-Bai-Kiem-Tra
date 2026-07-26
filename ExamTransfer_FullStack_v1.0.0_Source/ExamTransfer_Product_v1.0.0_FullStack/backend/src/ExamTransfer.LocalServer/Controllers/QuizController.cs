@@ -2,6 +2,7 @@ using ExamTransfer.Application;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace ExamTransfer.LocalServer.Controllers;
 
@@ -12,6 +13,20 @@ public sealed class QuizAuthoringController(IQuizService quiz) : ApiControllerBa
     [HttpPost("import")]
     public async Task<ActionResult<ApiResponse<QuizImportResultDto>>> Import(Guid examId, QuizImportFileRequest request, CancellationToken ct) =>
         Data(await quiz.ImportAsync(examId, request, ct));
+
+    [HttpPost("/api/v1/exams/{examId:guid}/quiz-import/preview")]
+    public async Task<ActionResult<ApiResponse<QuizImportPreviewDto>>> Preview(
+        Guid examId,
+        QuizImportPreviewRequest request,
+        CancellationToken ct) =>
+        Data(await quiz.PreviewImportAsync(examId, RequiredGuidClaim(ClaimTypes.NameIdentifier), request, ct));
+
+    [HttpPost("/api/v1/exams/{examId:guid}/quiz-import/commit")]
+    public async Task<ActionResult<ApiResponse<QuizImportResultDto>>> Commit(
+        Guid examId,
+        QuizImportCommitRequest request,
+        CancellationToken ct) =>
+        Data(await quiz.CommitImportAsync(examId, RequiredGuidClaim(ClaimTypes.NameIdentifier), request, ct));
 }
 
 [Route("api/v1/sessions/{sessionId:guid}/quiz-attempts")]
@@ -27,6 +42,14 @@ public sealed class TeacherQuizMonitoringController(IQuizService quiz) : ApiCont
 [Authorize(Policy = "StudentWithParticipant")]
 public sealed class StudentQuizController(IQuizService quiz) : ApiControllerBase
 {
+    [HttpGet("sessions/{sessionId:guid}/attempt")]
+    public async Task<ActionResult<ApiResponse<QuizAttemptLookupDto>>> Get(Guid sessionId, CancellationToken ct)
+    {
+        var participantId = RequiredGuidClaim("participant_id");
+        EnsureStudentScope(sessionId, participantId);
+        return Data(new QuizAttemptLookupDto(await quiz.GetAttemptAsync(sessionId, participantId, ct)));
+    }
+
     [HttpPost("sessions/{sessionId:guid}/attempt")]
     public async Task<ActionResult<ApiResponse<QuizAttemptDto>>> Start(Guid sessionId, CancellationToken ct)
     {

@@ -254,6 +254,11 @@ public sealed class ExamManagementViewModel : ProductPageBase
     private string description = string.Empty;
     private string duration = "60";
     private string allowedExtensions = ".pdf,.docx,.zip,.cs,.java,.py";
+    private ExamDeliveryType deliveryType = ExamDeliveryType.FileSubmission;
+    private QuizResultPolicy quizResultPolicy = QuizResultPolicy.Hidden;
+    private SupervisionMode supervisionMode = SupervisionMode.None;
+    private bool currentHasCommittedQuizSource;
+    private int currentQuizQuestionCount;
 
     public ExamManagementViewModel(IBackendClient api)
     {
@@ -263,8 +268,9 @@ public sealed class ExamManagementViewModel : ProductPageBase
         PublishCommand = new AsyncRelayCommand(PublishAsync, () => !IsBusy && CanPublish);
         CloneCommand = new AsyncRelayCommand(CloneAsync, () => !IsBusy && SelectedExam is not null);
         ArchiveCommand = new AsyncRelayCommand(ArchiveAsync, () => !IsBusy && SelectedExam is not null);
-        UploadCommand = new AsyncRelayCommand(UploadFileAsync, () => !IsBusy && SelectedExam is not null);
-        ImportQuizCommand = new AsyncRelayCommand(ImportQuizAsync, () => !IsBusy && SelectedExam?.Status == ExamStatus.Draft);
+        UploadCommand = new AsyncRelayCommand(UploadFileAsync, () => !IsBusy && SelectedExam is not null && IsFileSubmission);
+        ImportQuizCommand = new AsyncRelayCommand(PreviewQuizAsync, () => !IsBusy && IsMultipleChoice && IsPolicyEditable);
+        CommitQuizCommand = new AsyncRelayCommand(CommitQuizAsync, () => !IsBusy && IsMultipleChoice && IsPolicyEditable && QuizImport.HasPreview);
         SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsBusy && SelectedExam is not null);
         DeleteFileCommand = new AsyncRelayCommand(DeleteFileAsync, () => !IsBusy && SelectedExam is not null && SelectedFile is not null);
         DownloadFileCommand = new AsyncRelayCommand(DownloadFileAsync, () => !IsBusy && SelectedExam is not null && SelectedFile is not null);
@@ -273,7 +279,19 @@ public sealed class ExamManagementViewModel : ProductPageBase
     public ObservableCollection<ExamSummaryDto> Exams { get; } = new();
     public ObservableCollection<ClassSummaryDto> Classes { get; } = new();
     public ObservableCollection<FileDescriptorDto> Files { get; } = new();
-    public ExamSummaryDto? SelectedExam { get => selectedExam; set { if (Set(ref selectedExam, value)) { Raise(nameof(PublishHint)); RaiseCommands(); } } }
+    public ExamSummaryDto? SelectedExam
+    {
+        get => selectedExam;
+        set
+        {
+            if (!Set(ref selectedExam, value))
+                return;
+            Raise(nameof(PublishHint));
+            Raise(nameof(IsPolicyEditable));
+            Raise(nameof(HasSelectedExam));
+            RaiseCommands();
+        }
+    }
     public ClassSummaryDto? SelectedClass { get => selectedClass; set => Set(ref selectedClass, value); }
     public FileDescriptorDto? SelectedFile { get => selectedFile; set { if (Set(ref selectedFile, value)) RaiseCommands(); } }
     public string Title { get => title; set => Set(ref title, value); }
@@ -281,11 +299,85 @@ public sealed class ExamManagementViewModel : ProductPageBase
     public string Description { get => description; set => Set(ref description, value); }
     public string Duration { get => duration; set => Set(ref duration, value); }
     public string AllowedExtensions { get => allowedExtensions; set => Set(ref allowedExtensions, value); }
+    public QuizImportViewState QuizImport { get; } = new();
+    public ExamDeliveryType DeliveryType
+    {
+        get => deliveryType;
+        set
+        {
+            if (!Set(ref deliveryType, value))
+                return;
+            if (value == ExamDeliveryType.MultipleChoice)
+                SupervisionMode = SupervisionMode.Standard;
+            else
+                QuizResultPolicy = QuizResultPolicy.Hidden;
+            QuizImport.Clear();
+            Raise(nameof(IsFileSubmission));
+            Raise(nameof(IsMultipleChoice));
+            Raise(nameof(CanPublish));
+            Raise(nameof(PublishHint));
+            RaiseCommands();
+        }
+    }
+    public bool IsFileSubmission
+    {
+        get => DeliveryType == ExamDeliveryType.FileSubmission;
+        set { if (value && IsPolicyEditable) DeliveryType = ExamDeliveryType.FileSubmission; }
+    }
+    public bool IsMultipleChoice
+    {
+        get => DeliveryType == ExamDeliveryType.MultipleChoice;
+        set { if (value && IsPolicyEditable) DeliveryType = ExamDeliveryType.MultipleChoice; }
+    }
+    public bool ShowScoreAfterSubmission
+    {
+        get => QuizResultPolicy == QuizResultPolicy.ShowAfterSubmission;
+        set
+        {
+            var next = value ? QuizResultPolicy.ShowAfterSubmission : QuizResultPolicy.Hidden;
+            if (Set(ref quizResultPolicy, next, nameof(QuizResultPolicy)))
+                Raise(nameof(ShowScoreAfterSubmission));
+        }
+    }
+    public QuizResultPolicy QuizResultPolicy
+    {
+        get => quizResultPolicy;
+        private set
+        {
+            if (Set(ref quizResultPolicy, value))
+                Raise(nameof(ShowScoreAfterSubmission));
+        }
+    }
+    public bool UseSupervision
+    {
+        get => SupervisionMode == SupervisionMode.Standard;
+        set
+        {
+            if (IsMultipleChoice)
+                value = true;
+            SupervisionMode = value ? SupervisionMode.Standard : SupervisionMode.None;
+        }
+    }
+    public SupervisionMode SupervisionMode
+    {
+        get => supervisionMode;
+        private set
+        {
+            if (Set(ref supervisionMode, value))
+                Raise(nameof(UseSupervision));
+        }
+    }
+    public bool IsPolicyEditable => SelectedExam is null || SelectedExam.Status == ExamStatus.Draft;
+    public bool HasSelectedExam => SelectedExam is not null;
     public bool CanPublish => SelectedExam is not null
         && SelectedExam.Status is not (ExamStatus.Archived or ExamStatus.Cancelled)
-        && (SelectedExam.DeliveryType == ExamDeliveryType.MultipleChoice || !currentRequireAtLeastOneFile || Files.Count > 0);
-    public string PublishHint => SelectedExam?.DeliveryType == ExamDeliveryType.MultipleChoice
-        ? "Đề trắc nghiệm sẽ được kiểm tra câu hỏi và đáp án trên máy chủ khi phát hành."
+        && (DeliveryType == ExamDeliveryType.MultipleChoice
+            ? currentHasCommittedQuizSource && currentQuizQuestionCount > 0
+            : !currentRequireAtLeastOneFile || Files.Count > 0);
+    public string PublishHint => DeliveryType == ExamDeliveryType.MultipleChoice
+        ? currentHasCommittedQuizSource && currentQuizQuestionCount > 0
+            ? $"Đã commit {currentQuizQuestionCount} câu từ nguồn Word/PDF; có thể phát hành."
+            : "Cần preview và commit nguồn Word/PDF hợp lệ trước khi phát hành."
         : currentRequireAtLeastOneFile && Files.Count == 0
         ? "Cần tải lên và hoàn tất ít nhất một file đề trước khi phát hành."
         : "Bài kiểm tra đã đáp ứng quy tắc file để phát hành.";
@@ -296,6 +388,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
     public ICommand ArchiveCommand { get; }
     public ICommand UploadCommand { get; }
     public ICommand ImportQuizCommand { get; }
+    public ICommand CommitQuizCommand { get; }
     public ICommand SaveCommand { get; }
     public ICommand DeleteFileCommand { get; }
     public ICommand DownloadFileCommand { get; }
@@ -384,6 +477,12 @@ public sealed class ExamManagementViewModel : ProductPageBase
         Description = detail.Description ?? string.Empty;
         Duration = detail.DurationMinutes.ToString();
         AllowedExtensions = string.Join(',', detail.FileRule.AllowedExtensions);
+        DeliveryType = detail.DeliveryType;
+        QuizResultPolicy = detail.QuizResultPolicy;
+        SupervisionMode = detail.SupervisionMode;
+        currentHasCommittedQuizSource = detail.QuizSource is not null;
+        currentQuizQuestionCount = detail.QuizQuestionCount;
+        QuizImport.Clear();
         currentAutoZip = detail.FileRule.AutoZip;
         currentRequireAtLeastOneFile = detail.FileRule.RequireAtLeastOneFile;
         SelectedClass = detail.ClassId.HasValue ? Classes.FirstOrDefault(x => x.Id == detail.ClassId.Value) : null;
@@ -392,6 +491,8 @@ public sealed class ExamManagementViewModel : ProductPageBase
         currentExamRowVersion = detail.RowVersion;
         Raise(nameof(CanPublish));
         Raise(nameof(PublishHint));
+        Raise(nameof(IsPolicyEditable));
+        Raise(nameof(HasSelectedExam));
         RaiseCommands();
     }
 
@@ -400,7 +501,20 @@ public sealed class ExamManagementViewModel : ProductPageBase
         if (SelectedExam is null) return;
         if (!int.TryParse(Duration, out var minutes) || minutes <= 0) throw new InvalidOperationException("Thời lượng phải là số phút lớn hơn 0.");
         var rule = new FileRuleDto(AllowedExtensions.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), 100L * 1024 * 1024, 500L * 1024 * 1024, 20, currentAutoZip, currentRequireAtLeastOneFile);
-        var updated = ApiGuard.Require(await api.PutAsync<UpdateExamRequest, ExamDetailDto>($"api/v1/exams/{SelectedExam.Id}", new(SelectedClass?.Id, Title.Trim(), Subject.Trim(), Description.Trim(), minutes, rule, currentExamRowVersion), ct));
+        var updated = ApiGuard.Require(await api.PutAsync<UpdateExamRequest, ExamDetailDto>(
+            $"api/v1/exams/{SelectedExam.Id}",
+            new(
+                SelectedClass?.Id,
+                Title.Trim(),
+                Subject.Trim(),
+                Description.Trim(),
+                minutes,
+                rule,
+                currentExamRowVersion,
+                DeliveryType,
+                QuizResultPolicy,
+                SupervisionMode),
+            ct));
         await RefreshExamsCoreAsync(updated.Id, ct);
     });
 
@@ -425,7 +539,19 @@ public sealed class ExamManagementViewModel : ProductPageBase
         if (!int.TryParse(Duration, out var minutes) || minutes <= 0) throw new InvalidOperationException("Thời lượng phải là số phút lớn hơn 0.");
         if (string.IsNullOrWhiteSpace(Title) || string.IsNullOrWhiteSpace(Subject)) throw new InvalidOperationException("Tiêu đề và môn học là bắt buộc.");
         var rule = new FileRuleDto(AllowedExtensions.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), 100L * 1024 * 1024, 500L * 1024 * 1024, 20, false, true);
-        var exam = ApiGuard.Require(await api.PostAsync<CreateExamRequest, ExamDetailDto>("api/v1/exams", new(SelectedClass?.Id, Title.Trim(), Subject.Trim(), Description.Trim(), minutes, rule), ct));
+        var exam = ApiGuard.Require(await api.PostAsync<CreateExamRequest, ExamDetailDto>(
+            "api/v1/exams",
+            new(
+                SelectedClass?.Id,
+                Title.Trim(),
+                Subject.Trim(),
+                Description.Trim(),
+                minutes,
+                rule,
+                DeliveryType,
+                QuizResultPolicy,
+                SupervisionMode),
+            ct));
         await RefreshExamsCoreAsync(exam.Id, ct);
     });
 
@@ -471,16 +597,38 @@ public sealed class ExamManagementViewModel : ProductPageBase
         await RefreshExamsCoreAsync(SelectedExam.Id, ct);
     });
 
-    private Task ImportQuizAsync() => RunAsync("Đang nhập đề trắc nghiệm", "Đề trắc nghiệm đã được kiểm tra và lưu", async ct =>
+    private Task PreviewQuizAsync() => RunAsync("Đang đọc nguồn trắc nghiệm", "Đã tạo bản xem trước; chưa thay đổi câu hỏi", async ct =>
     {
         if (SelectedExam is null) return;
-        var path = AppServices.Files.PickFile("Đề trắc nghiệm có cấu trúc|*.json;*.csv;*.xlsx");
+        var path = AppServices.Files.PickFile("Nguồn trắc nghiệm Word/PDF|*.docx;*.pdf");
         if (path is null) return;
         var bytes = await File.ReadAllBytesAsync(path, ct);
-        var result = ApiGuard.Require(await api.PostAsync<QuizImportFileRequest, QuizImportResultDto>(
-            $"api/v1/exams/{SelectedExam.Id}/quiz/import",
+        var preview = ApiGuard.Require(await api.PostAsync<QuizImportPreviewRequest, QuizImportPreviewDto>(
+            $"api/v1/exams/{SelectedExam.Id}/quiz-import/preview",
             new(Path.GetFileName(path), Convert.ToBase64String(bytes)), ct));
-        Status = $"Đã nhập {result.QuestionCount} câu · tổng {result.MaxScore:0.##} điểm";
+        QuizImport.SelectedFileName = path;
+        QuizImport.Preview = preview;
+        Status = preview.Errors.Count == 0
+            ? $"Preview {preview.QuestionCount} câu · tổng {preview.MaxScore:0.##} điểm"
+            : $"Nguồn có {preview.Errors.Count} lỗi; chưa thể commit";
+        StatusTone = preview.Errors.Count == 0 ? "success" : "danger";
+        RaiseCommands();
+    });
+
+    private Task CommitQuizAsync() => RunAsync("Đang commit đề trắc nghiệm", "Nguồn và câu hỏi đã được commit an toàn", async ct =>
+    {
+        if (SelectedExam is null || QuizImport.Preview is not { } preview || preview.Errors.Count > 0)
+            return;
+        if (preview.WillReplaceExisting
+            && !AppServices.Dialogs.Confirm(
+                "Thay bộ câu hỏi hiện tại",
+                "Commit sẽ thay toàn bộ câu hỏi của phiên bản hiện tại. Tiếp tục?"))
+            return;
+        _ = ApiGuard.Require(await api.PostAsync<QuizImportCommitRequest, QuizImportResultDto>(
+            $"api/v1/exams/{SelectedExam.Id}/quiz-import/commit",
+            new(preview.PreviewToken, preview.WillReplaceExisting, currentExamRowVersion),
+            ct));
+        QuizImport.Clear();
         await RefreshExamsCoreAsync(SelectedExam.Id, ct);
     });
 
@@ -493,7 +641,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, PublishCommand, CloneCommand, ArchiveCommand, UploadCommand, ImportQuizCommand, SaveCommand, DeleteFileCommand, DownloadFileCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, PublishCommand, CloneCommand, ArchiveCommand, UploadCommand, ImportQuizCommand, CommitQuizCommand, SaveCommand, DeleteFileCommand, DownloadFileCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
     }
 
     public override void Dispose()

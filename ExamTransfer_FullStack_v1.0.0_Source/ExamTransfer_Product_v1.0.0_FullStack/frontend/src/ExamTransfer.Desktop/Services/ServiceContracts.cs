@@ -50,9 +50,16 @@ public interface IStudentRealtimeService : IDisposable
 {
     bool IsConnected { get; }
     event EventHandler<string>? EventReceived;
+    event EventHandler<StudentRealtimeNotification>? NotificationReceived;
     Task StartAsync(CancellationToken ct = default);
     Task StopAsync(CancellationToken ct = default);
 }
+
+public sealed record StudentRealtimeNotification(
+    Guid SessionId,
+    string EventName,
+    long Revision,
+    TimeExtendedEvent? TimeExtended);
 
 public interface ISubmissionRecoveryService : IDisposable
 {

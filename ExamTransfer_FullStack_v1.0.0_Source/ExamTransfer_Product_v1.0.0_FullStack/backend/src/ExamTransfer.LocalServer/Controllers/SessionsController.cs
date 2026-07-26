@@ -79,11 +79,10 @@ public sealed class SessionsController(ISessionService service) : ApiControllerB
     [HttpPost("{id:guid}/messages")][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<MessageDto>>> Message(Guid id, SendMessageRequest request, CancellationToken ct) => Data(await service.SendMessageAsync(id, request, ct));
     [HttpPost("{id:guid}/participants/{participantId:guid}/heartbeat")][Authorize(Policy = "StudentParticipant")]
-    public async Task<ActionResult<ApiResponse<object>>> Heartbeat(Guid id, Guid participantId, HeartbeatRequest request, CancellationToken ct)
+    public async Task<ActionResult<ApiResponse<HeartbeatResponse>>> Heartbeat(Guid id, Guid participantId, HeartbeatRequest request, CancellationToken ct)
     {
         EnsureStudentScope(id, participantId);
         var deviceId = User.FindFirst("device_id")?.Value ?? throw new ApiException(ErrorCodes.Unauthorized, "Token thiếu device_id.", 401);
-        await service.HeartbeatAsync(id, participantId, deviceId, request, ct);
-        return EmptyData();
+        return Data(await service.HeartbeatAsync(id, participantId, deviceId, request, ct));
     }
 }

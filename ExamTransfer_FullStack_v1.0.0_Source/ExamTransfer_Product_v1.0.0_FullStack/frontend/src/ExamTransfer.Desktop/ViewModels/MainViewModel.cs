@@ -8,7 +8,7 @@ using ExamTransfer.Shared.Contracts;
 
 namespace ExamTransfer.Desktop.ViewModels;
 
-public sealed class MainViewModel : ObservableObject
+public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private readonly IBackendClient api;
     private readonly AppAuthSessionState authState;
@@ -31,6 +31,7 @@ public sealed class MainViewModel : ObservableObject
         LogoutCommand = new AsyncRelayCommand(LogoutAsync, () => authState.IsAuthenticated);
         pendingSubmissionCount = AppServices.SubmissionRecovery.PendingCount;
         AppServices.SubmissionRecovery.PendingCountChanged += OnPendingSubmissionCountChanged;
+        AppServices.StudentExamFlow.NavigationRequested += OnStudentExamNavigationRequested;
         CurrentPage = CreateLoginPage();
         FrontendLogger.SetContext("Login", "Auth");
         RestoreAuthAsync().SafeFireAndForget("MainViewModel.RestoreAuthAsync");
@@ -126,6 +127,21 @@ public sealed class MainViewModel : ObservableObject
             Application.Current.Dispatcher.Invoke(Apply);
         else
             Apply();
+    }
+
+    private void OnStudentExamNavigationRequested(object? sender, StudentExamNavigationRequest request)
+    {
+        void Navigate()
+        {
+            var target = Navigation.FirstOrDefault(x => x.Key == request.Resolution.RouteKey);
+            if (target is null || Selected?.Key == target.Key)
+                return;
+            Selected = target;
+        }
+        if (Application.Current?.Dispatcher?.CheckAccess() == false)
+            Application.Current.Dispatcher.Invoke(Navigate);
+        else
+            Navigate();
     }
 
     private async Task RestoreAuthAsync()
@@ -482,6 +498,15 @@ public sealed class MainViewModel : ObservableObject
             new("S-09", "Lịch sử cục bộ", "Kết quả", "Các phiên và bài đã nộp trên máy", "\uE81C"),
             new("S-10", "Cài đặt", "Hệ thống", "Profile, mạng, thư mục, thông báo và log", "\uE713")
         };
+
+    public void Dispose()
+    {
+        accountHeartbeatCts?.Cancel();
+        accountHeartbeatCts?.Dispose();
+        AppServices.SubmissionRecovery.PendingCountChanged -= OnPendingSubmissionCountChanged;
+        AppServices.StudentExamFlow.NavigationRequested -= OnStudentExamNavigationRequested;
+        DisposePage(CurrentPage);
+    }
 }
 
 public static class AppServices
@@ -497,17 +522,22 @@ public static class AppServices
     public static ILocalPreferenceService Preferences { get; } = new LocalPreferenceService();
     public static AppAuthSessionState AuthState { get; } = new();
     public static StudentSessionState StudentState { get; } = new();
-    public static ExamTransfer.Desktop.Infrastructure.SupabasePublicCloudClient PublicCloud { get; } = new();
+    public static IServerClock ServerClock { get; } = new ServerClock();
+    public static ICountdownTickerFactory CountdownTickers { get; } = new DispatcherCountdownTickerFactory();
+    public static ExamTransfer.Desktop.Infrastructure.SupabasePublicCloudClient PublicCloud { get; } =
+        new(serverClock: ServerClock);
     public static ExamTransfer.Desktop.Infrastructure.SupabaseRealtimeService PublicRealtime { get; } = new();
     public static ILanDiscoveryService LanDiscovery { get; } =
         new ExamTransfer.Desktop.Infrastructure.LanDiscoveryService();
 
     public static IBackendClient Backend { get; } =
         new ExamTransfer.Desktop.Infrastructure.BackendClient(BaseUrl);
+    public static IStudentExamFlowCoordinator StudentExamFlow { get; } =
+        new StudentExamFlowCoordinator(Backend, PublicCloud, StudentState);
     public static IStudentHeartbeatService StudentHeartbeat { get; } =
-        new ExamTransfer.Desktop.Infrastructure.StudentHeartbeatService(Backend, StudentState);
+        new ExamTransfer.Desktop.Infrastructure.StudentHeartbeatService(Backend, StudentState, ServerClock);
     public static IStudentRealtimeService StudentRealtime { get; } =
-        new ExamTransfer.Desktop.Infrastructure.StudentRealtimeService(Backend, StudentState);
+        new ExamTransfer.Desktop.Infrastructure.StudentRealtimeService(Backend, StudentState, PublicRealtime);
     public static ISubmissionRecoveryService SubmissionRecovery { get; } =
         new ExamTransfer.Desktop.Infrastructure.SubmissionRecoveryService(AuthState, StudentState, LanDiscovery);
 }

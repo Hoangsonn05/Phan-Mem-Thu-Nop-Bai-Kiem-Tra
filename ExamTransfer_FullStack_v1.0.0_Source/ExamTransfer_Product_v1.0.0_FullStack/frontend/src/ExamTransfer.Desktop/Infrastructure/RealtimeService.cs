@@ -11,6 +11,7 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
     public bool IsConnected => hub?.State == HubConnectionState.Connected;
 
     public event EventHandler<string>? EventReceived;
+    public event EventHandler<StudentRealtimeNotification>? NotificationReceived;
 
     public async Task ConnectAsync(string? token = null, CancellationToken ct = default)
     {
@@ -38,10 +39,29 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
             })
             .Build();
 
+        hub.On<RealtimeEnvelope<TimeExtendedEvent>>(
+            RealtimeEvents.TimeExtended,
+            envelope =>
+            {
+                var payload = envelope.Payload with
+                {
+                    ServerNowUtc = envelope.Payload.ServerNowUtc ?? envelope.OccurredAtUtc,
+                    Revision = envelope.Payload.Revision ?? envelope.Sequence
+                };
+                NotificationReceived?.Invoke(
+                    this,
+                    new(
+                        envelope.SessionId,
+                        RealtimeEvents.TimeExtended,
+                        envelope.Sequence,
+                        payload));
+            });
+
         foreach (var eventName in typeof(RealtimeEvents)
                      .GetFields()
                      .Select(field => field.GetValue(null)?.ToString())
-                     .Where(value => !string.IsNullOrWhiteSpace(value)))
+                     .Where(value => !string.IsNullOrWhiteSpace(value)
+                         && value != RealtimeEvents.TimeExtended))
         {
             hub.On<object>(eventName!, _ => EventReceived?.Invoke(this, eventName!));
         }

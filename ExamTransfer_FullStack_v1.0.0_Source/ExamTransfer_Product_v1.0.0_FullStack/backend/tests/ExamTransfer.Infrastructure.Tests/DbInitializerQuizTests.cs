@@ -1,5 +1,7 @@
 using ExamTransfer.Application;
+using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.Shared.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -20,8 +22,58 @@ public sealed class DbInitializerQuizTests
                 await DbInitializer.InitializeAsync(db, paths);
                 await DbInitializer.InitializeAsync(db, paths);
 
-                Assert.Equal(4, await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name LIKE 'quiz_%'").SingleAsync());
-                Assert.Equal("\"7\"", (await db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
+                Assert.Equal(6, await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name LIKE 'quiz_%'").SingleAsync());
+                Assert.Equal("\"8\"", (await db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
+
+                var exam = new Exam
+                {
+                    Title = "Legacy duplicate source",
+                    Subject = "Upgrade",
+                    DurationMinutes = 30,
+                    DeliveryType = ExamDeliveryType.MultipleChoice,
+                    SupervisionMode = SupervisionMode.Standard
+                };
+                db.ExamsSet.Add(exam);
+                await db.SaveChangesAsync();
+                await db.Database.ExecuteSqlRawAsync(
+                    "DROP INDEX \"IX_quiz_import_sources_ExamId_ExamVersion\"");
+                var keeperId = Guid.NewGuid();
+                db.QuizImportSourcesSet.AddRange(
+                    new QuizImportSource
+                    {
+                        Id = Guid.NewGuid(),
+                        ExamId = exam.Id,
+                        ExamVersion = 1,
+                        OriginalName = "old.docx",
+                        RelativePath = "old.docx",
+                        Status = "Failed",
+                        ImportedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5)
+                    },
+                    new QuizImportSource
+                    {
+                        Id = keeperId,
+                        ExamId = exam.Id,
+                        ExamVersion = 1,
+                        OriginalName = "current.docx",
+                        RelativePath = "current.docx",
+                        Status = "Committed",
+                        ImportedAtUtc = DateTimeOffset.UtcNow
+                    });
+                await db.SaveChangesAsync();
+                db.ChangeTracker.Clear();
+
+                await DbInitializer.InitializeAsync(db, paths);
+
+                var retained = await db.QuizImportSourcesSet.AsNoTracking()
+                    .Where(x => x.ExamId == exam.Id && x.ExamVersion == 1)
+                    .SingleAsync();
+                Assert.Equal(keeperId, retained.Id);
+                Assert.Equal("Committed", retained.Status);
+                Assert.Equal(
+                    1,
+                    await db.Database.SqlQueryRaw<int>(
+                        "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='index' AND name='IX_quiz_import_sources_ExamId_ExamVersion'")
+                        .SingleAsync());
             }
         }
         finally

@@ -1,7 +1,9 @@
 using System.Text.Json;
+using System.Reflection;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
+using ExamTransfer.Infrastructure.Cloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Infrastructure.Services;
@@ -9,6 +11,7 @@ using ExamTransfer.Infrastructure.Storage;
 using ExamTransfer.LocalServer.Workers;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
@@ -18,6 +21,135 @@ using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace ExamTransfer.Infrastructure.Tests;
+
+public sealed class FinalCloudSourceCompatibilityTests
+{
+    [Fact]
+    public void ForwardMigration_AddsOnlySourceCloudVersionAndCapability18()
+    {
+        var sql = PublicCloudTestHarness.ReadRepositoryFile(
+            "backend/supabase/migrations/20260726064745_final_remaining_quiz_source_cloud_version.sql");
+
+        Assert.Contains(
+            "alter table public.quiz_import_sources",
+            sql,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "add column if not exists cloud_version bigint not null default 0",
+            sql,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "set schema_version = 18",
+            sql,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "create or replace function public.get_examtransfer_cloud_capabilities",
+            sql,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("drop policy", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("create policy", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void QuizSourcePayloadAndObjectPath_AreStableLocalOwnedAndRequireSchema18()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "ExamTransfer.CloudSource.Tests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            var organizationId = Guid.NewGuid();
+            var options = Options.Create(new ExamTransferOptions
+            {
+                Cloud = new CloudOptions
+                {
+                    OrganizationId = organizationId.ToString(),
+                    Environment = "Tests",
+                    ExamBucket = "exam-archives"
+                }
+            });
+            var paths = new CloudSourcePaths(root);
+            var sessionState = new CloudSessionState(
+                DataProtectionProvider.Create(root),
+                paths);
+            var adapter = new SupabaseCloudAdapter(
+                new HttpClient(),
+                options,
+                sessionState);
+            var sourceId = Guid.NewGuid();
+
+            var buildPayload = typeof(SupabaseCloudAdapter).GetMethod(
+                "BuildPayload",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(buildPayload);
+            var payloadJson = Assert.IsType<string>(buildPayload!.Invoke(
+                adapter,
+                [
+                    "quiz_import_sources",
+                    JsonSerializer.Serialize(new
+                    {
+                        id = sourceId,
+                        original_name = "source.docx",
+                        mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        updated_at = new DateTimeOffset(2026, 7, 26, 0, 0, 0, TimeSpan.Zero)
+                    }),
+                    null
+                ]));
+            using var payload = JsonDocument.Parse(payloadJson);
+            Assert.Equal(sourceId, payload.RootElement.GetProperty("id").GetGuid());
+            Assert.Equal(organizationId, payload.RootElement.GetProperty("organization_id").GetGuid());
+            Assert.True(payload.RootElement.GetProperty("cloud_version").GetInt64() > 0);
+
+            var resolveTarget = typeof(SupabaseCloudAdapter).GetMethod(
+                "ResolveStorageTarget",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(resolveTarget);
+            string Resolve(string fileName)
+            {
+                var target = resolveTarget!.Invoke(
+                    adapter,
+                    ["quiz_import_sources", sourceId.ToString(), fileName]);
+                Assert.NotNull(target);
+                return Assert.IsType<string>(target!.GetType()
+                    .GetProperty("ObjectPath")!
+                    .GetValue(target));
+            }
+
+            var firstPath = Resolve("first-random.docx");
+            var replacementPath = Resolve("second-random.pdf");
+            Assert.Equal(firstPath, replacementPath);
+            Assert.EndsWith(
+                $"/quiz-sources/{sourceId}/source.bin",
+                firstPath,
+                StringComparison.Ordinal);
+            Assert.Equal(18, CloudSchemaCompatibility.RequiredVersion);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class CloudSourcePaths(string root) : IStoragePaths
+    {
+        public string RootPath { get; } = root;
+        public string DatabasePath => Path.Combine(RootPath, "database.db");
+        public string BackupRoot => Path.Combine(RootPath, "backups");
+        public string ExportRoot => Path.Combine(RootPath, "exports");
+        public string TemporaryRoot => Path.Combine(RootPath, "temp");
+        public string ExamVersionRoot(Guid examId, int version) =>
+            Path.Combine(RootPath, "exams", examId.ToString("N"), version.ToString());
+        public string SessionRoot(Guid sessionId) =>
+            Path.Combine(RootPath, "sessions", sessionId.ToString("N"));
+        public string SubmissionRoot(Guid sessionId, string studentCode, Guid submissionId) =>
+            Path.Combine(SessionRoot(sessionId), studentCode, submissionId.ToString("N"));
+        public string ReceiptRoot(Guid sessionId) =>
+            Path.Combine(SessionRoot(sessionId), "receipts");
+        public void EnsureCreated() => Directory.CreateDirectory(RootPath);
+    }
+}
 
 public sealed class PublicCloudTeacherMutationTests
 {
@@ -41,6 +173,63 @@ public sealed class PublicCloudTeacherMutationTests
         Assert.Contains("set search_path = ''", sql, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("private.begin_public_teacher_mutation", sql, StringComparison.Ordinal);
         Assert.Contains("private.write_public_teacher_audit", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Et01_forward_migration_keeps_narrow_grants_and_atomic_absolute_deadline_contract()
+    {
+        var sql = PublicCloudTestHarness.ReadRepositoryFile(
+            "backend/supabase/migrations/20260725164934_public_cloud_time_realtime_completion.sql");
+
+        Assert.Contains("status = 'InProgress'", sql, StringComparison.Ordinal);
+        Assert.Contains("set deadline_at = v_deadline", sql, StringComparison.Ordinal);
+        Assert.Contains("'serverNowUtc', v_server_now", sql, StringComparison.Ordinal);
+        Assert.Contains("'effectiveDeadlineUtc', v_deadline", sql, StringComparison.Ordinal);
+        Assert.Contains("perform realtime.send", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("private.finish_public_teacher_mutation", sql, StringComparison.Ordinal);
+        Assert.Contains("get_public_student_timeline", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("grant update", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Supabase_adapter_maps_et01_rpc_time_attempt_and_revision_fields()
+    {
+        var participantId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var requestId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 7, 25, 8, 0, 0, TimeSpan.Zero);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            participantId,
+            sessionId,
+            status = "Approved",
+            approvedAt = now,
+            extraTimeMinutes = 15,
+            resubmitAllowed = false,
+            resubmitReason = (string?)null,
+            cloudVersion = 50,
+            updatedAt = now,
+            effectiveDeadline = now.AddHours(1),
+            attemptId,
+            attemptStatus = "InProgress",
+            attemptDeadline = now.AddHours(1),
+            attemptRevision = 51,
+            serverNowUtc = now,
+            revision = 51,
+            requestId
+        }));
+        var parser = typeof(ExamTransfer.Infrastructure.Cloud.SupabaseCloudAdapter)
+            .GetMethod("ParseParticipantMutation", BindingFlags.NonPublic | BindingFlags.Static);
+
+        var result = Assert.IsType<CloudParticipantMutationResult>(
+            parser!.Invoke(null, [document.RootElement]));
+
+        Assert.Equal(attemptId, result.AttemptId);
+        Assert.Equal(now.AddHours(1), result.AttemptDeadlineUtc);
+        Assert.Equal(now, result.ServerNowUtc);
+        Assert.Equal(51, result.Revision);
+        Assert.Equal(requestId, result.RequestId);
     }
 }
 
@@ -107,6 +296,64 @@ public sealed class PublicCloudTeacherMutationRoutingTests
     }
 
     [Fact]
+    public async Task PublicCloud_extra_time_maps_absolute_contract_and_broadcasts_once_without_local_mutation()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(database.Context, SessionAccessMode.PublicCloud);
+        var cloud = new RecordingCloudAdapter();
+        var realtime = new RecordingRealtimePublisher();
+        var service = PublicCloudTestHarness.CreateSessionService(database.Context, cloud, realtime);
+        var requestId = Guid.NewGuid();
+
+        var result = await service.AddExtraTimeAsync(
+            participant.SessionId,
+            participant.Id,
+            new ExtraTimeRequest(15, "Approved accommodation", requestId),
+            CancellationToken.None);
+
+        Assert.Equal(1, cloud.ExtraTimeCalls);
+        Assert.Equal(requestId, cloud.LastExtraTimeRequestId);
+        Assert.Equal(15, result.ExtraTimeMinutes);
+        Assert.Equal(cloud.ExtraTimeResult!.EffectiveDeadlineUtc, result.EffectiveDeadlineUtc);
+        var published = Assert.Single(realtime.SessionEvents);
+        Assert.Equal(participant.SessionId, published.SessionId);
+        Assert.Equal(RealtimeEvents.TimeExtended, published.EventName);
+        Assert.Equal(cloud.ExtraTimeResult.Revision, published.Sequence);
+        var payload = Assert.IsType<TimeExtendedEvent>(published.Payload);
+        Assert.Equal(participant.Id, payload.ParticipantId);
+        Assert.Equal(cloud.ExtraTimeResult.AttemptId, payload.AttemptId);
+        Assert.Equal(cloud.ExtraTimeResult.EffectiveDeadlineUtc, payload.EffectiveDeadlineUtc);
+        Assert.Equal(cloud.ExtraTimeResult.ServerNowUtc, payload.ServerNowUtc);
+        Assert.Equal(requestId, payload.RequestId);
+
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(
+            0,
+            (await database.Context.SessionParticipantsSet.SingleAsync(x => x.Id == participant.Id))
+                .ExtraTimeMinutes);
+        Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+    }
+
+    [Fact]
+    public async Task PublicCloud_extra_time_failure_or_incomplete_time_contract_does_not_broadcast()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(database.Context, SessionAccessMode.PublicCloud);
+        var realtime = new RecordingRealtimePublisher();
+        var cloud = new RecordingCloudAdapter { ExtraTimeMissingContract = true };
+        var service = PublicCloudTestHarness.CreateSessionService(database.Context, cloud, realtime);
+
+        var error = await Assert.ThrowsAsync<ApiException>(() => service.AddExtraTimeAsync(
+            participant.SessionId,
+            participant.Id,
+            new ExtraTimeRequest(10, "Incomplete upstream response", Guid.NewGuid()),
+            CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.CloudUploadFailed, error.Code);
+        Assert.Empty(realtime.SessionEvents);
+    }
+
+    [Fact]
     public async Task PublicCloud_resubmit_and_submission_reject_use_rpcs_without_local_final_state()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
@@ -156,6 +403,33 @@ public sealed class PublicCloudTeacherMutationRoutingTests
         public Task PublishSessionAsync<T>(Guid sessionId, string eventName, long sequence, T payload, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task PublishParticipantAsync<T>(Guid sessionId, Guid participantId, string eventName, long sequence, T payload, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
+    private sealed class RecordingRealtimePublisher : IRealtimePublisher
+    {
+        public List<PublishedEvent> SessionEvents { get; } = [];
+
+        public Task PublishSessionAsync<T>(
+            Guid sessionId,
+            string eventName,
+            long sequence,
+            T payload,
+            CancellationToken cancellationToken = default)
+        {
+            SessionEvents.Add(new(sessionId, eventName, sequence, payload!));
+            return Task.CompletedTask;
+        }
+
+        public Task PublishParticipantAsync<T>(
+            Guid sessionId,
+            Guid participantId,
+            string eventName,
+            long sequence,
+            T payload,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    private sealed record PublishedEvent(Guid SessionId, string EventName, long Sequence, object Payload);
 
     private sealed class TestStoragePaths : IStoragePaths
     {
@@ -350,10 +624,28 @@ public sealed class PublicCloudPullProjectionTests
             .ListAttemptsForSessionAsync(participant.SessionId, CancellationToken.None);
         var attempt = Assert.Single(attempts);
         Assert.Equal(attemptId, attempt.Id);
+        Assert.Equal(now.AddHours(1), attempt.DeadlineUtc);
         Assert.Equal(3, Assert.Single(attempt.Answers).Revision);
         var projectedQuestion = Assert.Single(attempt.Questions);
         Assert.Equal("Projected question", projectedQuestion.Text);
         Assert.Equal("Visible choice", Assert.Single(projectedQuestion.Choices).Text);
+
+        await PublicCloudTestHarness.RunPullOnceAsync(database.Path, new PullCloudAdapter(
+            new Dictionary<string, CloudPullRecord>
+            {
+                ["quiz_attempts"] = new("quiz_attempts", attemptId.ToString(), 23, now.AddMinutes(2),
+                    JsonSerializer.Serialize(new
+                    {
+                        id = attemptId, session_id = participant.SessionId, participant_id = participant.Id,
+                        exam_version = 1, status = "InProgress", started_at = now,
+                        deadline_at = now.AddHours(3), score = (decimal?)null, max_score = 1,
+                        snapshot_json = Array.Empty<object>()
+                    }))
+            }));
+        verify.ChangeTracker.Clear();
+        Assert.Equal(
+            now.AddHours(1),
+            (await verify.QuizAttemptsSet.SingleAsync(x => x.Id == attemptId)).DeadlineUtc);
 
         var finalized = await verify.QuizAttemptsSet.SingleAsync(x => x.Id == attemptId);
         finalized.Status = QuizAttemptStatus.Finalized;
@@ -501,7 +793,10 @@ internal static class PublicCloudTestHarness
         return participant;
     }
 
-    public static SessionService CreateSessionService(AppDbContext db, ICloudAdapter cloud)
+    public static SessionService CreateSessionService(
+        AppDbContext db,
+        ICloudAdapter cloud,
+        IRealtimePublisher? realtime = null)
     {
         var options = Options.Create(new ExamTransferOptions());
         return new SessionService(
@@ -509,7 +804,7 @@ internal static class PublicCloudTestHarness
             new SessionTokenService(options),
             new AuditService(db, new HttpContextAccessor()),
             new OutboxService(db),
-            new NoOpRealtimePublisher(),
+            realtime ?? new NoOpRealtimePublisher(),
             options,
             NullLogger<SessionService>.Instance,
             cloud: cloud);
@@ -569,10 +864,14 @@ internal class RecordingCloudAdapter : ICloudAdapter
     public int ApproveCalls { get; private set; }
     public int ResubmitCalls { get; private set; }
     public int RejectSubmissionCalls { get; private set; }
+    public int ExtraTimeCalls { get; private set; }
     public Guid? LastApproveRequestId { get; private set; }
     public Guid? LastResubmitRequestId { get; private set; }
     public Guid? LastRejectSubmissionRequestId { get; private set; }
+    public Guid? LastExtraTimeRequestId { get; private set; }
     public bool FailApprove { get; init; }
+    public bool ExtraTimeMissingContract { get; init; }
+    public CloudParticipantMutationResult? ExtraTimeResult { get; private set; }
     public bool Enabled => true;
     public bool Configured => true;
     public bool Authenticated => true;
@@ -601,6 +900,37 @@ internal class RecordingCloudAdapter : ICloudAdapter
         var now = DateTimeOffset.UtcNow;
         return Task.FromResult(new CloudParticipantMutationResult(
             participantId, Guid.Empty, ParticipantStatus.Approved, now, 0, true, reason, 43, now));
+    }
+    public Task<CloudParticipantMutationResult> AddPublicParticipantExtraTimeAsync(
+        Guid sessionId,
+        Guid participantId,
+        int minutes,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        ExtraTimeCalls++;
+        LastExtraTimeRequestId = requestId;
+        var now = DateTimeOffset.UtcNow;
+        ExtraTimeResult = new(
+            participantId,
+            sessionId,
+            ParticipantStatus.Approved,
+            now,
+            minutes,
+            false,
+            null,
+            50,
+            now,
+            now.AddMinutes(75),
+            Guid.NewGuid(),
+            "InProgress",
+            now.AddMinutes(75),
+            51,
+            ExtraTimeMissingContract ? null : now,
+            ExtraTimeMissingContract ? null : 51,
+            requestId);
+        return Task.FromResult(ExtraTimeResult);
     }
     public Task<CloudSubmissionMutationResult> RejectPublicSubmissionAsync(
         Guid submissionId, string reason, Guid requestId, CancellationToken cancellationToken)

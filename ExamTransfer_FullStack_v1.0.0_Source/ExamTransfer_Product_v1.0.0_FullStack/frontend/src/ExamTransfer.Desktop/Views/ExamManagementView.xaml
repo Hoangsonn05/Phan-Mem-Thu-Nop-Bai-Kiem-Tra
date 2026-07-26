@@ -3,6 +3,9 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
              beh:EntranceAnimation.IsEnabled="True">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    </UserControl.Resources>
     <Grid Margin="28,24,28,20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -27,14 +30,6 @@
                         Style="{StaticResource SecondaryButton}" />
                 <Button Content="Lưu thay đổi"
                         Command="{Binding SaveCommand}"
-                        Style="{StaticResource SecondaryButton}"
-                        Margin="8,0,0,0" />
-                <Button Content="Tải file đề"
-                        Command="{Binding UploadCommand}"
-                        Style="{StaticResource SecondaryButton}"
-                        Margin="8,0,0,0" />
-                <Button Content="Nhập trắc nghiệm"
-                        Command="{Binding ImportQuizCommand}"
                         Style="{StaticResource SecondaryButton}"
                         Margin="8,0,0,0" />
                 <Button Content="Tạo bài kiểm tra"
@@ -127,7 +122,8 @@
                                 </StackPanel>
                                 <StackPanel Grid.Column="2">
                                     <TextBlock Text="Thời lượng" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
-                                    <TextBox Text="{Binding Duration}" />
+                                    <TextBox Text="{Binding Duration}"
+                                             IsEnabled="{Binding IsPolicyEditable}" />
                                 </StackPanel>
                             </Grid>
                             <TextBlock Text="Mô tả / hướng dẫn"
@@ -143,18 +139,67 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- Delivery type and policy -->
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Loại bài kiểm tra"
+                                       Style="{StaticResource SectionTitleText}" />
+                            <TextBlock Text="Loại bài và chính sách bị khóa sau khi phát hành hoặc đã có phiên thi."
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="0,5,0,12"
+                                       TextWrapping="Wrap" />
+                            <RadioButton Content="Tự luận / nộp file"
+                                         IsChecked="{Binding IsFileSubmission, Mode=TwoWay}"
+                                         IsEnabled="{Binding IsPolicyEditable}"
+                                         GroupName="DeliveryType"
+                                         Margin="0,0,0,5" />
+                            <TextBlock Text="Học sinh nhận file đề và nộp bài theo quy tắc file hiện có."
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="24,0,0,12"
+                                       TextWrapping="Wrap" />
+                            <RadioButton Content="Trắc nghiệm"
+                                         IsChecked="{Binding IsMultipleChoice, Mode=TwoWay}"
+                                         IsEnabled="{Binding IsPolicyEditable}"
+                                         GroupName="DeliveryType"
+                                         Margin="0,0,0,5" />
+                            <TextBlock Text="Nguồn Word/PDF được preview rồi commit; file nguồn chỉ giáo viên được đọc."
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="24,0,0,0"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
                     <!-- File list -->
-                    <Border Style="{StaticResource Card}" Margin="0,14,0,0" Padding="0">
+                    <Border Style="{StaticResource Card}"
+                            Margin="0,14,0,0"
+                            Padding="0"
+                            Visibility="{Binding IsFileSubmission, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <Grid>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="180" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <TextBlock Text="File đề và phiên bản"
+                            <StackPanel Margin="18,16,18,10">
+                                <TextBlock Text="File đề tự luận và phiên bản"
                                        Style="{StaticResource SectionTitleText}"
-                                       Margin="18,16,18,10" />
-                            <DataGrid Grid.Row="1"
+                                       />
+                                <TextBlock Text="Có thể lưu nháp khi chưa có file, nhưng phải có file đề hoàn tất trước khi phát hành."
+                                           Style="{StaticResource CaptionText}"
+                                           Margin="0,5,0,0"
+                                           TextWrapping="Wrap" />
+                                <CheckBox Content="Áp dụng quy trình giám sát"
+                                          IsChecked="{Binding UseSupervision}"
+                                          IsEnabled="{Binding IsPolicyEditable}"
+                                          Margin="0,10,0,0" />
+                                <Button Content="Tải file đề cho học sinh"
+                                        Command="{Binding UploadCommand}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        HorizontalAlignment="Left"
+                                        Margin="0,10,0,0" />
+                            </StackPanel>
+                            <DataGrid Grid.Row="2"
                                       ItemsSource="{Binding Files}"
                                       SelectedItem="{Binding SelectedFile}">
                                 <DataGrid.Columns>
@@ -163,7 +208,7 @@
                                     <DataGridTextColumn Header="SHA-256" Binding="{Binding Sha256}" Width="160" />
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <StackPanel Grid.Row="2"
+                            <StackPanel Grid.Row="3"
                                         Orientation="Horizontal"
                                         HorizontalAlignment="Right"
                                         Margin="18,10,18,14">
@@ -176,6 +221,73 @@
                                         Margin="8,0,0,0" />
                             </StackPanel>
                         </Grid>
+                    </Border>
+
+                    <!-- Quiz source preview and commit -->
+                    <Border Style="{StaticResource Card}"
+                            Margin="0,14,0,0"
+                            Visibility="{Binding IsMultipleChoice, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <StackPanel>
+                            <TextBlock Text="Nguồn và câu hỏi trắc nghiệm"
+                                       Style="{StaticResource SectionTitleText}" />
+                            <TextBlock Text="Giám sát: Bắt buộc — Quy trình giám sát chuẩn"
+                                       Style="{StaticResource BodyText}"
+                                       Margin="0,8,0,0" />
+                            <CheckBox Content="Hiện điểm sau khi nộp"
+                                      IsChecked="{Binding ShowScoreAfterSubmission}"
+                                      IsEnabled="{Binding IsPolicyEditable}"
+                                      Margin="0,10,0,0" />
+                            <TextBlock Text="Nếu tắt, API học sinh không nhận điểm; đáp án đúng không được gửi xuống client."
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="24,4,0,12"
+                                       TextWrapping="Wrap" />
+                            <Button Content="Chọn Word/PDF và xem trước"
+                                    Command="{Binding ImportQuizCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding QuizImport.Summary}"
+                                       Style="{StaticResource BodyText}"
+                                       Margin="0,10,0,0" />
+                            <TextBlock Text="{Binding QuizImport.ReplaceNotice}"
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap" />
+                            <ItemsControl ItemsSource="{Binding QuizImport.Errors}" Margin="0,8,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Message}"
+                                                   Foreground="{StaticResource DangerBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,2,0,0" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <ItemsControl ItemsSource="{Binding QuizImport.Warnings}" Margin="0,4,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Message}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,2,0,0" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <DataGrid ItemsSource="{Binding QuizImport.Questions}"
+                                      Height="180"
+                                      Margin="0,10,0,0"
+                                      AutoGenerateColumns="False"
+                                      IsReadOnly="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="45" />
+                                    <DataGridTextColumn Header="CÂU HỎI" Binding="{Binding Text}" Width="*" />
+                                    <DataGridTextColumn Header="ĐIỂM" Binding="{Binding Points}" Width="65" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <Button Content="Commit bộ câu hỏi"
+                                    Command="{Binding CommitQuizCommand}"
+                                    Style="{StaticResource PrimaryButton}"
+                                    HorizontalAlignment="Right"
+                                    Margin="0,10,0,0" />
+                        </StackPanel>
                     </Border>
                 </StackPanel>
             </ScrollViewer>
