@@ -69,6 +69,12 @@ public abstract class ProductPageBase : ObservableObject, IAsyncInitializable, I
     protected abstract Task LoadAsync(CancellationToken cancellationToken);
 
     protected async Task RunAsync(string working, string success, Func<CancellationToken, Task> action)
+        => await RunAsync(working, () => success, action);
+
+    protected async Task RunAsync(
+        string working,
+        Func<string> success,
+        Func<CancellationToken, Task> action)
     {
         if (disposed || IsBusy)
         {
@@ -81,7 +87,7 @@ public abstract class ProductPageBase : ObservableObject, IAsyncInitializable, I
             Status = working;
             StatusTone = "primary";
             await action(disposeCts.Token);
-            Status = success;
+            Status = success();
             StatusTone = "success";
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)

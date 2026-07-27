@@ -9,8 +9,8 @@ namespace ExamTransfer.Infrastructure.Importing;
 
 /// <summary>
 /// Reads CSV and XLSX rows without requiring Microsoft Office or a heavyweight spreadsheet package.
-/// The reader intentionally supports the first worksheet because the frontend import workflow maps
-/// columns after preview and does not need workbook editing features.
+/// XLSX callers can inspect worksheets in workbook order and select the first sheet whose
+/// headers match their import contract.
 /// </summary>
 public static class SpreadsheetImportReader
 {
@@ -19,6 +19,14 @@ public static class SpreadsheetImportReader
     private const int MaxColumns = 256;
 
     public static List<List<string>> ReadRows(string fileName, byte[] bytes)
+    {
+        var worksheets = ReadWorksheets(fileName, bytes);
+        return worksheets.FirstOrDefault() ?? [];
+    }
+
+    public static IReadOnlyList<List<List<string>>> ReadWorksheets(
+        string fileName,
+        byte[] bytes)
     {
         if (bytes.Length == 0)
             throw new ApiException(ErrorCodes.ValidationFailed, "File import rỗng.");
@@ -29,7 +37,7 @@ public static class SpreadsheetImportReader
         var extension = Path.GetExtension(fileName).ToLowerInvariant();
         return extension switch
         {
-            ".csv" => ParseCsv(DecodeText(bytes)),
+            ".csv" => [ParseCsv(DecodeText(bytes))],
             ".xlsx" => ParseXlsx(bytes),
             _ => throw new ApiException(
                 ErrorCodes.InvalidFileType,
@@ -54,6 +62,7 @@ public static class SpreadsheetImportReader
 
     private static List<List<string>> ParseCsv(string text)
     {
+        var delimiter = DetectDelimiter(text);
         var rows = new List<List<string>>();
         var row = new List<string>();
         var field = new StringBuilder();
@@ -87,7 +96,7 @@ public static class SpreadsheetImportReader
                 case '"':
                     quoted = true;
                     break;
-                case ',':
+                case var value when value == delimiter:
                     row.Add(field.ToString());
                     field.Clear();
                     break;
@@ -114,7 +123,50 @@ public static class SpreadsheetImportReader
         return rows;
     }
 
-    private static List<List<string>> ParseXlsx(byte[] bytes)
+    private static char DetectDelimiter(string text)
+    {
+        var candidates = new[] { ',', ';', '\t' };
+        var scores = candidates.ToDictionary(candidate => candidate, _ => 0);
+        var rowScores = candidates.ToDictionary(candidate => candidate, _ => 0);
+        var quoted = false;
+        var rows = 0;
+
+        for (var index = 0; index < text.Length && rows < 30; index++)
+        {
+            var current = text[index];
+            if (current == '"')
+            {
+                if (quoted && index + 1 < text.Length && text[index + 1] == '"')
+                {
+                    index++;
+                    continue;
+                }
+                quoted = !quoted;
+                continue;
+            }
+            if (quoted)
+                continue;
+            if (rowScores.ContainsKey(current))
+                rowScores[current]++;
+            if (current != '\n')
+                continue;
+
+            foreach (var candidate in candidates)
+                scores[candidate] = Math.Max(scores[candidate], rowScores[candidate]);
+            foreach (var candidate in candidates)
+                rowScores[candidate] = 0;
+            rows++;
+        }
+
+        foreach (var candidate in candidates)
+            scores[candidate] = Math.Max(scores[candidate], rowScores[candidate]);
+        return candidates
+            .OrderByDescending(candidate => scores[candidate])
+            .ThenBy(candidate => Array.IndexOf(candidates, candidate))
+            .First();
+    }
+
+    private static IReadOnlyList<List<List<string>>> ParseXlsx(byte[] bytes)
     {
         try
         {
@@ -122,55 +174,22 @@ public static class SpreadsheetImportReader
             using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: false);
 
             var sharedStrings = ReadSharedStrings(archive);
-            var worksheetPath = ResolveFirstWorksheetPath(archive);
-            var worksheet = archive.GetEntry(worksheetPath)
-                ?? throw new ApiException(
-                    ErrorCodes.ValidationFailed,
-                    "Không tìm thấy worksheet đầu tiên trong file XLSX.");
-
-            using var worksheetStream = worksheet.Open();
-            var document = XDocument.Load(worksheetStream, LoadOptions.None);
-            var rows = new List<List<string>>();
-
-            foreach (var rowElement in document
-                         .Descendants()
-                         .Where(x => x.Name.LocalName == "row"))
+            var worksheets = new List<List<List<string>>>();
+            foreach (var worksheetPath in ResolveWorksheetPaths(archive))
             {
-                if (rows.Count >= MaxRows)
-                    throw new ApiException(
-                        ErrorCodes.ValidationFailed,
-                        $"File XLSX vượt quá giới hạn {MaxRows:N0} dòng.");
-
-                var values = new SortedDictionary<int, string>();
-                var nextColumn = 0;
-
-                foreach (var cell in rowElement.Elements()
-                             .Where(x => x.Name.LocalName == "c"))
-                {
-                    var reference = cell.Attribute("r")?.Value;
-                    var column = string.IsNullOrWhiteSpace(reference)
-                        ? nextColumn
-                        : GetColumnIndex(reference);
-
-                    if (column < 0 || column >= MaxColumns)
-                        continue;
-
-                    values[column] = ReadCellValue(cell, sharedStrings);
-                    nextColumn = column + 1;
-                }
-
-                if (values.Count == 0)
+                var worksheet = archive.GetEntry(worksheetPath);
+                if (worksheet is null)
                     continue;
-
-                var lastColumn = values.Keys.Max();
-                var row = Enumerable.Repeat(string.Empty, lastColumn + 1).ToList();
-                foreach (var pair in values)
-                    row[pair.Key] = pair.Value;
-
-                AddRow(rows, row);
+                var rows = ReadWorksheet(worksheet, sharedStrings);
+                if (rows.Count > 0)
+                    worksheets.Add(rows);
             }
 
-            return rows;
+            if (worksheets.Count == 0)
+                throw new ApiException(
+                    ErrorCodes.ValidationFailed,
+                    "Không tìm thấy worksheet có dữ liệu trong file XLSX.");
+            return worksheets;
         }
         catch (ApiException)
         {
@@ -210,51 +229,96 @@ public static class SpreadsheetImportReader
             .ToList();
     }
 
-    private static string ResolveFirstWorksheetPath(ZipArchive archive)
+    private static List<List<string>> ReadWorksheet(
+        ZipArchiveEntry worksheet,
+        IReadOnlyList<string> sharedStrings)
+    {
+        using var worksheetStream = worksheet.Open();
+        var document = XDocument.Load(worksheetStream, LoadOptions.None);
+        var rows = new List<List<string>>();
+
+        foreach (var rowElement in document
+                     .Descendants()
+                     .Where(x => x.Name.LocalName == "row"))
+        {
+            if (rows.Count >= MaxRows)
+                throw new ApiException(
+                    ErrorCodes.ValidationFailed,
+                    $"File XLSX vượt quá giới hạn {MaxRows:N0} dòng.");
+
+            var values = new SortedDictionary<int, string>();
+            var nextColumn = 0;
+            foreach (var cell in rowElement.Elements()
+                         .Where(x => x.Name.LocalName == "c"))
+            {
+                var reference = cell.Attribute("r")?.Value;
+                var column = string.IsNullOrWhiteSpace(reference)
+                    ? nextColumn
+                    : GetColumnIndex(reference);
+                if (column < 0 || column >= MaxColumns)
+                    continue;
+                values[column] = ReadCellValue(cell, sharedStrings);
+                nextColumn = column + 1;
+            }
+            if (values.Count == 0)
+                continue;
+            var lastColumn = values.Keys.Max();
+            var row = Enumerable.Repeat(string.Empty, lastColumn + 1).ToList();
+            foreach (var pair in values)
+                row[pair.Key] = pair.Value;
+            AddRow(rows, row);
+        }
+        return rows;
+    }
+
+    private static IReadOnlyList<string> ResolveWorksheetPaths(ZipArchive archive)
     {
         const string defaultPath = "xl/worksheets/sheet1.xml";
         var workbook = archive.GetEntry("xl/workbook.xml");
         var relationships = archive.GetEntry("xl/_rels/workbook.xml.rels");
 
         if (workbook is null || relationships is null)
-            return defaultPath;
+            return [defaultPath];
 
         using var workbookStream = workbook.Open();
         var workbookDocument = XDocument.Load(workbookStream, LoadOptions.None);
-        var firstSheet = workbookDocument.Descendants()
-            .FirstOrDefault(x => x.Name.LocalName == "sheet");
-
-        var relationshipId = firstSheet?.Attributes()
-            .FirstOrDefault(x => x.Name.LocalName == "id")
-            ?.Value;
-
-        if (string.IsNullOrWhiteSpace(relationshipId))
-            return defaultPath;
+        var relationshipIds = workbookDocument.Descendants()
+            .Where(x => x.Name.LocalName == "sheet")
+            .Select(sheet => sheet.Attributes()
+                .FirstOrDefault(attribute => attribute.Name.LocalName == "id")
+                ?.Value)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Cast<string>()
+            .ToList();
+        if (relationshipIds.Count == 0)
+            return [defaultPath];
 
         using var relationshipStream = relationships.Open();
         var relationshipDocument = XDocument.Load(
             relationshipStream,
             LoadOptions.None);
 
-        var relationship = relationshipDocument.Descendants()
-            .FirstOrDefault(x =>
-                x.Name.LocalName == "Relationship"
-                && string.Equals(
-                    x.Attribute("Id")?.Value,
-                    relationshipId,
-                    StringComparison.Ordinal));
-
-        var target = relationship?.Attribute("Target")?.Value;
-        if (string.IsNullOrWhiteSpace(target))
-            return defaultPath;
-
-        target = target.Replace('\\', '/').TrimStart('/');
-        if (target.StartsWith("../", StringComparison.Ordinal))
-            target = target[3..];
-
-        return target.StartsWith("xl/", StringComparison.OrdinalIgnoreCase)
-            ? target
-            : "xl/" + target;
+        var targets = relationshipIds
+            .Select(id => relationshipDocument.Descendants()
+                .FirstOrDefault(x =>
+                    x.Name.LocalName == "Relationship"
+                    && string.Equals(
+                        x.Attribute("Id")?.Value,
+                        id,
+                        StringComparison.Ordinal))
+                ?.Attribute("Target")?.Value)
+            .Where(target => !string.IsNullOrWhiteSpace(target))
+            .Select(target =>
+            {
+                var normalized = target!.Replace('\\', '/').TrimStart('/');
+                if (normalized.StartsWith("../", StringComparison.Ordinal))
+                    normalized = normalized[3..];
+                return normalized.StartsWith("xl/", StringComparison.OrdinalIgnoreCase)
+                    ? normalized
+                    : "xl/" + normalized;
+            })
+            .ToList();
+        return targets.Count > 0 ? targets : [defaultPath];
     }
 
     private static string ReadCellValue(

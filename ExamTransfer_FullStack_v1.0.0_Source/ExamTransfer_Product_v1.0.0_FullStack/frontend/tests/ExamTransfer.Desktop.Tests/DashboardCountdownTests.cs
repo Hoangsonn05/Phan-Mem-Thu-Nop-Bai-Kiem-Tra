@@ -68,13 +68,17 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
 {
     public int DashboardRequests { get; private set; }
     public QuizAttemptDto? QuizAttemptResponse { get; init; }
+    public ClassDetailDto? ClassDetailResponse { get; init; }
     public ExamSummaryDto? ExamSummaryResponse { get; init; }
     public ExamDetailDto? ExamDetailResponse { get; init; }
     public SessionDetailDto? SessionDetailResponse { get; init; }
+    public IReadOnlyList<ClassSummaryDto>? ClassResponses { get; init; }
     public IReadOnlyList<ExamSummaryDto>? ExamResponses { get; init; }
     public IReadOnlyList<SessionSummaryDto>? SessionResponses { get; init; }
     public List<string> PostPaths { get; } = [];
     public List<object?> PostRequests { get; } = [];
+    public List<string> PutPaths { get; } = [];
+    public List<object?> PutRequests { get; } = [];
     public Uri BaseAddress { get; } = new("https://localhost/");
     public bool HasTrustedAccountToken => false;
 
@@ -103,7 +107,11 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
     public Task<ApiResponse<SystemStatusDto>?> GetSystemStatusAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<SystemStatusDto>?>(null);
     public Task<ApiResponse<PagedResult<ClassSummaryDto>>?> GetClassesAsync(CancellationToken ct = default) =>
         Task.FromResult<ApiResponse<PagedResult<ClassSummaryDto>>?>(
-            ExamResponses is not null || ExamSummaryResponse is not null
+            ClassResponses is not null
+                ? ApiResponse<PagedResult<ClassSummaryDto>>.Ok(
+                    new(ClassResponses, 1, 50, ClassResponses.Count),
+                    "test")
+                : ExamResponses is not null || ExamSummaryResponse is not null
                 ? ApiResponse<PagedResult<ClassSummaryDto>>.Ok(new([], 1, 50, 0), "test")
                 : null);
     public Task<ApiResponse<PagedResult<ExamSummaryDto>>?> GetExamsAsync(CancellationToken ct = default) =>
@@ -124,6 +132,9 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
     public Task<ApiResponse<SettingsDto>?> GetSettingsAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<SettingsDto>?>(null);
     public Task<ApiResponse<T>?> GetAsync<T>(string path, CancellationToken ct = default)
     {
+        if (ClassDetailResponse is not null && typeof(T) == typeof(ClassDetailDto))
+            return Task.FromResult<ApiResponse<T>?>(
+                ApiResponse<T>.Ok((T)(object)ClassDetailResponse, "test"));
         if (ExamDetailResponse is not null && typeof(T) == typeof(ExamDetailDto))
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ExamDetailResponse, "test"));
@@ -142,9 +153,27 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
         if (QuizAttemptResponse is not null && typeof(TResponse) == typeof(QuizAttemptDto))
             return Task.FromResult<ApiResponse<TResponse>?>(
                 ApiResponse<TResponse>.Ok((TResponse)(object)QuizAttemptResponse, "test"));
+        if (request is BulkArchiveRequest bulk && typeof(TResponse) == typeof(BulkArchiveResultDto))
+        {
+            var result = new BulkArchiveResultDto(
+                bulk.Ids.Count,
+                bulk.Ids.Count,
+                [],
+                []);
+            return Task.FromResult<ApiResponse<TResponse>?>(
+                ApiResponse<TResponse>.Ok((TResponse)(object)result, "test"));
+        }
         return Task.FromResult<ApiResponse<TResponse>?>(null);
     }
-    public Task<ApiResponse<TResponse>?> PutAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);
+    public Task<ApiResponse<TResponse>?> PutAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
+    {
+        PutPaths.Add(path);
+        PutRequests.Add(request);
+        if (ExamDetailResponse is not null && typeof(TResponse) == typeof(ExamDetailDto))
+            return Task.FromResult<ApiResponse<TResponse>?>(
+                ApiResponse<TResponse>.Ok((TResponse)(object)ExamDetailResponse, "test"));
+        return Task.FromResult<ApiResponse<TResponse>?>(null);
+    }
     public Task<ApiResponse<TResponse>?> DeleteAsync<TResponse>(string path, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);
     public Task<ApiResponse<object>?> UploadChunkAsync(string path, Stream content, long contentLength, string? sha256 = null, CancellationToken ct = default) => Task.FromResult<ApiResponse<object>?>(null);
     public Task DownloadFileAsync(string path, string destinationPath, IProgress<double>? progress = null, CancellationToken ct = default) => Task.CompletedTask;

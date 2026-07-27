@@ -1,6 +1,7 @@
 ﻿using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
+using ExamTransfer.Infrastructure.Importing;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Infrastructure.Services;
@@ -770,6 +771,281 @@ public sealed class CoreWorkflowPersistenceTests
         Assert.False(await db.ExamSessionsSet.AnyAsync(x => x.ExamId == clone.Id));
         Assert.False(await db.QuizAttemptsSet.AnyAsync(x => x.Session.ExamId == clone.Id));
         Assert.False(await db.SubmissionsSet.AnyAsync(x => x.Session.ExamId == clone.Id));
+    }
+
+    [Fact]
+    public async Task BulkArchive_PersistsSoftDelete_AndDefaultListsStayHiddenAfterRestart()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var firstClass = await services.Classes.CreateAsync(
+            new("Archive A", "ARC-A", "2026-2027", null),
+            CancellationToken.None);
+        var secondClass = await services.Classes.CreateAsync(
+            new("Archive B", "ARC-B", "2026-2027", null),
+            CancellationToken.None);
+        var exam = await services.Exams.CreateAsync(
+            ExamRequest(null, false),
+            CancellationToken.None);
+        exam = await services.Exams.PublishAsync(exam.Id, CancellationToken.None);
+        var session = new ExamSession
+        {
+            ExamId = exam.Id,
+            RoomCode = "ARCHIVE1",
+            HostDeviceId = "host",
+            Status = SessionStatus.Finished,
+            AcceptingParticipants = false
+        };
+        database.Context.ExamSessionsSet.Add(session);
+        await database.Context.SaveChangesAsync();
+
+        var classesResult = await services.Classes.BulkArchiveAsync(
+            new([firstClass.Id, secondClass.Id]),
+            CancellationToken.None);
+        var sessionsResult = await services.Sessions.BulkArchiveAsync(
+            new([session.Id]),
+            CancellationToken.None);
+        var examsResult = await services.Exams.BulkArchiveAsync(
+            new([exam.Id]),
+            CancellationToken.None);
+
+        Assert.Equal(2, classesResult.Archived);
+        Assert.Equal(1, sessionsResult.Archived);
+        Assert.Equal(1, examsResult.Archived);
+
+        await using var restarted = database.CreateContext();
+        var restartedServices = Services(restarted);
+        Assert.DoesNotContain(
+            (await restartedServices.Classes.ListAsync(null, 1, 50, CancellationToken.None)).Items,
+            item => item.Id == firstClass.Id || item.Id == secondClass.Id);
+        Assert.DoesNotContain(
+            (await restartedServices.Exams.ListAsync(null, null, 1, 50, CancellationToken.None)).Items,
+            item => item.Id == exam.Id);
+        Assert.DoesNotContain(
+            (await restartedServices.Sessions.ListAsync(null, 1, 50, CancellationToken.None)).Items,
+            item => item.Id == session.Id);
+        Assert.All(
+            await restarted.ClassesSet.Where(x => x.Id == firstClass.Id || x.Id == secondClass.Id).ToListAsync(),
+            item => Assert.Equal(ClassStatus.Archived, item.Status));
+        Assert.Equal(
+            ExamStatus.Archived,
+            (await restarted.ExamsSet.SingleAsync(x => x.Id == exam.Id)).Status);
+        Assert.Equal(
+            SessionStatus.Archived,
+            (await restarted.ExamSessionsSet.SingleAsync(x => x.Id == session.Id)).Status);
+        Assert.True(await restarted.AuditLogsSet.CountAsync(x =>
+            x.Action == "ClassArchived"
+            || x.Action == "ExamArchived"
+            || x.Action == "SessionStateChanged") >= 4);
+        Assert.True(await restarted.SyncQueueSet.CountAsync(x =>
+            x.EntityType == "classes"
+            || x.EntityType == "exams"
+            || x.EntityType == "exam_sessions") >= 4);
+
+        var idempotent = await restartedServices.Classes.BulkArchiveAsync(
+            new([firstClass.Id]),
+            CancellationToken.None);
+        Assert.Equal(0, idempotent.Archived);
+        Assert.Contains(firstClass.Id, idempotent.AlreadyArchived);
+    }
+
+    [Fact]
+    public async Task BulkArchive_RejectionIsAtomic_ForMissingIdActiveExamAndRunningSession()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var classroom = await services.Classes.CreateAsync(
+            new("Atomic", "ATOMIC", "2026-2027", null),
+            CancellationToken.None);
+        await Assert.ThrowsAsync<ApiException>(() => services.Classes.BulkArchiveAsync(
+            new([classroom.Id, Guid.NewGuid()]),
+            CancellationToken.None));
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(
+            ClassStatus.Active,
+            (await database.Context.ClassesSet.SingleAsync(x => x.Id == classroom.Id)).Status);
+
+        var exam = await services.Exams.CreateAsync(ExamRequest(null, false), CancellationToken.None);
+        exam = await services.Exams.PublishAsync(exam.Id, CancellationToken.None);
+        var finished = new ExamSession
+        {
+            ExamId = exam.Id,
+            RoomCode = "DONE01",
+            HostDeviceId = "host",
+            Status = SessionStatus.Finished
+        };
+        var running = new ExamSession
+        {
+            ExamId = exam.Id,
+            RoomCode = "RUN01",
+            HostDeviceId = "host",
+            Status = SessionStatus.InProgress
+        };
+        database.Context.ExamSessionsSet.AddRange(finished, running);
+        await database.Context.SaveChangesAsync();
+
+        var examError = await Assert.ThrowsAsync<ApiException>(() =>
+            services.Exams.BulkArchiveAsync(new([exam.Id]), CancellationToken.None));
+        Assert.Equal(ErrorCodes.InvalidStateTransition, examError.Code);
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(
+            ExamStatus.Published,
+            (await database.Context.ExamsSet.SingleAsync(x => x.Id == exam.Id)).Status);
+
+        var sessionError = await Assert.ThrowsAsync<ApiException>(() =>
+            services.Sessions.BulkArchiveAsync(
+                new([finished.Id, running.Id]),
+                CancellationToken.None));
+        Assert.Equal(ErrorCodes.InvalidStateTransition, sessionError.Code);
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(
+            SessionStatus.Finished,
+            (await database.Context.ExamSessionsSet.SingleAsync(x => x.Id == finished.Id)).Status);
+    }
+
+    [Theory]
+    [InlineData("\uFEFFMã sinh viên,Họ và tên\n00001,\"Nguyễn, Văn An\"", "Nguyễn, Văn An")]
+    [InlineData("Mã SV;Họ đệm;Tên\n00002;Trần Văn;Bình", "Trần Văn Bình")]
+    [InlineData("Student Code\tDisplay Name\n00003\tLê Cường", "Lê Cường")]
+    public void SpreadsheetReader_DetectsDelimiterQuotedFieldsAndVietnameseAliases(
+        string csv,
+        string expectedName)
+    {
+        var rows = SpreadsheetImportReader.ReadRows(
+            "students.csv",
+            System.Text.Encoding.UTF8.GetBytes(csv));
+        var header = StudentImportHeaderMapper.TryFindHeader(
+            rows,
+            requireDateOfBirth: false,
+            out _);
+
+        Assert.NotNull(header);
+        Assert.Equal(expectedName, header.ReadDisplayName(rows[header.RowIndex + 1]));
+    }
+
+    [Fact]
+    public void SpreadsheetReader_UsesFirstXlsxWorksheetWithValidHeader()
+    {
+        var workbook = CreateXlsx(
+            [["Báo cáo lớp"], ["Không phải tiêu đề"]],
+            [["Danh sách sinh viên"], ["Mã sinh viên", "Họ và tên"], ["00004", "Phạm Minh"]]);
+        var worksheets = SpreadsheetImportReader.ReadWorksheets("students.xlsx", workbook);
+
+        var selected = worksheets
+            .Select(rows => new
+            {
+                Rows = rows,
+                Header = StudentImportHeaderMapper.TryFindHeader(rows, false, out _)
+            })
+            .First(item => item.Header is not null);
+
+        Assert.Equal("Phạm Minh", selected.Header!.ReadDisplayName(selected.Rows[2]));
+    }
+
+    [Fact]
+    public async Task MembershipImport_ScansDescription_Deduplicates_CommitsAndDoesNotCreateUsers()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var classes = Services(database.Context).Classes;
+        var classroom = await classes.CreateAsync(
+            new("Import", "IMPORT", "2026-2027", null),
+            CancellationToken.None);
+        var csv = "\uFEFFDanh sách sinh viên lớp 10A\n"
+            + "Xuất ngày 27/07/2026\n"
+            + "Mã SV;Họ đệm;Tên;Email\n"
+            + "00001;Nguyễn Văn;An;an@example.test\n"
+            + "\n"
+            + "00001;Nguyễn Văn;Trùng;duplicate@example.test\n"
+            + "00002;Trần;Bình;\n";
+        var usersBefore = await database.Context.UsersSet.CountAsync();
+
+        var preview = await classes.PreviewImportAsync(
+            classroom.Id,
+            new(
+                "students.csv",
+                Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(csv)),
+                null),
+            CancellationToken.None);
+        Assert.Equal(3, preview.TotalRows);
+        Assert.Equal(2, preview.ValidRows);
+        Assert.Single(preview.Errors);
+
+        var committed = await classes.CommitImportAsync(
+            classroom.Id,
+            new(preview.PreviewToken, true),
+            CancellationToken.None);
+        Assert.Equal(2, committed.Inserted);
+        Assert.Equal(1, committed.Skipped);
+        Assert.Equal(usersBefore, await database.Context.UsersSet.CountAsync());
+
+        await using var restarted = database.CreateContext();
+        Assert.Equal(
+            2,
+            await restarted.ClassMembersSet.CountAsync(x => x.ClassId == classroom.Id));
+    }
+
+    [Fact]
+    public void HeaderMapper_MissingRequiredHeader_ReturnsObservedHeaders()
+    {
+        List<List<string>> rows = [["Báo cáo"], ["Email", "Ngày sinh"]];
+        var header = StudentImportHeaderMapper.TryFindHeader(rows, false, out var observed);
+        Assert.Null(header);
+        Assert.Contains(observed, row => row.Contains("Email", StringComparison.Ordinal));
+    }
+
+    private static byte[] CreateXlsx(params string[][][] worksheets)
+    {
+        using var stream = new MemoryStream();
+        using (var archive = new System.IO.Compression.ZipArchive(
+                   stream,
+                   System.IO.Compression.ZipArchiveMode.Create,
+                   leaveOpen: true))
+        {
+            WriteZipEntry(
+                archive,
+                "xl/workbook.xml",
+                "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+                + "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>"
+                + string.Concat(worksheets.Select((_, index) =>
+                    $"<sheet name=\"Sheet{index + 1}\" sheetId=\"{index + 1}\" r:id=\"rId{index + 1}\"/>"))
+                + "</sheets></workbook>");
+            WriteZipEntry(
+                archive,
+                "xl/_rels/workbook.xml.rels",
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                + string.Concat(worksheets.Select((_, index) =>
+                    $"<Relationship Id=\"rId{index + 1}\" "
+                    + "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" "
+                    + $"Target=\"worksheets/sheet{index + 1}.xml\"/>"))
+                + "</Relationships>");
+            for (var sheetIndex = 0; sheetIndex < worksheets.Length; sheetIndex++)
+            {
+                var rows = string.Concat(worksheets[sheetIndex].Select((row, rowIndex) =>
+                    $"<row r=\"{rowIndex + 1}\">"
+                    + string.Concat(row.Select((value, columnIndex) =>
+                        $"<c r=\"{(char)('A' + columnIndex)}{rowIndex + 1}\" t=\"inlineStr\"><is><t>"
+                        + System.Security.SecurityElement.Escape(value)
+                        + "</t></is></c>"))
+                    + "</row>"));
+                WriteZipEntry(
+                    archive,
+                    $"xl/worksheets/sheet{sheetIndex + 1}.xml",
+                    "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+                    + rows
+                    + "</sheetData></worksheet>");
+            }
+        }
+        return stream.ToArray();
+    }
+
+    private static void WriteZipEntry(
+        System.IO.Compression.ZipArchive archive,
+        string path,
+        string content)
+    {
+        var entry = archive.CreateEntry(path);
+        using var writer = new StreamWriter(entry.Open(), System.Text.Encoding.UTF8);
+        writer.Write(content);
     }
 
     private static CreateExamRequest ExamRequest(Guid? classId, bool requireFile) => new(

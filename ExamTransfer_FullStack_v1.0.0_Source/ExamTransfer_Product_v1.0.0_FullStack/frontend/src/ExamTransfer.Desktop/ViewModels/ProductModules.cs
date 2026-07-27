@@ -11,7 +11,8 @@ namespace ExamTransfer.Desktop.ViewModels;
 public sealed class ClassManagementViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
-    private ClassSummaryDto? selectedClass;
+    private readonly IDialogService archiveDialogs;
+    private SelectableClassRow? selectedClass;
     private StudentDto? selectedStudent;
     private ClassEnrollmentRequestDto? selectedEnrollmentRequest;
     private string currentClassRowVersion = "1";
@@ -23,10 +24,14 @@ public sealed class ClassManagementViewModel : ProductPageBase
     private string studentName = string.Empty;
     private string studentEmail = string.Empty;
     private ClassAccessMode accessMode = ClassAccessMode.Private;
+    private bool allVisibleChecked;
 
-    public ClassManagementViewModel(IBackendClient api)
+    public ClassManagementViewModel(
+        IBackendClient api,
+        IDialogService? archiveDialogs = null)
     {
         this.api = api;
+        this.archiveDialogs = archiveDialogs ?? AppServices.Dialogs;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         CreateCommand = new AsyncRelayCommand(CreateAsync, () => !IsBusy);
         OpenCommand = new AsyncRelayCommand(OpenAsync, () => !IsBusy && SelectedClass is not null);
@@ -36,15 +41,23 @@ public sealed class ClassManagementViewModel : ProductPageBase
         RemoveStudentCommand = new AsyncRelayCommand(RemoveStudentAsync, () => !IsBusy && SelectedClass is not null && SelectedStudent is not null);
         ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsBusy && SelectedClass is not null);
         ImportCommand = new AsyncRelayCommand(ImportAsync, () => !IsBusy && SelectedClass is not null);
-        ArchiveCommand = new AsyncRelayCommand(ArchiveAsync, () => !IsBusy && SelectedClass is not null);
+        BulkArchiveCommand = new AsyncRelayCommand(
+            BulkArchiveAsync,
+            () => !IsBusy && SelectedArchiveCount is > 0 and <= 200);
+        ToggleArchiveSelectionCommand = new RelayCommand<SelectableClassRow>(
+            ToggleArchiveSelection,
+            row => !IsBusy && row?.CanArchive == true);
+        ToggleAllVisibleArchiveSelectionCommand = new RelayCommand(
+            ToggleAllVisibleArchiveSelection,
+            () => !IsBusy && Classes.Any(row => row.CanArchive));
         ApproveEnrollmentCommand = new AsyncRelayCommand(ApproveEnrollmentAsync, () => !IsBusy && SelectedClass is not null && SelectedEnrollmentRequest?.Status == "Pending");
         RejectEnrollmentCommand = new AsyncRelayCommand(RejectEnrollmentAsync, () => !IsBusy && SelectedClass is not null && SelectedEnrollmentRequest?.Status == "Pending");
     }
 
-    public ObservableCollection<ClassSummaryDto> Classes { get; } = new();
+    public ObservableCollection<SelectableClassRow> Classes { get; } = new();
     public ObservableCollection<StudentDto> Students { get; } = new();
     public ObservableCollection<ClassEnrollmentRequestDto> EnrollmentRequests { get; } = new();
-    public ClassSummaryDto? SelectedClass { get => selectedClass; set { if (Set(ref selectedClass, value)) RaiseCommands(); } }
+    public SelectableClassRow? SelectedClass { get => selectedClass; set { if (Set(ref selectedClass, value)) RaiseCommands(); } }
     public StudentDto? SelectedStudent
     {
         get => selectedStudent;
@@ -85,7 +98,11 @@ public sealed class ClassManagementViewModel : ProductPageBase
     public ICommand RemoveStudentCommand { get; }
     public ICommand ExportCommand { get; }
     public ICommand ImportCommand { get; }
-    public ICommand ArchiveCommand { get; }
+    public int SelectedArchiveCount => Classes.Count(row => row.IsChecked);
+    public bool AllVisibleChecked => allVisibleChecked;
+    public ICommand BulkArchiveCommand { get; }
+    public ICommand ToggleArchiveSelectionCommand { get; }
+    public ICommand ToggleAllVisibleArchiveSelectionCommand { get; }
     public ICommand ApproveEnrollmentCommand { get; }
     public ICommand RejectEnrollmentCommand { get; }
 
@@ -100,7 +117,7 @@ public sealed class ClassManagementViewModel : ProductPageBase
     private async Task RefreshClassesCoreAsync(Guid? selectedId, CancellationToken ct)
     {
         var data = ApiGuard.Require(await api.GetClassesAsync(ct));
-        Classes.ReplaceWith(data.Items);
+        ReplaceClasses(data.Items);
         SelectedClass = selectedId.HasValue
             ? Classes.FirstOrDefault(x => x.Id == selectedId.Value) ?? Classes.FirstOrDefault()
             : Classes.FirstOrDefault();
@@ -182,27 +199,116 @@ public sealed class ClassManagementViewModel : ProductPageBase
         StudentCode = StudentName = StudentEmail = string.Empty;
     });
 
-    private Task ImportAsync() => RunAsync("Đang kiểm tra file import", "Danh sách học sinh đã được import", async ct =>
+    private Task ImportAsync()
     {
-        if (SelectedClass is null) return;
-        var file = AppServices.Files.PickFile("Danh sách CSV|*.csv|Tất cả file|*.*");
-        if (file is null) return;
-        var base64 = Convert.ToBase64String(await File.ReadAllBytesAsync(file, ct));
-        var preview = ApiGuard.Require(await api.PostAsync<ImportPreviewRequest, ImportPreviewDto>($"api/v1/classes/{SelectedClass.Id}/imports/preview", new(Path.GetFileName(file), base64, null), ct));
-        if (!AppServices.Dialogs.Confirm("Xác nhận import", $"Có {preview.ValidRows} dòng hợp lệ và {preview.InvalidRows} dòng lỗi. Tiếp tục import?")) return;
-        _ = ApiGuard.Require(await api.PostAsync<ImportCommitRequest, ImportCommitResultDto>($"api/v1/classes/{SelectedClass.Id}/imports/commit", new(preview.PreviewToken, true), ct));
-        await RefreshClassesCoreAsync(SelectedClass.Id, ct);
+        var summary = "Không có dữ liệu được import";
+        return RunAsync("Đang kiểm tra file import", () => summary, async ct =>
+        {
+            if (SelectedClass is null) return;
+            var file = AppServices.Files.PickFile(
+                "Danh sách sinh viên (*.csv;*.xlsx)|*.csv;*.xlsx|CSV (*.csv)|*.csv|Excel (*.xlsx)|*.xlsx");
+            if (file is null)
+            {
+                summary = "Đã hủy chọn file import";
+                return;
+            }
+            var base64 = Convert.ToBase64String(await File.ReadAllBytesAsync(file, ct));
+            var preview = ApiGuard.Require(await api.PostAsync<ImportPreviewRequest, ImportPreviewDto>(
+                $"api/v1/classes/{SelectedClass.Id}/imports/preview",
+                new(Path.GetFileName(file), base64, null),
+                ct));
+            if (!AppServices.Dialogs.Confirm(
+                    "Xác nhận import",
+                    $"Tổng {preview.TotalRows} dòng · hợp lệ {preview.ValidRows} · lỗi {preview.InvalidRows}. " +
+                    "Các dòng lỗi sẽ được bỏ qua. Tiếp tục?"))
+            {
+                summary = $"Đã xem trước {preview.TotalRows} dòng; chưa import";
+                return;
+            }
+            var result = ApiGuard.Require(await api.PostAsync<ImportCommitRequest, ImportCommitResultDto>(
+                $"api/v1/classes/{SelectedClass.Id}/imports/commit",
+                new(preview.PreviewToken, true),
+                ct));
+            summary = $"Import xong: thêm {result.Inserted}, bỏ qua {result.Skipped}, lỗi {result.Errors.Count}";
+            await RefreshClassesCoreAsync(SelectedClass.Id, ct);
+        });
+    }
+
+    private Task BulkArchiveAsync() => RunAsync(
+        "Đang lưu trữ các lớp đã chọn",
+        "Các lớp đã chọn đã được lưu trữ",
+        async ct =>
+    {
+        var selected = Classes
+            .Where(row => row.CanArchive && row.IsChecked)
+            .GroupBy(row => row.Id)
+            .Select(group => group.First())
+            .ToList();
+        if (selected.Count == 0)
+            return;
+        var examples = string.Join(", ", selected.Take(3).Select(row => row.Name));
+        if (!archiveDialogs.Confirm(
+                "Lưu trữ lớp",
+                $"Xóa {selected.Count} lớp ({examples}) khỏi danh sách? Các mục sẽ được chuyển vào trạng thái lưu trữ và không còn xuất hiện trong danh sách mặc định."))
+            return;
+        _ = ApiGuard.Require(await api.PostAsync<BulkArchiveRequest, BulkArchiveResultDto>(
+            "api/v1/classes/bulk-archive",
+            new(selected.Select(row => row.Id).ToList()),
+            ct));
+        await RefreshClassesCoreAsync(null, ct);
     });
 
-    private Task ArchiveAsync() => RunAsync("Đang lưu trữ lớp", "Lớp đã được lưu trữ", async ct =>
+    private void ToggleArchiveSelection(SelectableClassRow? row)
     {
-        if (SelectedClass is null || !AppServices.Dialogs.Confirm("Lưu trữ lớp", $"Lưu trữ lớp {SelectedClass.Name}?")) return;
-        _ = await api.DeleteAsync<object>($"api/v1/classes/{SelectedClass.Id}", ct);
-        Classes.Remove(SelectedClass);
-        SelectedClass = Classes.FirstOrDefault();
-        Students.Clear();
-        EnrollmentRequests.Clear();
-    });
+        if (row is null || !row.CanArchive || IsBusy)
+            return;
+        row.IsChecked = !row.IsChecked;
+    }
+
+    private void ToggleAllVisibleArchiveSelection()
+    {
+        if (IsBusy)
+            return;
+        var eligible = Classes.Where(row => row.CanArchive).ToList();
+        if (eligible.Count == 0)
+            return;
+        var next = !eligible.All(row => row.IsChecked);
+        foreach (var row in eligible)
+            row.IsChecked = next;
+        OnArchiveSelectionChanged();
+    }
+
+    private void ReplaceClasses(IEnumerable<ClassSummaryDto> items)
+    {
+        foreach (var row in Classes)
+            row.SelectionChanged -= ArchiveSelectionChanged;
+        Classes.Clear();
+        foreach (var item in items)
+        {
+            var row = new SelectableClassRow(item);
+            row.SelectionChanged += ArchiveSelectionChanged;
+            Classes.Add(row);
+        }
+        allVisibleChecked = false;
+        Raise(nameof(AllVisibleChecked));
+        OnArchiveSelectionChanged();
+    }
+
+    private void ArchiveSelectionChanged(object? sender, EventArgs e) =>
+        OnArchiveSelectionChanged();
+
+    private void OnArchiveSelectionChanged()
+    {
+        Raise(nameof(SelectedArchiveCount));
+        var eligible = Classes.Where(row => row.CanArchive).ToList();
+        var nextAll = eligible.Count > 0 && eligible.All(row => row.IsChecked);
+        if (allVisibleChecked != nextAll)
+        {
+            allVisibleChecked = nextAll;
+            Raise(nameof(AllVisibleChecked));
+        }
+        RaiseCommands();
+    }
 
     private Task ApproveEnrollmentAsync() => RunAsync("Đang duyệt ghi danh", "Yêu cầu ghi danh đã được duyệt trên PublicCloud", async ct =>
     {
@@ -234,17 +340,19 @@ public sealed class ClassManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, OpenCommand, AddStudentCommand, SaveClassCommand, UpdateStudentCommand, RemoveStudentCommand, ExportCommand, ImportCommand, ArchiveCommand, ApproveEnrollmentCommand, RejectEnrollmentCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, OpenCommand, AddStudentCommand, SaveClassCommand, UpdateStudentCommand, RemoveStudentCommand, ExportCommand, ImportCommand, BulkArchiveCommand, ApproveEnrollmentCommand, RejectEnrollmentCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        (ToggleArchiveSelectionCommand as RelayCommand<SelectableClassRow>)?.RaiseCanExecuteChanged();
+        (ToggleAllVisibleArchiveSelectionCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 }
 
 public sealed class ExamManagementViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
+    private readonly IDialogService archiveDialogs;
     private CancellationTokenSource? detailLoadCts;
     private long detailLoadGeneration;
-    private ExamSummaryDto? selectedExam;
-    private ClassSummaryDto? selectedClass;
+    private SelectableExamRow? selectedExam;
     private FileDescriptorDto? selectedFile;
     private string currentExamRowVersion = "1";
     private bool currentAutoZip;
@@ -259,16 +367,28 @@ public sealed class ExamManagementViewModel : ProductPageBase
     private SupervisionMode supervisionMode = SupervisionMode.None;
     private bool currentHasCommittedQuizSource;
     private int currentQuizQuestionCount;
-    private bool useClassAssignment;
+    private Guid? currentLegacyClassId;
+    private bool allVisibleChecked;
 
-    public ExamManagementViewModel(IBackendClient api)
+    public ExamManagementViewModel(
+        IBackendClient api,
+        IDialogService? archiveDialogs = null)
     {
         this.api = api;
+        this.archiveDialogs = archiveDialogs ?? AppServices.Dialogs;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         CreateCommand = new AsyncRelayCommand(CreateAsync, () => !IsBusy);
         PublishCommand = new AsyncRelayCommand(PublishAsync, () => !IsBusy && CanPublish);
         CloneCommand = new AsyncRelayCommand(CloneAsync, () => !IsBusy && SelectedExam is not null);
-        ArchiveCommand = new AsyncRelayCommand(ArchiveAsync, () => !IsBusy && SelectedExam is not null);
+        BulkArchiveCommand = new AsyncRelayCommand(
+            BulkArchiveAsync,
+            () => !IsBusy && SelectedArchiveCount is > 0 and <= 200);
+        ToggleArchiveSelectionCommand = new RelayCommand<SelectableExamRow>(
+            ToggleArchiveSelection,
+            row => !IsBusy && row?.CanArchive == true);
+        ToggleAllVisibleArchiveSelectionCommand = new RelayCommand(
+            ToggleAllVisibleArchiveSelection,
+            () => !IsBusy && Exams.Any(row => row.CanArchive));
         UploadCommand = new AsyncRelayCommand(UploadFileAsync, () => !IsBusy && SelectedExam is not null && IsFileSubmission);
         ImportQuizCommand = new AsyncRelayCommand(PreviewQuizAsync, () => !IsBusy && IsMultipleChoice && IsPolicyEditable);
         CommitQuizCommand = new AsyncRelayCommand(CommitQuizAsync, () => !IsBusy && IsMultipleChoice && IsPolicyEditable && QuizImport.HasPreview);
@@ -277,10 +397,9 @@ public sealed class ExamManagementViewModel : ProductPageBase
         DownloadFileCommand = new AsyncRelayCommand(DownloadFileAsync, () => !IsBusy && SelectedExam is not null && SelectedFile is not null);
     }
 
-    public ObservableCollection<ExamSummaryDto> Exams { get; } = new();
-    public ObservableCollection<ClassSummaryDto> Classes { get; } = new();
+    public ObservableCollection<SelectableExamRow> Exams { get; } = new();
     public ObservableCollection<FileDescriptorDto> Files { get; } = new();
-    public ExamSummaryDto? SelectedExam
+    public SelectableExamRow? SelectedExam
     {
         get => selectedExam;
         set
@@ -293,12 +412,8 @@ public sealed class ExamManagementViewModel : ProductPageBase
             RaiseCommands();
         }
     }
-    public ClassSummaryDto? SelectedClass { get => selectedClass; set => Set(ref selectedClass, value); }
-    public bool UseClassAssignment
-    {
-        get => useClassAssignment;
-        set => Set(ref useClassAssignment, value);
-    }
+    public int SelectedArchiveCount => Exams.Count(row => row.IsChecked);
+    public bool AllVisibleChecked => allVisibleChecked;
     public FileDescriptorDto? SelectedFile { get => selectedFile; set { if (Set(ref selectedFile, value)) RaiseCommands(); } }
     public string Title { get => title; set => Set(ref title, value); }
     public string Subject { get => subject; set => Set(ref subject, value); }
@@ -391,7 +506,9 @@ public sealed class ExamManagementViewModel : ProductPageBase
     public ICommand CreateCommand { get; }
     public ICommand PublishCommand { get; }
     public ICommand CloneCommand { get; }
-    public ICommand ArchiveCommand { get; }
+    public ICommand BulkArchiveCommand { get; }
+    public ICommand ToggleArchiveSelectionCommand { get; }
+    public ICommand ToggleAllVisibleArchiveSelectionCommand { get; }
     public ICommand UploadCommand { get; }
     public ICommand ImportQuizCommand { get; }
     public ICommand CommitQuizCommand { get; }
@@ -432,17 +549,11 @@ public sealed class ExamManagementViewModel : ProductPageBase
 
     private async Task RefreshExamsCoreAsync(Guid? selectedId, CancellationToken ct)
     {
-        var selectedClassId = SelectedClass?.Id;
-        var classes = ApiGuard.Require(await api.GetClassesAsync(ct));
         var exams = ApiGuard.Require(await api.GetExamsAsync(ct));
-        Classes.ReplaceWith(classes.Items.Where(x => x.Status == ClassStatus.Active));
-        Exams.ReplaceWith(exams.Items);
+        ReplaceExams(exams.Items);
         SelectedExam = selectedId.HasValue
             ? Exams.FirstOrDefault(x => x.Id == selectedId.Value) ?? Exams.FirstOrDefault()
             : Exams.FirstOrDefault();
-        SelectedClass = selectedClassId.HasValue
-            ? Classes.FirstOrDefault(x => x.Id == selectedClassId.Value)
-            : null;
         if (SelectedExam is not null)
             await LoadSelectedAsync(ct);
         else
@@ -491,8 +602,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         QuizImport.Clear();
         currentAutoZip = detail.FileRule.AutoZip;
         currentRequireAtLeastOneFile = detail.FileRule.RequireAtLeastOneFile;
-        SelectedClass = detail.ClassId.HasValue ? Classes.FirstOrDefault(x => x.Id == detail.ClassId.Value) : null;
-        UseClassAssignment = detail.ClassId.HasValue;
+        currentLegacyClassId = detail.ClassId;
         Files.ReplaceWith(detail.Files);
         SelectedFile = Files.FirstOrDefault();
         currentExamRowVersion = detail.RowVersion;
@@ -511,7 +621,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         var updated = ApiGuard.Require(await api.PutAsync<UpdateExamRequest, ExamDetailDto>(
             $"api/v1/exams/{SelectedExam.Id}",
             new(
-                UseClassAssignment ? SelectedClass?.Id : null,
+                currentLegacyClassId,
                 Title.Trim(),
                 Subject.Trim(),
                 Description.Trim(),
@@ -549,7 +659,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         var exam = ApiGuard.Require(await api.PostAsync<CreateExamRequest, ExamDetailDto>(
             "api/v1/exams",
             new(
-                UseClassAssignment ? SelectedClass?.Id : null,
+                null,
                 Title.Trim(),
                 Subject.Trim(),
                 Description.Trim(),
@@ -576,12 +686,81 @@ public sealed class ExamManagementViewModel : ProductPageBase
         await RefreshExamsCoreAsync(detail.Id, ct);
     });
 
-    private Task ArchiveAsync() => RunAsync("Đang lưu trữ", "Bài kiểm tra đã được lưu trữ", async ct =>
+    private Task BulkArchiveAsync() => RunAsync(
+        "Đang lưu trữ các bài kiểm tra đã chọn",
+        "Các bài kiểm tra đã chọn đã được lưu trữ",
+        async ct =>
     {
-        if (SelectedExam is null || !AppServices.Dialogs.Confirm("Lưu trữ bài kiểm tra", $"Lưu trữ {SelectedExam.Title}?")) return;
-        _ = await api.PostAsync<object, object>($"api/v1/exams/{SelectedExam.Id}/archive", new { }, ct);
+        var selected = Exams
+            .Where(row => row.CanArchive && row.IsChecked)
+            .GroupBy(row => row.Id)
+            .Select(group => group.First())
+            .ToList();
+        if (selected.Count == 0)
+            return;
+        var examples = string.Join(", ", selected.Take(3).Select(row => row.Title));
+        if (!archiveDialogs.Confirm(
+                "Lưu trữ bài kiểm tra",
+                $"Xóa {selected.Count} bài ({examples}) khỏi danh sách? Các mục sẽ được chuyển vào trạng thái lưu trữ và không còn xuất hiện trong danh sách mặc định. Bài có phiên đang hoạt động sẽ bị từ chối."))
+            return;
+        _ = ApiGuard.Require(await api.PostAsync<BulkArchiveRequest, BulkArchiveResultDto>(
+            "api/v1/exams/bulk-archive",
+            new(selected.Select(row => row.Id).ToList()),
+            ct));
         await RefreshExamsCoreAsync(null, ct);
     });
+
+    private void ToggleArchiveSelection(SelectableExamRow? row)
+    {
+        if (row is null || !row.CanArchive || IsBusy)
+            return;
+        row.IsChecked = !row.IsChecked;
+    }
+
+    private void ToggleAllVisibleArchiveSelection()
+    {
+        if (IsBusy)
+            return;
+        var eligible = Exams.Where(row => row.CanArchive).ToList();
+        if (eligible.Count == 0)
+            return;
+        var next = !eligible.All(row => row.IsChecked);
+        foreach (var row in eligible)
+            row.IsChecked = next;
+        OnExamArchiveSelectionChanged();
+    }
+
+    private void ReplaceExams(IEnumerable<ExamSummaryDto> items)
+    {
+        foreach (var row in Exams)
+            row.SelectionChanged -= ExamArchiveSelectionChanged;
+        Exams.Clear();
+        foreach (var item in items)
+        {
+            var row = new SelectableExamRow(item);
+            row.SelectionChanged += ExamArchiveSelectionChanged;
+            Exams.Add(row);
+        }
+        allVisibleChecked = false;
+        Raise(nameof(AllVisibleChecked));
+        OnExamArchiveSelectionChanged();
+    }
+
+    private void ExamArchiveSelectionChanged(object? sender, EventArgs e) =>
+        OnExamArchiveSelectionChanged();
+
+    private void OnExamArchiveSelectionChanged()
+    {
+        Raise(nameof(SelectedArchiveCount));
+        var eligible = Exams.Where(row => row.CanArchive).ToList();
+        var nextAll = eligible.Count > 0 && eligible.All(row => row.IsChecked);
+        if (allVisibleChecked != nextAll)
+        {
+            allVisibleChecked = nextAll;
+            Raise(nameof(AllVisibleChecked));
+        }
+        RaiseCommands();
+    }
 
     private Task UploadFileAsync() => RunAsync("Đang tải file đề", "File đề đã được tải và xác minh", async ct =>
     {
@@ -648,7 +827,9 @@ public sealed class ExamManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, PublishCommand, CloneCommand, ArchiveCommand, UploadCommand, ImportQuizCommand, CommitQuizCommand, SaveCommand, DeleteFileCommand, DownloadFileCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, PublishCommand, CloneCommand, BulkArchiveCommand, UploadCommand, ImportQuizCommand, CommitQuizCommand, SaveCommand, DeleteFileCommand, DownloadFileCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        (ToggleArchiveSelectionCommand as RelayCommand<SelectableExamRow>)?.RaiseCanExecuteChanged();
+        (ToggleAllVisibleArchiveSelectionCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
     public override void Dispose()
@@ -663,20 +844,32 @@ public sealed class ExamManagementViewModel : ProductPageBase
 public sealed class SessionManagementViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
+    private readonly IDialogService archiveDialogs;
     private ExamSummaryDto? selectedExam;
-    private SessionSummaryDto? selectedSession;
+    private SelectableSessionRow? selectedSession;
     private string roomCode = string.Empty;
     private string capacity = "36";
     private bool autoApprove;
     private SessionAccessMode accessMode = SessionAccessMode.LanOnly;
-    private bool useClassAdmission;
+    private bool allVisibleChecked;
 
-    public SessionManagementViewModel(IBackendClient api)
+    public SessionManagementViewModel(
+        IBackendClient api,
+        IDialogService? archiveDialogs = null)
     {
         this.api = api;
+        this.archiveDialogs = archiveDialogs ?? AppServices.Dialogs;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         CreateCommand = new AsyncRelayCommand(CreateAsync, () => !IsBusy && SelectedExam is not null);
-        CreateDraftCommand = new AsyncRelayCommand(CreateDraftAsync, () => !IsBusy && UseClassAdmission && SelectedExam?.ClassId is not null);
+        BulkArchiveCommand = new AsyncRelayCommand(
+            BulkArchiveAsync,
+            () => !IsBusy && SelectedArchiveCount is > 0 and <= 200);
+        ToggleArchiveSelectionCommand = new RelayCommand<SelectableSessionRow>(
+            ToggleArchiveSelection,
+            row => !IsBusy && row?.CanArchive == true);
+        ToggleAllVisibleArchiveSelectionCommand = new RelayCommand(
+            ToggleAllVisibleArchiveSelection,
+            () => !IsBusy && Sessions.Any(row => row.CanArchive));
         OpenCommand = new AsyncRelayCommand(() => TransitionAsync("open", "Phòng thi đã mở và sẵn sàng nhận học sinh"), () => !IsBusy && SelectedSession?.Status == SessionStatus.Draft);
         DistributeCommand = new AsyncRelayCommand(() => TransitionAsync("distribute", "Đề thi đã được phân phối"), () => !IsBusy && SelectedSession?.Status == SessionStatus.Waiting);
         StartCommand = new AsyncRelayCommand(() => TransitionAsync("start", "Phiên thi đã bắt đầu"), () => !IsBusy && (SelectedSession?.Status is SessionStatus.Waiting or SessionStatus.Distributing));
@@ -689,9 +882,9 @@ public sealed class SessionManagementViewModel : ProductPageBase
     }
 
     public ObservableCollection<ExamSummaryDto> Exams { get; } = new();
-    public ObservableCollection<SessionSummaryDto> Sessions { get; } = new();
+    public ObservableCollection<SelectableSessionRow> Sessions { get; } = new();
     public ExamSummaryDto? SelectedExam { get => selectedExam; set { if (Set(ref selectedExam, value)) RaiseCommands(); } }
-    public SessionSummaryDto? SelectedSession
+    public SelectableSessionRow? SelectedSession
     {
         get => selectedSession;
         set
@@ -710,18 +903,13 @@ public sealed class SessionManagementViewModel : ProductPageBase
     public bool AutoApprove { get => autoApprove; set => Set(ref autoApprove, value); }
     public IReadOnlyList<SessionAccessMode> AccessModes { get; } = Enum.GetValues<SessionAccessMode>();
     public SessionAccessMode AccessMode { get => accessMode; set => Set(ref accessMode, value); }
-    public bool UseClassAdmission
-    {
-        get => useClassAdmission;
-        set
-        {
-            if (Set(ref useClassAdmission, value))
-                RaiseCommands();
-        }
-    }
+    public int SelectedArchiveCount => Sessions.Count(row => row.IsChecked);
+    public bool AllVisibleChecked => allVisibleChecked;
     public ICommand RefreshCommand { get; }
     public ICommand CreateCommand { get; }
-    public ICommand CreateDraftCommand { get; }
+    public ICommand BulkArchiveCommand { get; }
+    public ICommand ToggleArchiveSelectionCommand { get; }
+    public ICommand ToggleAllVisibleArchiveSelectionCommand { get; }
     public ICommand OpenCommand { get; }
     public ICommand DistributeCommand { get; }
     public ICommand StartCommand { get; }
@@ -745,7 +933,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
         var exams = ApiGuard.Require(await api.GetExamsAsync(ct));
         var sessions = ApiGuard.Require(await api.GetSessionsAsync(ct));
         Exams.ReplaceWith(exams.Items.Where(x => x.Status == ExamStatus.Published));
-        Sessions.ReplaceWith(sessions.Items);
+        ReplaceSessions(sessions.Items);
         SelectedExam = examId.HasValue
             ? Exams.FirstOrDefault(x => x.Id == examId.Value) ?? Exams.FirstOrDefault()
             : Exams.FirstOrDefault();
@@ -764,34 +952,14 @@ public sealed class SessionManagementViewModel : ProductPageBase
                 SelectedExam.Id,
                 null,
                 DateTimeOffset.UtcNow.AddMinutes(5),
-                $"{{\"autoApprove\":{AutoApprove.ToString().ToLowerInvariant()}}}",
-                AutoApprove,
+                "{\"autoApprove\":false}",
+                false,
                 cap,
                 string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim(),
                 AccessMode,
                 SessionAdmissionMode.OpenRequest),
             ct));
         RoomCode = detail.Summary.RoomCode;
-        await RefreshSessionsCoreAsync(SelectedExam.Id, detail.Summary.Id, ct);
-    });
-
-    private Task CreateDraftAsync() => RunAsync("Đang tạo phòng theo lớp", "Phòng theo lớp đã được tạo ở trạng thái nháp", async ct =>
-    {
-        if (SelectedExam?.ClassId is null) return;
-        if (!int.TryParse(Capacity, out var cap) || cap <= 0) throw new InvalidOperationException("Sức chứa phải lớn hơn 0.");
-        var detail = ApiGuard.Require(await api.PostAsync<CreateSessionRequest, SessionDetailDto>(
-            "api/v1/sessions",
-            new(
-                SelectedExam.Id,
-                SelectedExam.ClassId,
-                DateTimeOffset.UtcNow.AddMinutes(5),
-                $"{{\"autoApprove\":{AutoApprove.ToString().ToLowerInvariant()}}}",
-                AutoApprove,
-                cap,
-                string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim(),
-                AccessMode,
-                SessionAdmissionMode.ClassMembersOnly),
-            ct));
         await RefreshSessionsCoreAsync(SelectedExam.Id, detail.Summary.Id, ct);
     });
 
@@ -844,13 +1012,97 @@ public sealed class SessionManagementViewModel : ProductPageBase
     {
         if (SelectedSession is null) return;
         var index = Sessions.IndexOf(SelectedSession);
-        if (index >= 0) Sessions[index] = summary;
-        SelectedSession = summary;
+        var row = new SelectableSessionRow(summary);
+        row.SelectionChanged += SessionArchiveSelectionChanged;
+        if (index >= 0)
+        {
+            SelectedSession.SelectionChanged -= SessionArchiveSelectionChanged;
+            Sessions[index] = row;
+        }
+        SelectedSession = row;
+    }
+
+    private Task BulkArchiveAsync() => RunAsync(
+        "Đang lưu trữ các phiên đã chọn",
+        "Các phiên đã chọn đã được lưu trữ",
+        async ct =>
+        {
+            var selected = Sessions
+                .Where(row => row.CanArchive && row.IsChecked)
+                .GroupBy(row => row.Id)
+                .Select(group => group.First())
+                .ToList();
+            if (selected.Count == 0)
+                return;
+            var examples = string.Join(", ", selected.Take(3).Select(row => row.RoomCode));
+            if (!archiveDialogs.Confirm(
+                    "Lưu trữ phiên thi",
+                    $"Xóa {selected.Count} phiên ({examples}) khỏi danh sách? Các mục sẽ được chuyển vào trạng thái lưu trữ và không còn xuất hiện trong danh sách mặc định. Chỉ phiên đã kết thúc hoặc đã hủy mới hợp lệ."))
+                return;
+            _ = ApiGuard.Require(await api.PostAsync<BulkArchiveRequest, BulkArchiveResultDto>(
+                "api/v1/sessions/bulk-archive",
+                new(selected.Select(row => row.Id).ToList()),
+                ct));
+            await RefreshSessionsCoreAsync(SelectedExam?.Id, null, ct);
+        });
+
+    private void ToggleArchiveSelection(SelectableSessionRow? row)
+    {
+        if (row is null || !row.CanArchive || IsBusy)
+            return;
+        row.IsChecked = !row.IsChecked;
+    }
+
+    private void ToggleAllVisibleArchiveSelection()
+    {
+        if (IsBusy)
+            return;
+        var eligible = Sessions.Where(row => row.CanArchive).ToList();
+        if (eligible.Count == 0)
+            return;
+        var next = !eligible.All(row => row.IsChecked);
+        foreach (var row in eligible)
+            row.IsChecked = next;
+        OnSessionArchiveSelectionChanged();
+    }
+
+    private void ReplaceSessions(IEnumerable<SessionSummaryDto> items)
+    {
+        foreach (var row in Sessions)
+            row.SelectionChanged -= SessionArchiveSelectionChanged;
+        Sessions.Clear();
+        foreach (var item in items)
+        {
+            var row = new SelectableSessionRow(item);
+            row.SelectionChanged += SessionArchiveSelectionChanged;
+            Sessions.Add(row);
+        }
+        allVisibleChecked = false;
+        Raise(nameof(AllVisibleChecked));
+        OnSessionArchiveSelectionChanged();
+    }
+
+    private void SessionArchiveSelectionChanged(object? sender, EventArgs e) =>
+        OnSessionArchiveSelectionChanged();
+
+    private void OnSessionArchiveSelectionChanged()
+    {
+        Raise(nameof(SelectedArchiveCount));
+        var eligible = Sessions.Where(row => row.CanArchive).ToList();
+        var nextAll = eligible.Count > 0 && eligible.All(row => row.IsChecked);
+        if (allVisibleChecked != nextAll)
+        {
+            allVisibleChecked = nextAll;
+            Raise(nameof(AllVisibleChecked));
+        }
+        RaiseCommands();
     }
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, CreateDraftCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, BulkArchiveCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        (ToggleArchiveSelectionCommand as RelayCommand<SelectableSessionRow>)?.RaiseCanExecuteChanged();
+        (ToggleAllVisibleArchiveSelectionCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 }
 
@@ -1452,7 +1704,7 @@ public sealed class BackupCenterViewModel : ProductPageBase
     }
 }
 
-public sealed class SettingsPageViewModel : ProductPageBase
+internal sealed class DeploymentSettingsConsoleViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
     private string serverPort = "5048";
@@ -1478,7 +1730,7 @@ public sealed class SettingsPageViewModel : ProductPageBase
     private string diagnostics = "Chưa chạy chẩn đoán";
     private string cloudPreflight = "Chưa kiểm tra kết nối Supabase";
 
-    public SettingsPageViewModel(IBackendClient api)
+    public DeploymentSettingsConsoleViewModel(IBackendClient api)
     {
         this.api = api;
         RefreshCommand = new AsyncRelayCommand(
@@ -2396,34 +2648,34 @@ public sealed class StudentSettingsViewModel : ProductPageBase
         this.preferences = preferences;
         SaveCommand = new RelayCommand(Save);
         BrowseCommand = new RelayCommand(Browse);
-        OpenLogCommand = new RelayCommand(OpenLog);
     }
 
-    public string DisplayName { get => displayName; set => Set(ref displayName, value); }
-    public string StudentCode { get => studentCode; set => Set(ref studentCode, value); }
+    public string DisplayName { get => displayName; private set => Set(ref displayName, value); }
+    public string StudentCode { get => studentCode; private set => Set(ref studentCode, value); }
     public string Workspace { get => workspace; set => Set(ref workspace, value); }
     public bool Notifications { get => notifications; set => Set(ref notifications, value); }
-    public string DeviceId => Environment.MachineName + "-" + Environment.UserName;
     public ICommand SaveCommand { get; }
     public ICommand BrowseCommand { get; }
-    public ICommand OpenLogCommand { get; }
 
     protected override Task LoadAsync(CancellationToken ct)
     {
         DisplayName = preferences.Get("student-name") ?? string.Empty;
         StudentCode = preferences.Get("student-code") ?? string.Empty;
         Workspace = preferences.Get("workspace") ?? Workspace;
-        Status = "Hồ sơ và cấu hình cục bộ đã được tải";
+        Notifications = !string.Equals(
+            preferences.Get("notifications"),
+            "false",
+            StringComparison.OrdinalIgnoreCase);
+        Status = "Thông tin tài khoản và tùy chọn đã được tải";
         StatusTone = "success";
         return Task.CompletedTask;
     }
 
     private void Save()
     {
-        preferences.Set("student-name", DisplayName);
-        preferences.Set("student-code", StudentCode);
         preferences.Set("workspace", Workspace);
-        Status = "Hồ sơ học sinh đã được lưu";
+        preferences.Set("notifications", Notifications ? "true" : "false");
+        Status = "Tùy chọn học sinh đã được lưu";
         StatusTone = "success";
     }
 
@@ -2433,11 +2685,6 @@ public sealed class StudentSettingsViewModel : ProductPageBase
         if (folder is not null) Workspace = folder;
     }
 
-    private static void OpenLog()
-    {
-        Directory.CreateDirectory(FrontendLogger.LogDirectory);
-        Process.Start(new ProcessStartInfo(FrontendLogger.LogDirectory) { UseShellExecute = true });
-    }
 }
 
 internal static class CollectionExtensions

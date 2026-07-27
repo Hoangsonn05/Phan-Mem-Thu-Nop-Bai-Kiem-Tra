@@ -55,6 +55,24 @@
                               ItemsSource="{Binding Sessions}"
                               SelectedItem="{Binding SelectedSession}">
                         <DataGrid.Columns>
+                            <DataGridTemplateColumn Width="54">
+                                <DataGridTemplateColumn.Header>
+                                    <CheckBox IsChecked="{Binding DataContext.AllVisibleChecked, RelativeSource={RelativeSource AncestorType=DataGrid}, Mode=OneWay}"
+                                              Command="{Binding DataContext.ToggleAllVisibleArchiveSelectionCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                              Focusable="False"
+                                              ToolTip="Chọn tất cả phiên đủ điều kiện" />
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsChecked, Mode=OneWay}"
+                                                  Command="{Binding DataContext.ToggleArchiveSelectionCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                  CommandParameter="{Binding}"
+                                                  IsEnabled="{Binding CanArchive}"
+                                                  Focusable="False"
+                                                  HorizontalAlignment="Center" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="PHÒNG" Binding="{Binding RoomCode}" Width="90" />
                             <DataGridTextColumn Header="BÀI KIỂM TRA" Binding="{Binding Title}" Width="*" />
                             <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="110" />
@@ -95,6 +113,17 @@
                                 Command="{Binding CancelCommand}"
                                 Style="{StaticResource DangerButton}"
                                 Margin="8,4,0,0" />
+                        <Button Command="{Binding BulkArchiveCommand}"
+                                Style="{StaticResource DangerButton}"
+                                MinHeight="44"
+                                MinWidth="180"
+                                Margin="8,4,0,0">
+                            <TextBlock>
+                                <Run Text="Xóa mục đã chọn (" />
+                                <Run Text="{Binding SelectedArchiveCount, Mode=OneWay}" />
+                                <Run Text=")" />
+                            </TextBlock>
+                        </Button>
                     </WrapPanel>
                 </Grid>
             </Border>
@@ -145,19 +174,6 @@
                             Command="{Binding CreateCommand}"
                             Style="{StaticResource PrimaryButton}"
                             Margin="0,16,0,0" />
-                    <Expander Header="Nâng cao — Luồng lớp học"
-                              IsExpanded="{Binding UseClassAdmission, Mode=TwoWay}"
-                              Margin="0,16,0,0">
-                        <StackPanel Margin="0,10,0,0">
-                            <TextBlock Text="Tạo phòng ClassMembersOnly ở trạng thái nháp; bài kiểm tra phải được gắn lớp."
-                                       Style="{StaticResource CaptionText}"
-                                       TextWrapping="Wrap" />
-                            <Button Content="Tạo phòng nháp theo lớp"
-                                    Command="{Binding CreateDraftCommand}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    Margin="0,10,0,0" />
-                        </StackPanel>
-                    </Expander>
                 </StackPanel>
             </Border>
         </Grid>

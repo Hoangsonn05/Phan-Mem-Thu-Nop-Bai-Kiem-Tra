@@ -21,7 +21,10 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         pageSize = Math.Clamp(pageSize, 1, 200);
 
         var baseQuery = db.ExamSessionsSet.AsNoTracking().AsQueryable();
-        if (status.HasValue) baseQuery = baseQuery.Where(x => x.Status == status.Value);
+        if (status.HasValue)
+            baseQuery = baseQuery.Where(x => x.Status == status.Value);
+        else
+            baseQuery = baseQuery.Where(x => x.Status != SessionStatus.Archived);
 
         var total = await baseQuery.CountAsync(cancellationToken);
         var sortKeys = await baseQuery
@@ -156,6 +159,85 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         }, cancellationToken);
         await PublishSessionStateSafeAsync(detail, cancellationToken);
         return detail;
+    }
+
+    public async Task<BulkArchiveResultDto> BulkArchiveAsync(
+        BulkArchiveRequest request,
+        CancellationToken cancellationToken)
+    {
+        var ids = BulkArchiveValidation.Validate(request);
+        var archivedDetails = new List<SessionDetailDto>();
+        var result = await InTransactionAsync(async () =>
+        {
+            var sessions = await db.ExamSessionsSet
+                .Include(x => x.Exam)
+                .Include(x => x.Participants)
+                .Where(x => ids.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+            var found = sessions.Select(x => x.Id).ToHashSet();
+            var missing = ids.Where(id => !found.Contains(id)).ToList();
+            if (missing.Count > 0)
+                throw new ApiException(
+                    ErrorCodes.NotFound,
+                    "Một hoặc nhiều kỳ thi không tồn tại.",
+                    404,
+                    details: new { missingIds = missing });
+
+            var alreadyArchived = sessions
+                .Where(x => x.Status == SessionStatus.Archived)
+                .Select(x => x.Id)
+                .Order()
+                .ToList();
+            var toArchive = sessions
+                .Where(x => x.Status != SessionStatus.Archived)
+                .OrderBy(x => x.Id)
+                .ToList();
+            var rejected = toArchive
+                .Where(x => x.Status is not (SessionStatus.Finished or SessionStatus.Cancelled))
+                .Select(x => new BulkArchiveFailureDto(
+                    x.Id,
+                    ErrorCodes.InvalidStateTransition,
+                    $"Kỳ thi {x.RoomCode} đang ở trạng thái {x.Status}."))
+                .ToList();
+            if (rejected.Count > 0)
+                throw new ApiException(
+                    ErrorCodes.InvalidStateTransition,
+                    "Chỉ kỳ thi đã kết thúc hoặc đã hủy mới được lưu trữ.",
+                    409,
+                    details: new { rejected });
+
+            foreach (var session in toArchive)
+            {
+                var before = session.Status;
+                session.TransitionTo(SessionStatus.Archived);
+                await db.SaveChangesAsync(cancellationToken);
+                await audit.WriteAsync(
+                    "SessionStateChanged",
+                    nameof(ExamSession),
+                    session.Id.ToString(),
+                    session.Id,
+                    new { status = before },
+                    new { status = session.Status, reason = "BulkArchive" },
+                    cancellationToken);
+                await outbox.EnqueueAsync(
+                    "exam_sessions",
+                    session.Id.ToString(),
+                    "upsert",
+                    ToCloud(session),
+                    cancellationToken: cancellationToken);
+                archivedDetails.Add(ToDetail(session));
+            }
+
+            return new BulkArchiveResultDto(
+                ids.Count,
+                toArchive.Count,
+                alreadyArchived,
+                []);
+        }, cancellationToken);
+
+        foreach (var detail in archivedDetails)
+            await PublishSessionStateSafeAsync(detail, cancellationToken);
+        return result;
     }
 
     public async Task<JoinSessionResponse> JoinAsync(JoinSessionRequest request, Guid accountUserId, string studentCode, string displayName, string? ipAddress, CancellationToken cancellationToken)

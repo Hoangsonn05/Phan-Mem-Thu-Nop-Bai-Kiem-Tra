@@ -28,7 +28,10 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             var term = search.Trim();
             query = query.Where(x => x.Title.Contains(term) || x.Subject.Contains(term));
         }
-        if (status.HasValue) query = query.Where(x => x.Status == status.Value);
+        if (status.HasValue)
+            query = query.Where(x => x.Status == status.Value);
+        else
+            query = query.Where(x => x.Status != ExamStatus.Archived);
 
         var total = await query.CountAsync(cancellationToken);
 
@@ -174,10 +177,82 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
     public async Task ArchiveAsync(Guid id, CancellationToken cancellationToken)
     {
-        var exam = await db.ExamsSet.FirstOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
-        exam.Status = ExamStatus.Archived; await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ExamArchived", nameof(Exam), id.ToString(), null, null, ToAudit(exam), cancellationToken);
-        await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
+        _ = await BulkArchiveAsync(new([id]), cancellationToken);
+    }
+
+    public Task<BulkArchiveResultDto> BulkArchiveAsync(
+        BulkArchiveRequest request,
+        CancellationToken cancellationToken)
+    {
+        var ids = BulkArchiveValidation.Validate(request);
+        return InTransactionAsync(async () =>
+        {
+            var exams = await db.ExamsSet
+                .Where(x => ids.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+            var found = exams.Select(x => x.Id).ToHashSet();
+            var missing = ids.Where(id => !found.Contains(id)).ToList();
+            if (missing.Count > 0)
+                throw new ApiException(
+                    ErrorCodes.NotFound,
+                    "Một hoặc nhiều bài kiểm tra không tồn tại.",
+                    404,
+                    details: new { missingIds = missing });
+
+            var alreadyArchived = exams
+                .Where(x => x.Status == ExamStatus.Archived)
+                .Select(x => x.Id)
+                .Order()
+                .ToList();
+            var toArchive = exams
+                .Where(x => x.Status != ExamStatus.Archived)
+                .OrderBy(x => x.Id)
+                .ToList();
+            var archiveIds = toArchive.Select(x => x.Id).ToList();
+            var blockingSessions = await db.ExamSessionsSet
+                .AsNoTracking()
+                .Where(x => archiveIds.Contains(x.ExamId)
+                    && x.Status != SessionStatus.Finished
+                    && x.Status != SessionStatus.Cancelled
+                    && x.Status != SessionStatus.Archived)
+                .Select(x => new { x.Id, x.ExamId, x.RoomCode, x.Status })
+                .ToListAsync(cancellationToken);
+            if (blockingSessions.Count > 0)
+                throw new ApiException(
+                    ErrorCodes.InvalidStateTransition,
+                    "Không thể lưu trữ bài kiểm tra đang được một phiên chưa kết thúc sử dụng.",
+                    409,
+                    details: new { sessions = blockingSessions });
+
+            var beforeStatuses = toArchive.ToDictionary(x => x.Id, x => x.Status);
+            foreach (var exam in toArchive)
+                exam.Status = ExamStatus.Archived;
+            await db.SaveChangesAsync(cancellationToken);
+
+            foreach (var exam in toArchive)
+            {
+                await audit.WriteAsync(
+                    "ExamArchived",
+                    nameof(Exam),
+                    exam.Id.ToString(),
+                    null,
+                    new { status = beforeStatuses[exam.Id] },
+                    ToAudit(exam),
+                    cancellationToken);
+                await outbox.EnqueueAsync(
+                    "exams",
+                    exam.Id.ToString(),
+                    "upsert",
+                    ToCloud(exam),
+                    cancellationToken: cancellationToken);
+            }
+
+            return new BulkArchiveResultDto(
+                ids.Count,
+                toArchive.Count,
+                alreadyArchived,
+                []);
+        }, cancellationToken);
     }
 
     public async Task<ExamDetailDto> CloneAsync(Guid id, CancellationToken cancellationToken)

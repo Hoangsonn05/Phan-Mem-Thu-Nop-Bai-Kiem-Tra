@@ -24,6 +24,9 @@ public sealed class ExamsController(IExamService service, AppDbContext db) : Api
     public async Task<ActionResult<ApiResponse<ExamDetailDto>>> Publish(Guid id, CancellationToken ct) => Data(await service.PublishAsync(id, ct));
     [HttpPost("{id:guid}/archive")][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<object>>> Archive(Guid id, CancellationToken ct) { await service.ArchiveAsync(id, ct); return EmptyData(); }
+    [HttpPost("bulk-archive")][Authorize(Policy = "TeacherOrAdmin")]
+    public async Task<ActionResult<ApiResponse<BulkArchiveResultDto>>> BulkArchive(BulkArchiveRequest request, CancellationToken ct) =>
+        Data(await service.BulkArchiveAsync(request, ct));
     [HttpPost("{id:guid}/clone")][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<ExamDetailDto>>> Clone(Guid id, CancellationToken ct) => Data(await service.CloneAsync(id, ct));
     [HttpPost("{id:guid}/files/init")][Authorize(Policy = "TeacherOrAdmin")]

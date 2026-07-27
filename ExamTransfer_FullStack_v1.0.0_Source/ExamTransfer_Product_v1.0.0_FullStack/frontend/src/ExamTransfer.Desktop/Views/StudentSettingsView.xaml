@@ -33,17 +33,18 @@
                             
                             <StackPanel>
                                 <TextBlock Text="Họ tên" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
-                                <TextBox Text="{Binding DisplayName}" />
+                                <TextBox Text="{Binding DisplayName, Mode=OneWay}"
+                                         IsReadOnly="True"
+                                         Background="{DynamicResource SurfaceSubtleBrush}" />
                             </StackPanel>
                             
                             <StackPanel Grid.Column="2">
                                 <TextBlock Text="Mã học sinh" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
-                                <TextBox Text="{Binding StudentCode}" />
+                                <TextBox Text="{Binding StudentCode, Mode=OneWay}"
+                                         IsReadOnly="True"
+                                         Background="{DynamicResource SurfaceSubtleBrush}" />
                             </StackPanel>
                         </Grid>
-                        
-                        <TextBlock Text="Device ID" Style="{StaticResource LabelText}" Margin="0,16,0,6" />
-                        <TextBox Text="{Binding DeviceId, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" Foreground="{DynamicResource TextMutedBrush}" Background="{DynamicResource SurfaceSubtleBrush}" />
                         
                         <CheckBox Content="Nhận thông báo từ hệ thống" IsChecked="{Binding Notifications}" Margin="0,24,0,0" />
                         
@@ -53,7 +54,7 @@
                                 Style="{StaticResource PrimaryButton}" Height="46" Padding="32,0" HorizontalAlignment="Left">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="&#xE74E;" Style="{StaticResource IconText}" Margin="0,0,8,0" FontSize="16" />
-                                <TextBlock Text="Lưu hồ sơ" FontWeight="Bold" />
+                                <TextBlock Text="Lưu tùy chọn" FontWeight="Bold" />
                             </StackPanel>
                         </Button>
                     </StackPanel>
@@ -62,7 +63,7 @@
                 <!-- Workspace & Hỗ trợ -->
                 <Border Style="{StaticResource Card}" Padding="32">
                     <StackPanel>
-                        <TextBlock Text="Workspace và hỗ trợ" Style="{StaticResource SectionTitleText}" Margin="0,0,0,24" />
+                        <TextBlock Text="Thư mục làm việc" Style="{StaticResource SectionTitleText}" Margin="0,0,0,24" />
                         
                         <TextBlock Text="Thư mục làm bài mặc định của kỳ thi"
                                    Style="{StaticResource LabelText}" Margin="0,0,0,6" />
@@ -81,18 +82,10 @@
                             </Button>
                         </Grid>
                         
-                        <Button Command="{Binding OpenLogCommand}"
-                                Style="{StaticResource SecondaryButton}" Margin="0,24,0,0" HorizontalAlignment="Left" Padding="16,0" Height="40">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#xE81C;" Style="{StaticResource IconText}" Margin="0,0,8,0" />
-                                <TextBlock Text="Mở thư mục log" />
-                            </StackPanel>
-                        </Button>
-                        
                         <Border Style="{StaticResource SubtleCard}" Margin="0,24,0,0" Background="{DynamicResource InfoSoftBrush}" BorderBrush="{DynamicResource InfoBrush}">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="&#xE946;" Style="{StaticResource IconText}" Foreground="{DynamicResource InfoBrush}" Margin="0,0,12,0" VerticalAlignment="Center" FontSize="16"/>
-                                <TextBlock Text="Device ID và thông tin phiên thi không thể thay đổi trong giao diện để bảo đảm đối chiếu đúng với máy chủ."
+                                <TextBlock Text="Họ tên và mã học sinh do tài khoản cung cấp và không thể sửa tại đây."
                                            Style="{StaticResource BodyText}" Foreground="{DynamicResource InfoBrush}" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>

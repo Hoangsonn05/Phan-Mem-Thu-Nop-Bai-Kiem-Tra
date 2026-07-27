@@ -15,7 +15,8 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 200);
-        var query = db.ClassesSet.AsNoTracking();
+        var query = db.ClassesSet.AsNoTracking()
+            .Where(x => x.Status != ClassStatus.Archived);
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
@@ -113,12 +114,66 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
 
     public async Task ArchiveAsync(Guid id, CancellationToken cancellationToken)
     {
-        var entity = await db.ClassesSet.FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
-        entity.Status = ClassStatus.Archived;
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ClassArchived", nameof(ClassRoom), entity.Id.ToString(), null, null, entity, cancellationToken);
-        await outbox.EnqueueAsync("classes", entity.Id.ToString(), "upsert", ToCloud(entity), cancellationToken: cancellationToken);
+        _ = await BulkArchiveAsync(new([id]), cancellationToken);
+    }
+
+    public Task<BulkArchiveResultDto> BulkArchiveAsync(
+        BulkArchiveRequest request,
+        CancellationToken cancellationToken)
+    {
+        var ids = BulkArchiveValidation.Validate(request);
+        return InTransactionAsync(async () =>
+        {
+            var entities = await db.ClassesSet
+                .Where(x => ids.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+            var found = entities.Select(x => x.Id).ToHashSet();
+            var missing = ids.Where(id => !found.Contains(id)).ToList();
+            if (missing.Count > 0)
+                throw new ApiException(
+                    ErrorCodes.NotFound,
+                    "Một hoặc nhiều lớp không tồn tại.",
+                    404,
+                    details: new { missingIds = missing });
+
+            var alreadyArchived = entities
+                .Where(x => x.Status == ClassStatus.Archived)
+                .Select(x => x.Id)
+                .Order()
+                .ToList();
+            var toArchive = entities
+                .Where(x => x.Status != ClassStatus.Archived)
+                .OrderBy(x => x.Id)
+                .ToList();
+
+            foreach (var entity in toArchive)
+                entity.Status = ClassStatus.Archived;
+            await db.SaveChangesAsync(cancellationToken);
+
+            foreach (var entity in toArchive)
+            {
+                await audit.WriteAsync(
+                    "ClassArchived",
+                    nameof(ClassRoom),
+                    entity.Id.ToString(),
+                    null,
+                    new { status = ClassStatus.Active },
+                    new { status = entity.Status },
+                    cancellationToken);
+                await outbox.EnqueueAsync(
+                    "classes",
+                    entity.Id.ToString(),
+                    "upsert",
+                    ToCloud(entity),
+                    cancellationToken: cancellationToken);
+            }
+
+            return new BulkArchiveResultDto(
+                ids.Count,
+                toArchive.Count,
+                alreadyArchived,
+                []);
+        }, cancellationToken);
     }
 
     public async Task<StudentDto> AddStudentAsync(Guid classId, CreateStudentRequest request, CancellationToken cancellationToken)
@@ -207,49 +262,57 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
                 "Dữ liệu file import không phải Base64 hợp lệ.");
         }
 
-        var rows = SpreadsheetImportReader.ReadRows(request.FileName, bytes);
-        if (rows.Count == 0)
+        var worksheets = SpreadsheetImportReader.ReadWorksheets(request.FileName, bytes);
+        if (worksheets.Count == 0)
             throw new ApiException(ErrorCodes.ValidationFailed, "File import không có dữ liệu.");
 
-        var header = rows[0]
-            .Select(x => x.Trim().ToLowerInvariant())
-            .ToList();
+        List<List<string>>? rows = null;
+        StudentImportHeaderMap? header = null;
+        IReadOnlyList<string> observedHeaders = [];
+        foreach (var worksheet in worksheets)
+        {
+            var candidate = StudentImportHeaderMapper.TryFindHeader(
+                worksheet,
+                requireDateOfBirth: false,
+                out var observed,
+                request.ColumnMapping);
+            if (candidate is null)
+            {
+                observedHeaders = observedHeaders.Concat(observed).Take(30).ToList();
+                continue;
+            }
 
-        var codeIndex = FindColumn(
-            header,
-            request.ColumnMapping,
-            "studentCode",
-            ["studentcode", "student_code", "mã học sinh", "ma hoc sinh", "mssv"]);
-        var nameIndex = FindColumn(
-            header,
-            request.ColumnMapping,
-            "displayName",
-            ["displayname", "display_name", "họ tên", "ho ten", "name"]);
-        var emailIndex = FindColumn(
-            header,
-            request.ColumnMapping,
-            "email",
-            ["email"]);
+            rows = worksheet;
+            header = candidate;
+            break;
+        }
 
-        if (codeIndex < 0 || nameIndex < 0)
+        if (rows is null || header is null)
         {
             throw new ApiException(
                 ErrorCodes.ValidationFailed,
-                "Không tìm thấy cột mã học sinh hoặc họ tên.");
+                "Không tìm thấy hàng tiêu đề có cột mã học sinh và họ tên.",
+                details: new
+                {
+                    expected = "Mã sinh viên/Mã học sinh và Họ và tên hoặc Họ đệm + Tên",
+                    observedHeaders
+                });
         }
 
         var candidates = new List<ImportCandidate>();
         var errors = new List<ImportRowErrorDto>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        for (var index = 1; index < rows.Count; index++)
+        for (var index = header.RowIndex + 1; index < rows.Count; index++)
         {
             var sourceRowNumber = index + 1;
             var row = rows[index];
-            var code = Get(row, codeIndex).Trim();
-            var name = Get(row, nameIndex).Trim();
-            var email = emailIndex >= 0
-                ? Get(row, emailIndex).Trim()
+            var code = StudentImportHeaderMap
+                .ReadCell(row, header.StudentCodeColumn)
+                .Trim();
+            var name = header.ReadDisplayName(row);
+            var email = header.EmailColumn is { } emailColumn
+                ? StudentImportHeaderMap.ReadCell(row, emailColumn).Trim()
                 : null;
 
             var rowHasError = false;
@@ -553,18 +616,6 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
     {
         if (!string.Equals(current, supplied, StringComparison.Ordinal)) throw new ApiException(ErrorCodes.ConcurrencyConflict, "Dữ liệu đã được người khác cập nhật.", 409, details: new { currentRowVersion = current });
     }
-    private static int FindColumn(IReadOnlyList<string> header, IReadOnlyDictionary<string, string>? mapping, string key, IReadOnlyList<string> aliases)
-    {
-        if (mapping is not null && mapping.TryGetValue(key, out var mapped))
-        {
-            var target = mapped.Trim().ToLowerInvariant();
-            for (var i = 0; i < header.Count; i++) if (header[i] == target) return i;
-            return -1;
-        }
-        for (var i = 0; i < header.Count; i++) if (aliases.Contains(header[i])) return i;
-        return -1;
-    }
-    private static string Get(IReadOnlyList<string> row, int index) => index >= 0 && index < row.Count ? row[index] : string.Empty;
     private sealed record ImportCandidate(
         int RowNumber,
         StudentDto Student,

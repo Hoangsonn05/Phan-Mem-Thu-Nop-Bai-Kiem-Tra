@@ -19,6 +19,9 @@ public sealed class ClassesController(IClassService service) : ApiControllerBase
     public async Task<ActionResult<ApiResponse<ClassDetailDto>>> Update(Guid id, UpdateClassRequest request, CancellationToken ct) => Data(await service.UpdateAsync(id, request, ct));
     [HttpDelete("{id:guid}")]
     public async Task<ActionResult<ApiResponse<object>>> Archive(Guid id, CancellationToken ct) { await service.ArchiveAsync(id, ct); return EmptyData(); }
+    [HttpPost("bulk-archive")]
+    public async Task<ActionResult<ApiResponse<BulkArchiveResultDto>>> BulkArchive(BulkArchiveRequest request, CancellationToken ct) =>
+        Data(await service.BulkArchiveAsync(request, ct));
     [HttpPost("{id:guid}/students")]
     public async Task<ActionResult<ApiResponse<StudentDto>>> AddStudent(Guid id, CreateStudentRequest request, CancellationToken ct) => Data(await service.AddStudentAsync(id, request, ct));
     [HttpPut("{id:guid}/students/{studentId:guid}")]

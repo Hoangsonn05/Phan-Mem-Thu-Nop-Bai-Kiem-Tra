@@ -1,3 +1,4 @@
+using System.IO;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Desktop.ViewModels;
 using ExamTransfer.Shared.Contracts;
@@ -100,7 +101,7 @@ public sealed class SessionFirstOpenFrontendTests
     }
 
     [Fact]
-    public async Task TeacherQuickCreate_IsOpenClasslessAndAtomic_WhileAdvancedRemainsClassBased()
+    public async Task TeacherQuickCreate_IsAlwaysOpenClasslessNonAutoApprove()
     {
         var classId = Guid.NewGuid();
         var exam = new ExamSummaryDto(
@@ -136,6 +137,7 @@ public sealed class SessionFirstOpenFrontendTests
         };
         using var viewModel = new SessionManagementViewModel(api);
         await viewModel.InitializeAsync(CancellationToken.None);
+        viewModel.AutoApprove = true;
 
         Assert.True(viewModel.CreateCommand.CanExecute(null));
         viewModel.CreateCommand.Execute(null);
@@ -146,16 +148,7 @@ public sealed class SessionFirstOpenFrontendTests
         Assert.Null(quick.ClassId);
         Assert.Equal(SessionAdmissionMode.OpenRequest, quick.AdmissionMode);
         Assert.False(quick.AutoApprove);
-
-        viewModel.UseClassAdmission = true;
-        Assert.True(viewModel.CreateDraftCommand.CanExecute(null));
-        viewModel.CreateDraftCommand.Execute(null);
-        Assert.True(SpinWait.SpinUntil(
-            () => api.PostPaths.Contains("api/v1/sessions"),
-            TimeSpan.FromSeconds(2)));
-        var advanced = Assert.IsType<CreateSessionRequest>(api.PostRequests[^1]);
-        Assert.Equal(classId, advanced.ClassId);
-        Assert.Equal(SessionAdmissionMode.ClassMembersOnly, advanced.AdmissionMode);
+        Assert.Equal("{\"autoApprove\":false}", quick.SettingsJson);
     }
 
     [Fact]
@@ -186,14 +179,82 @@ public sealed class SessionFirstOpenFrontendTests
         viewModel.Subject = created.Subject;
         viewModel.Duration = created.DurationMinutes.ToString();
 
-        Assert.False(viewModel.UseClassAssignment);
-        Assert.Null(viewModel.SelectedClass);
         viewModel.CreateCommand.Execute(null);
         Assert.True(SpinWait.SpinUntil(
             () => api.PostPaths.Contains("api/v1/exams"),
             TimeSpan.FromSeconds(2)));
         var request = Assert.IsType<CreateExamRequest>(api.PostRequests[0]);
         Assert.Null(request.ClassId);
+    }
+
+    [Fact]
+    public void ProductionXaml_HasNoAdvancedClassCreationOrTechnicalSettings()
+    {
+        var views = FindViewsDirectory();
+        var exam = File.ReadAllText(Path.Combine(views, "ExamManagementView.xaml"));
+        var session = File.ReadAllText(Path.Combine(views, "SessionManagementView.xaml"));
+        var settings = File.ReadAllText(Path.Combine(views, "SettingsPageView.xaml"));
+
+        Assert.DoesNotContain("Nâng cao — Gắn với lớp học", exam, StringComparison.Ordinal);
+        Assert.DoesNotContain("Nâng cao — Luồng lớp học", session, StringComparison.Ordinal);
+        foreach (var forbidden in new[]
+                 {
+                     "Publishable", "Project URL", "Organization", "Secret key",
+                     "CloudAccessMode", "TrustedServer", "UserSession",
+                     "Discovery port", "Chunk", "Concurrent uploads", "Supabase password"
+                 })
+        {
+            Assert.DoesNotContain(forbidden, settings, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void SelectableRows_KeepCheckboxStateSeparateAndEnforceSessionEligibility()
+    {
+        var finished = new SelectableSessionRow(Session(SessionStatus.Finished));
+        var cancelled = new SelectableSessionRow(Session(SessionStatus.Cancelled));
+        var running = new SelectableSessionRow(Session(SessionStatus.InProgress));
+
+        finished.IsChecked = true;
+        cancelled.IsChecked = true;
+        running.IsChecked = true;
+
+        Assert.True(finished.IsChecked);
+        Assert.True(cancelled.IsChecked);
+        Assert.False(running.IsChecked);
+        Assert.False(running.CanArchive);
+    }
+
+    private static SessionSummaryDto Session(SessionStatus status) => new(
+        Guid.NewGuid(),
+        Guid.NewGuid(),
+        "Bài kiểm tra",
+        status + "-ROOM",
+        status,
+        DateTimeOffset.UtcNow,
+        null,
+        null,
+        null,
+        new(0, 0, 0, 0, 0, 0, 0),
+        1,
+        "rv");
+
+    private static string FindViewsDirectory()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            var candidate = Path.Combine(
+                current.FullName,
+                "frontend",
+                "src",
+                "ExamTransfer.Desktop",
+                "Views");
+            if (Directory.Exists(candidate))
+                return candidate;
+            current = current.Parent;
+        }
+        throw new DirectoryNotFoundException("Không tìm thấy thư mục Views của frontend.");
     }
 
     private sealed class StubLanDiscovery(

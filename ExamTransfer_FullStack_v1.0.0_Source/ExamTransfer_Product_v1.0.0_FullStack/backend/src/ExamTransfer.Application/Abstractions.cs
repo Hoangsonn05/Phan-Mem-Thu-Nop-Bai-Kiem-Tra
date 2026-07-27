@@ -352,6 +352,7 @@ public interface IClassService
     Task<ClassDetailDto> CreateAsync(CreateClassRequest request, CancellationToken cancellationToken);
     Task<ClassDetailDto> UpdateAsync(Guid id, UpdateClassRequest request, CancellationToken cancellationToken);
     Task ArchiveAsync(Guid id, CancellationToken cancellationToken);
+    Task<BulkArchiveResultDto> BulkArchiveAsync(BulkArchiveRequest request, CancellationToken cancellationToken);
     Task<StudentDto> AddStudentAsync(Guid classId, CreateStudentRequest request, CancellationToken cancellationToken);
     Task<StudentDto> UpdateStudentAsync(Guid classId, Guid studentId, UpdateStudentRequest request, CancellationToken cancellationToken);
     Task RemoveStudentAsync(Guid classId, Guid studentId, CancellationToken cancellationToken);
@@ -371,6 +372,7 @@ public interface IExamService
     Task<ExamDetailDto> UpdateAsync(Guid id, UpdateExamRequest request, CancellationToken cancellationToken);
     Task<ExamDetailDto> PublishAsync(Guid id, CancellationToken cancellationToken);
     Task ArchiveAsync(Guid id, CancellationToken cancellationToken);
+    Task<BulkArchiveResultDto> BulkArchiveAsync(BulkArchiveRequest request, CancellationToken cancellationToken);
     Task<ExamDetailDto> CloneAsync(Guid id, CancellationToken cancellationToken);
     Task<InitFileUploadResponse> InitFileAsync(Guid examId, InitFileUploadRequest request, CancellationToken cancellationToken);
     Task UploadChunkAsync(Guid examId, Guid fileId, int index, Stream content, long contentLength, string? chunkSha256, CancellationToken cancellationToken);
@@ -388,6 +390,7 @@ public interface ISessionService
     Task<SessionDetailDto> CreateAndOpenAsync(CreateSessionRequest request, string hostDeviceId, CancellationToken cancellationToken);
     Task<SessionDetailDto> UpdateAsync(Guid id, UpdateSessionRequest request, CancellationToken cancellationToken);
     Task<SessionDetailDto> TransitionAsync(Guid id, SessionStatus target, EndSessionRequest? endRequest, CancellationToken cancellationToken);
+    Task<BulkArchiveResultDto> BulkArchiveAsync(BulkArchiveRequest request, CancellationToken cancellationToken);
     Task<JoinSessionResponse> JoinAsync(JoinSessionRequest request, Guid accountUserId, string studentCode, string displayName, string? ipAddress, CancellationToken cancellationToken);
     Task<ParticipantDto> ApproveAsync(Guid sessionId, Guid participantId, Guid mutationRequestId, CancellationToken cancellationToken);
     Task RejectAsync(Guid sessionId, Guid participantId, string? reason, Guid mutationRequestId, CancellationToken cancellationToken);

@@ -72,6 +72,24 @@
                               SelectedItem="{Binding SelectedExam}"
                               SelectionChanged="OnExamSelectionChanged">
                         <DataGrid.Columns>
+                            <DataGridTemplateColumn Width="54">
+                                <DataGridTemplateColumn.Header>
+                                    <CheckBox IsChecked="{Binding DataContext.AllVisibleChecked, RelativeSource={RelativeSource AncestorType=DataGrid}, Mode=OneWay}"
+                                              Command="{Binding DataContext.ToggleAllVisibleArchiveSelectionCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                              Focusable="False"
+                                              ToolTip="Chọn tất cả bài đang hiển thị" />
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsChecked, Mode=OneWay}"
+                                                  Command="{Binding DataContext.ToggleArchiveSelectionCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                  CommandParameter="{Binding}"
+                                                  IsEnabled="{Binding CanArchive}"
+                                                  Focusable="False"
+                                                  HorizontalAlignment="Center" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="TIÊU ĐỀ" Binding="{Binding Title}" Width="*" />
                             <DataGridTextColumn Header="MÔN" Binding="{Binding Subject}" Width="110" />
                             <DataGridTextColumn Header="PHÚT" Binding="{Binding DurationMinutes}" Width="65" />
@@ -92,10 +110,17 @@
                                     Command="{Binding CloneCommand}"
                                     Style="{StaticResource SecondaryButton}"
                                     Margin="8,0,0,0" />
-                            <Button Content="Lưu trữ"
-                                    Command="{Binding ArchiveCommand}"
+                            <Button Command="{Binding BulkArchiveCommand}"
                                     Style="{StaticResource DangerButton}"
-                                    Margin="8,0,0,0" />
+                                    MinHeight="44"
+                                    MinWidth="180"
+                                    Margin="8,0,0,0">
+                                <TextBlock>
+                                    <Run Text="Xóa mục đã chọn (" />
+                                    <Run Text="{Binding SelectedArchiveCount, Mode=OneWay}" />
+                                    <Run Text=")" />
+                                </TextBlock>
+                            </Button>
                         </StackPanel>
                     </StackPanel>
                 </Grid>
@@ -109,22 +134,6 @@
                         <StackPanel>
                             <TextBlock Text="Thông tin và quy định"
                                        Style="{StaticResource SectionTitleText}" />
-                            <Expander Header="Nâng cao — Gắn với lớp học"
-                                      IsExpanded="{Binding UseClassAssignment, Mode=TwoWay}"
-                                      Margin="0,14,0,0">
-                                <StackPanel Margin="0,10,0,0">
-                                    <TextBlock Text="Lớp học"
-                                               Style="{StaticResource LabelText}"
-                                               Margin="0,0,0,6" />
-                                    <ComboBox ItemsSource="{Binding Classes}"
-                                              SelectedItem="{Binding SelectedClass}"
-                                              DisplayMemberPath="Name" />
-                                    <TextBlock Text="Khi thu gọn, bài mới được tạo không gắn lớp."
-                                               Style="{StaticResource CaptionText}"
-                                               Margin="0,6,0,0"
-                                               TextWrapping="Wrap" />
-                                </StackPanel>
-                            </Expander>
                             <TextBlock Text="Tiêu đề *"
                                        Style="{StaticResource LabelText}"
                                        Margin="0,12,0,6" />

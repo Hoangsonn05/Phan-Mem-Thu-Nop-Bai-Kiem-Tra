@@ -52,6 +52,9 @@ public sealed class SessionsController(ISessionService service) : ApiControllerB
     public async Task<ActionResult<ApiResponse<SessionDetailDto>>> End(Guid id, EndSessionRequest request, CancellationToken ct) => Data(await service.TransitionAsync(id, SessionStatus.Finished, request, ct));
     [HttpPost("{id:guid}/cancel")][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<SessionDetailDto>>> Cancel(Guid id, EndSessionRequest request, CancellationToken ct) => Data(await service.TransitionAsync(id, SessionStatus.Cancelled, request, ct));
+    [HttpPost("bulk-archive")][Authorize(Policy = "TeacherOrAdmin")]
+    public async Task<ActionResult<ApiResponse<BulkArchiveResultDto>>> BulkArchive(BulkArchiveRequest request, CancellationToken ct) =>
+        Data(await service.BulkArchiveAsync(request, ct));
 
     [HttpPost("join")][Authorize(Policy = "Student")]
     public async Task<ActionResult<ApiResponse<JoinSessionResponse>>> Join(JoinSessionRequest request, CancellationToken ct)

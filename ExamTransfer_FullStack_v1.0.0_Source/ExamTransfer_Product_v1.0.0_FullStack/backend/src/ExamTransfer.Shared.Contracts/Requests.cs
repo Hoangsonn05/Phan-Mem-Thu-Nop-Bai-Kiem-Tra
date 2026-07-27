@@ -18,6 +18,13 @@ public sealed record ImportCommitRequest(string PreviewToken, bool SkipInvalidRo
 public sealed record ImportRowErrorDto(int RowNumber, string Field, string Code, string Message);
 public sealed record ImportPreviewDto(string PreviewToken, int TotalRows, int ValidRows, int InvalidRows, IReadOnlyList<StudentDto> PreviewStudents, IReadOnlyList<ImportRowErrorDto> Errors);
 public sealed record ImportCommitResultDto(int Inserted, int Skipped, IReadOnlyList<ImportRowErrorDto> Errors);
+public sealed record BulkArchiveRequest(IReadOnlyList<Guid> Ids);
+public sealed record BulkArchiveFailureDto(Guid Id, string Code, string Message);
+public sealed record BulkArchiveResultDto(
+    int Requested,
+    int Archived,
+    IReadOnlyList<Guid> AlreadyArchived,
+    IReadOnlyList<BulkArchiveFailureDto> Rejected);
 
 public sealed record CreateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule, ExamDeliveryType DeliveryType = ExamDeliveryType.FileSubmission, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None);
 public sealed record UpdateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule, string RowVersion, ExamDeliveryType DeliveryType = ExamDeliveryType.FileSubmission, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None);

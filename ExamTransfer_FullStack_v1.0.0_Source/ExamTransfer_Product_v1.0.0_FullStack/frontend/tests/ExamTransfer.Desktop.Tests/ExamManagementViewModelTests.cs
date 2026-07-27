@@ -57,7 +57,7 @@ public sealed class ExamManagementViewModelTests
         };
         using var viewModel = new ExamManagementViewModel(api)
         {
-            SelectedExam = source,
+            SelectedExam = new SelectableExamRow(source),
             DeliveryType = ExamDeliveryType.MultipleChoice
         };
 
@@ -67,7 +67,114 @@ public sealed class ExamManagementViewModelTests
             () => api.PostPaths.Contains($"api/v1/exams/{sourceId}/clone"),
             TimeSpan.FromSeconds(2)));
 
-        viewModel.SelectedExam = source with { Status = ExamStatus.Published };
+        viewModel.SelectedExam = new SelectableExamRow(
+            source with { Status = ExamStatus.Published });
         Assert.False(viewModel.IsPolicyEditable);
     }
+
+    [Fact]
+    public async Task LegacyClassBoundEdit_PreservesClass_ButNewExamIsClassless()
+    {
+        var classId = Guid.NewGuid();
+        var examId = Guid.NewGuid();
+        var rule = new FileRuleDto([".pdf"], 1024, 2048, 1, false, false);
+        var summary = new ExamSummaryDto(
+            examId,
+            classId,
+            "Legacy",
+            "Math",
+            45,
+            ExamDeliveryType.FileSubmission,
+            ExamStatus.Draft,
+            1,
+            0,
+            "rv-1");
+        var detail = new ExamDetailDto(
+            examId,
+            classId,
+            summary.Title,
+            summary.Subject,
+            null,
+            45,
+            summary.DeliveryType,
+            summary.Status,
+            1,
+            rule,
+            [],
+            summary.RowVersion);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [summary],
+            ExamDetailResponse = detail
+        };
+        using var viewModel = new ExamManagementViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        viewModel.Title = "Legacy updated";
+        viewModel.SaveCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => api.PutPaths.Contains($"api/v1/exams/{examId}"),
+            TimeSpan.FromSeconds(2)));
+        Assert.Equal(classId, Assert.IsType<UpdateExamRequest>(api.PutRequests[0]).ClassId);
+
+        viewModel.CreateCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => api.PostPaths.Contains("api/v1/exams"),
+            TimeSpan.FromSeconds(2)));
+        var create = Assert.IsType<CreateExamRequest>(
+            api.PostRequests.First(request => request is CreateExamRequest));
+        Assert.Null(create.ClassId);
+    }
+
+    [Fact]
+    public async Task ExamBulkSelection_SelectAllCountsAndRefreshClearsChecks()
+    {
+        var first = MakeExamSummary(Guid.NewGuid(), "First");
+        var second = MakeExamSummary(Guid.NewGuid(), "Second");
+        var detail = new ExamDetailDto(
+            first.Id,
+            null,
+            first.Title,
+            first.Subject,
+            null,
+            first.DurationMinutes,
+            first.DeliveryType,
+            first.Status,
+            first.Version,
+            new FileRuleDto([".pdf"], 1024, 2048, 1, false, false),
+            [],
+            first.RowVersion);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [first, second],
+            ExamDetailResponse = detail
+        };
+        using var viewModel = new ExamManagementViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.False(viewModel.BulkArchiveCommand.CanExecute(null));
+        viewModel.ToggleAllVisibleArchiveSelectionCommand.Execute(null);
+        Assert.Equal(2, viewModel.SelectedArchiveCount);
+        Assert.True(viewModel.BulkArchiveCommand.CanExecute(null));
+
+        viewModel.Exams[0].IsChecked = false;
+        Assert.Equal(1, viewModel.SelectedArchiveCount);
+        viewModel.RefreshCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => viewModel.SelectedArchiveCount == 0 && !viewModel.IsBusy,
+            TimeSpan.FromSeconds(2)));
+        Assert.False(viewModel.BulkArchiveCommand.CanExecute(null));
+    }
+
+    private static ExamSummaryDto MakeExamSummary(Guid id, string title) => new(
+        id,
+        null,
+        title,
+        "Math",
+        45,
+        ExamDeliveryType.FileSubmission,
+        ExamStatus.Draft,
+        1,
+        0,
+        "rv-" + id);
 }
