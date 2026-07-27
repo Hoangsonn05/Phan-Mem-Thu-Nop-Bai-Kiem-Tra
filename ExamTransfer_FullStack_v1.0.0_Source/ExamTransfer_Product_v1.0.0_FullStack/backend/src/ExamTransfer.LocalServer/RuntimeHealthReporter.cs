@@ -62,7 +62,7 @@ public sealed class RuntimeHealthReporter(
         var udp = !discovery.Enabled
             ? Component("Degraded", "UDP_DISCOVERY_DISABLED", "UDP discovery is disabled.")
             : discovery.Listening
-                ? Component("Healthy", "UDP_DISCOVERY_LISTENING", $"UDP discovery is listening on 0.0.0.0:{options.Value.Discovery.Port}.")
+                ? Component("Healthy", "UDP_DISCOVERY_LISTENING", $"UDP discovery is listening on 0.0.0.0:{discovery.ListeningPort ?? options.Value.Discovery.Port}.")
                 : Component("Degraded", discovery.LastErrorCode ?? "UDP_DISCOVERY_STARTING", "UDP discovery is not listening.");
         var advertised = lan.Ready
             ? Component("Healthy", lan.Code, lan.Detail)

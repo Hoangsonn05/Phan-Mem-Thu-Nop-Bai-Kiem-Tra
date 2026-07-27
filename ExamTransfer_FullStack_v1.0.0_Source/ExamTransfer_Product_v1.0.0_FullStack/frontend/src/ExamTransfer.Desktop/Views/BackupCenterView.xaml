@@ -12,17 +12,21 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
             <StackPanel>
                 <TextBlock Text="Sao lưu và khôi phục" Style="{StaticResource PageTitleText}" />
                 <TextBlock Text="Tạo backup SQLite và file, kiểm tra checksum, tải xuống và khôi phục an toàn."
                            Style="{StaticResource BodyText}" Margin="0,5,0,0" />
             </StackPanel>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+            <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="20,0,0,0">
                 <CheckBox Content="Bao gồm file" IsChecked="{Binding IncludeFiles}" VerticalAlignment="Center" />
                 <CheckBox Content="Mã hóa" IsChecked="{Binding Encrypt}" Margin="16,0,0,0" VerticalAlignment="Center" />
                 <Button Content="Tạo backup" Command="{Binding CreateCommand}"
                         Style="{StaticResource PrimaryButton}" Margin="16,0,0,0" />
-            </StackPanel>
+            </WrapPanel>
         </Grid>
         <Border Grid.Row="2" Style="{StaticResource Card}" Padding="0">
             <Grid>
@@ -52,9 +56,12 @@
                 </StackPanel>
             </Grid>
         </Border>
-        <Border Grid.Row="4" Style="{StaticResource StatusPill}" HorizontalAlignment="Left"
-                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-            <TextBlock Text="{Binding Status}" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" FontSize="12" />
+        <Border Grid.Row="4" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
+            <StackPanel Orientation="Horizontal">
+                <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </StackPanel>
         </Border>
     </Grid>
 </UserControl>

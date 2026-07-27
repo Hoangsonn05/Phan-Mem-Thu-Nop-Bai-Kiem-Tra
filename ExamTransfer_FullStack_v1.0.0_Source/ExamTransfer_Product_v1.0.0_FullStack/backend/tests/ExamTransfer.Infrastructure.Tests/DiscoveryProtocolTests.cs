@@ -7,6 +7,13 @@ namespace ExamTransfer.Infrastructure.Tests;
 public sealed class DiscoveryProtocolTests
 {
     [Fact]
+    public void CandidatePorts_IncludesPreferredPortAndBoundedFallbacks()
+    {
+        Assert.Equal([5050, 5051, 5052, 5053, 5054, 5055], DiscoveryProtocol.CandidatePorts(5050));
+        Assert.Equal([65534, 65535], DiscoveryProtocol.CandidatePorts(65534));
+    }
+
+    [Fact]
     public void TryParseResponse_AcceptsValidProtocolPayload()
     {
         var json = """

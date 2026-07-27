@@ -140,10 +140,44 @@ public sealed class BackupService(
         }
         finally
         {
-            if (Directory.Exists(staging))
-                Directory.Delete(staging, recursive: true);
-            if (File.Exists(plainZip))
-                File.Delete(plainZip);
+            // Cleanup must never turn a successfully created backup into a 500.
+            // Antivirus/indexers can briefly hold a staging file on Windows.
+            TryDeleteDirectory(staging);
+            TryDeleteFile(plainZip);
+        }
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Stale temporary folders are safe and can be cleaned on a later run.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // The completed backup is still valid even if staging cleanup is denied.
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // Best-effort cleanup; do not mask the backup operation result.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Best-effort cleanup; do not mask the backup operation result.
         }
     }
 
@@ -206,8 +240,9 @@ public sealed class BackupService(
 
         return (await db.BackupsSet
                 .AsNoTracking()
-                .OrderByDescending(x => x.CreatedAtUtc)
                 .ToListAsync(cancellationToken))
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
             .Select(ToDto)
             .ToList();
     }

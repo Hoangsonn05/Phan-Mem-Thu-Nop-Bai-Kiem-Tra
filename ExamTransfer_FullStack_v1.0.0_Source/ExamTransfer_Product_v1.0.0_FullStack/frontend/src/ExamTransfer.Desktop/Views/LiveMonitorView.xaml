@@ -7,40 +7,145 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="14" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="14" />
             <RowDefinition Height="*" />
             <RowDefinition Height="12" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Header -->
-        <Grid Grid.Row="0">
-            <StackPanel>
-                <TextBlock Text="Giám sát trực tiếp"
-                           Style="{StaticResource PageTitleText}" />
-                <TextBlock Text="Snapshot từ REST kết hợp realtime để theo dõi kết nối, nhận đề, upload và bài nộp."
-                           Style="{StaticResource BodyText}"
-                           Margin="0,5,0,0" />
-            </StackPanel>
-            <StackPanel Orientation="Horizontal"
-                        HorizontalAlignment="Right"
-                        VerticalAlignment="Center">
-                <ComboBox ItemsSource="{Binding Sessions}"
-                          SelectedItem="{Binding SelectedSession}"
-                          DisplayMemberPath="RoomCode"
-                          Width="160" />
-                <Button Content="Tải phiên"
-                        Command="{Binding LoadCommand}"
-                        Style="{StaticResource SecondaryButton}"
-                        Margin="8,0,0,0" />
-                <Button Content="Làm mới"
-                        Command="{Binding RefreshCommand}"
-                        Style="{StaticResource PrimaryButton}"
-                        Margin="8,0,0,0" />
-            </StackPanel>
+        <!-- ═══ Header ═══ -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="12"
+                Padding="20,14">
+            <Grid>
+                <StackPanel VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="&#xE950;"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="20"
+                                   Foreground="{DynamicResource AccentBrush}"
+                                   Margin="0,0,10,0"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Text="Giám sát trực tiếp"
+                                   Style="{StaticResource PageTitleText}"
+                                   VerticalAlignment="Center" />
+                        <!-- Chỉ giữ chấm tròn, bỏ chữ LIVE -->
+                        <Ellipse Width="8" Height="8"
+                                 Fill="{DynamicResource DangerBrush}"
+                                 Margin="10,0,0,0"
+                                 VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="Snapshot từ REST kết hợp realtime để theo dõi kết nối, nhận đề, upload và bài nộp."
+                               Style="{StaticResource BodyText}"
+                               Margin="30,4,0,0" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center">
+                    <ComboBox ItemsSource="{Binding Sessions}"
+                              SelectedItem="{Binding SelectedSession}"
+                              DisplayMemberPath="RoomCode"
+                              Width="170" />
+                    <Button Content="Tải phiên"
+                            Command="{Binding LoadCommand}"
+                            Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" />
+                    <Button Content="Làm mới"
+                            Command="{Binding RefreshCommand}"
+                            Style="{StaticResource PrimaryButton}"
+                            MinHeight="42"
+                            Margin="8,0,0,0" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ═══ KPI strip ═══ -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource SubtleCard}" Padding="14,10">
+                <StackPanel>
+                    <TextBlock Text="ONLINE" Style="{StaticResource LabelText}" Margin="0,0,0,3" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xF13C;" Style="{StaticResource IconText}" FontSize="14"
+                                   Foreground="{DynamicResource SuccessBrush}" Margin="0,0,5,0" />
+                        <TextBlock Text="—" FontSize="20" FontWeight="Bold"
+                                   Foreground="{DynamicResource SuccessBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="2" Style="{StaticResource SubtleCard}" Padding="14,10">
+                <StackPanel>
+                    <TextBlock Text="ĐANG LÀM BÀI" Style="{StaticResource LabelText}" Margin="0,0,0,3" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE70F;" Style="{StaticResource IconText}" FontSize="14"
+                                   Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,5,0" />
+                        <TextBlock Text="—" FontSize="20" FontWeight="Bold"
+                                   Foreground="{DynamicResource PrimaryBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="4" Style="{StaticResource SubtleCard}" Padding="14,10">
+                <StackPanel>
+                    <TextBlock Text="ĐÃ NỘP" Style="{StaticResource LabelText}" Margin="0,0,0,3" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE9F5;" Style="{StaticResource IconText}" FontSize="14"
+                                   Foreground="{DynamicResource AccentBrush}" Margin="0,0,5,0" />
+                        <TextBlock Text="—" FontSize="20" FontWeight="Bold"
+                                   Foreground="{DynamicResource AccentBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="6" Style="{StaticResource SubtleCard}" Padding="14,10">
+                <StackPanel>
+                    <TextBlock Text="MẤT KẾT NỐI" Style="{StaticResource LabelText}" Margin="0,0,0,3" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE978;" Style="{StaticResource IconText}" FontSize="14"
+                                   Foreground="{DynamicResource WarningBrush}" Margin="0,0,5,0" />
+                        <TextBlock Text="—" FontSize="20" FontWeight="Bold"
+                                   Foreground="{DynamicResource WarningBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="8"
+                    Background="{DynamicResource DangerSoftBrush}"
+                    BorderBrush="{DynamicResource DangerBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="14,10">
+                <StackPanel>
+                    <TextBlock Text="CẢNH BÁO" Style="{StaticResource LabelText}"
+                               Foreground="{DynamicResource DangerBrush}" Margin="0,0,0,3" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE7BA;" Style="{StaticResource IconText}" FontSize="14"
+                                   Foreground="{DynamicResource DangerBrush}" Margin="0,0,5,0" />
+                        <TextBlock Text="—" FontSize="20" FontWeight="Bold"
+                                   Foreground="{DynamicResource DangerBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
         </Grid>
 
-        <!-- Content -->
-        <Grid Grid.Row="2">
+        <!-- ═══ Main content ═══ -->
+        <Grid Grid.Row="4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.45*" />
                 <ColumnDefinition Width="14" />
@@ -55,9 +160,18 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <TextBlock Text="Trạng thái học sinh"
-                               Style="{StaticResource SectionTitleText}"
-                               Margin="18,16,18,10" />
+                    <Grid Margin="18,16,18,0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="&#xE81E;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}"
+                                       Margin="0,0,8,0" />
+                            <TextBlock Text="Trạng thái học sinh"
+                                       Style="{StaticResource SectionTitleText}" />
+                        </StackPanel>
+                    </Grid>
+                    <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
                     <DataGrid Grid.Row="1"
                               ItemsSource="{Binding Participants}"
                               SelectedItem="{Binding SelectedParticipant}">
@@ -70,93 +184,118 @@
                             <DataGridTextColumn Header="THÊM PHÚT" Binding="{Binding ExtraTimeMinutes}" Width="75" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <WrapPanel Grid.Row="2" Margin="18,12,18,16">
-                        <Button Content="Tạm dừng"
-                                Command="{Binding PauseCommand}"
-                                Style="{StaticResource SecondaryButton}" />
-                        <Button Content="Tiếp tục"
-                                Command="{Binding ResumeCommand}"
-                                Style="{StaticResource SecondaryButton}"
-                                Margin="8,0,0,0" />
-                        <Button Content="Thu bài"
-                                Command="{Binding CollectCommand}"
-                                Style="{StaticResource PrimaryButton}"
-                                Margin="8,0,0,0" />
-                        <Button Content="Kết thúc"
-                                Command="{Binding EndCommand}"
-                                Style="{StaticResource DangerButton}"
-                                Margin="8,0,0,0" />
-                    </WrapPanel>
+                    <Border Grid.Row="2"
+                            Background="{DynamicResource SurfaceSubtleBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="0,1,0,0"
+                            CornerRadius="0,0,12,12"
+                            Padding="18,12">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="Tạm dừng"
+                                        Command="{Binding PauseCommand}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        MinHeight="42" />
+                                <Button Content="Tiếp tục"
+                                        Command="{Binding ResumeCommand}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        MinHeight="42"
+                                        Margin="8,0,0,0" />
+                                <Button Content="Thu bài"
+                                        Command="{Binding CollectCommand}"
+                                        Style="{StaticResource PrimaryButton}"
+                                        MinHeight="42"
+                                        Margin="8,0,0,0" />
+                            </StackPanel>
+                            <Button Content="Kết thúc phiên"
+                                    Command="{Binding EndCommand}"
+                                    Style="{StaticResource DangerButton}"
+                                    MinHeight="42"
+                                    HorizontalAlignment="Right" />
+                        </Grid>
+                    </Border>
                 </Grid>
             </Border>
 
-            <!-- Quick actions + event feed -->
-            <StackPanel Grid.Column="2">
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="Thao tác nhanh"
-                                   Style="{StaticResource SectionTitleText}" />
-                        <TextBlock Text="Thông báo"
-                                   Style="{StaticResource LabelText}"
-                                   Margin="0,14,0,6" />
-                        <TextBox Text="{Binding Message}"
-                                 Height="84"
-                                 AcceptsReturn="True" />
-                        <Button Content="Gửi thông báo"
-                                Command="{Binding MessageCommand}"
-                                Style="{StaticResource PrimaryButton}"
-                                Margin="0,10,0,0" />
-                        <TextBlock Text="Cộng phút cho học sinh đã chọn"
-                                   Style="{StaticResource LabelText}"
-                                   Margin="0,16,0,6" />
-                        <TextBox Text="{Binding ExtraMinutes}" />
-                        <Button Content="Áp dụng thời gian"
-                                Command="{Binding ExtraTimeCommand}"
-                                Style="{StaticResource SecondaryButton}"
-                                Margin="0,10,0,0" />
-                    </StackPanel>
-                </Border>
-                <Border Style="{StaticResource Card}" Margin="0,14,0,0" Padding="0">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="220" />
-                        </Grid.RowDefinitions>
-                        <TextBlock Text="Dòng sự kiện"
-                                   Style="{StaticResource SectionTitleText}"
-                                   Margin="18,16,18,10" />
-                        <ListBox Grid.Row="1"
-                                 ItemsSource="{Binding Events}"
-                                 BorderThickness="0">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <StackPanel Margin="0,5">
-                                        <TextBlock Text="{Binding Title}"
-                                                   FontWeight="SemiBold"
-                                                   FontSize="13" />
-                                        <TextBlock Text="{Binding Description}"
-                                                   Style="{StaticResource CaptionText}"
-                                                   Margin="0,2,0,0" />
-                                        <TextBlock Text="{Binding Time}"
-                                                   Style="{StaticResource CaptionText}"
-                                                   Margin="0,1,0,0" />
-                                    </StackPanel>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                    </Grid>
-                </Border>
-            </StackPanel>
+            <!-- Sidebar -->
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                <TextBlock Text="&#xEA86;"
+                                           Style="{StaticResource IconText}"
+                                           FontSize="15"
+                                           Foreground="{DynamicResource PrimaryBrush}"
+                                           Margin="0,0,8,0" />
+                                <TextBlock Text="Thao tác nhanh"
+                                           Style="{StaticResource SectionTitleText}" />
+                            </StackPanel>
+                            <TextBlock Text="Thông báo" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                            <TextBox Text="{Binding Message}" Height="84" AcceptsReturn="True" />
+                            <Button Content="Gửi thông báo"
+                                    Command="{Binding MessageCommand}"
+                                    Style="{StaticResource PrimaryButton}"
+                                    Margin="0,10,0,0" />
+                            <Separator Margin="0,14" />
+                            <TextBlock Text="Cộng phút cho học sinh đã chọn"
+                                       Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                            <TextBox Text="{Binding ExtraMinutes}" />
+                            <Button Content="Áp dụng thời gian"
+                                    Command="{Binding ExtraTimeCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Margin="0,10,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0" Padding="0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="220" />
+                            </Grid.RowDefinitions>
+                            <StackPanel Orientation="Horizontal" Margin="18,16,18,10">
+                                <TextBlock Text="&#xEA3A;"
+                                           Style="{StaticResource IconText}"
+                                           FontSize="14"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           Margin="0,0,8,0" />
+                                <TextBlock Text="Dòng sự kiện" Style="{StaticResource SectionTitleText}" />
+                            </StackPanel>
+                            <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
+                            <ListBox Grid.Row="1" ItemsSource="{Binding Events}" BorderThickness="0"
+                                     Background="{DynamicResource SurfaceBrush}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="4,6">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Title}"
+                                                           FontWeight="SemiBold" FontSize="13"
+                                                           Foreground="{DynamicResource TextPrimaryBrush}" />
+                                                <TextBlock Text="{Binding Description}"
+                                                           Style="{StaticResource CaptionText}" Margin="0,2,0,0" />
+                                                <TextBlock Text="{Binding Time}"
+                                                           Style="{StaticResource CaptionText}"
+                                                           Foreground="{DynamicResource TextMutedBrush}"
+                                                           Margin="0,1,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
         </Grid>
 
         <!-- Status bar -->
-        <Border Grid.Row="4"
-                Style="{StaticResource StatusPill}"
-                HorizontalAlignment="Left"
-                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-            <TextBlock Text="{Binding Status}"
-                       Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"
-                       FontSize="12" />
+        <Border Grid.Row="6" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
+            <StackPanel Orientation="Horizontal">
+                <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </StackPanel>
         </Border>
     </Grid>
 </UserControl>

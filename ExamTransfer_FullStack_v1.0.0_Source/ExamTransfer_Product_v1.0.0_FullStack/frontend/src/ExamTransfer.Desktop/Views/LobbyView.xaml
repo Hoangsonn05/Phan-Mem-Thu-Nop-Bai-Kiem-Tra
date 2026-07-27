@@ -6,41 +6,126 @@
     <Grid Margin="28,24,28,20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="16" />
+            <RowDefinition Height="14" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="14" />
             <RowDefinition Height="*" />
             <RowDefinition Height="12" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Header -->
-        <Grid Grid.Row="0">
-            <StackPanel>
-                <TextBlock Text="Phòng chờ giáo viên"
-                           Style="{StaticResource PageTitleText}" />
-                <TextBlock Text="Duyệt danh tính, kiểm tra thiết bị và bắt đầu phiên khi checklist đã sẵn sàng."
-                           Style="{StaticResource BodyText}"
-                           Margin="0,5,0,0" />
-            </StackPanel>
-            <StackPanel Orientation="Horizontal"
-                        HorizontalAlignment="Right"
-                        VerticalAlignment="Center">
-                <ComboBox ItemsSource="{Binding Sessions}"
-                          SelectedItem="{Binding SelectedSession}"
-                          DisplayMemberPath="RoomCode"
-                          Width="160" />
-                <Button Content="Tải phòng"
-                        Command="{Binding LoadSessionCommand}"
-                        Style="{StaticResource SecondaryButton}"
-                        Margin="8,0,0,0" />
-                <Button Content="Bắt đầu phiên"
-                        Command="{Binding StartCommand}"
-                        Style="{StaticResource PrimaryButton}"
-                        Margin="8,0,0,0" />
-            </StackPanel>
+        <!-- ═══ Header ═══ -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="12"
+                Padding="20,14">
+            <Grid>
+                <StackPanel VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="&#xE7EF;"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="20"
+                                   Foreground="{DynamicResource PrimaryBrush}"
+                                   Margin="0,0,10,0"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Text="Phòng chờ giáo viên"
+                                   Style="{StaticResource PageTitleText}"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="Duyệt danh tính, kiểm tra thiết bị và bắt đầu phiên khi checklist đã sẵn sàng."
+                               Style="{StaticResource BodyText}"
+                               Margin="30,4,0,0" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center">
+                    <ComboBox ItemsSource="{Binding Sessions}"
+                              SelectedItem="{Binding SelectedSession}"
+                              DisplayMemberPath="RoomCode"
+                              Width="170" />
+                    <Button Content="Tải phòng"
+                            Command="{Binding LoadSessionCommand}"
+                            Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" />
+                    <Button Content="Bắt đầu phiên"
+                            Command="{Binding StartCommand}"
+                            Style="{StaticResource PrimaryButton}"
+                            MinHeight="42"
+                            Margin="8,0,0,0" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ═══ KPI strip ═══ -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource SubtleCard}" Padding="16,12">
+                <StackPanel>
+                    <TextBlock Text="TỔNG THÍ SINH" Style="{StaticResource LabelText}" Margin="0,0,0,4" />
+                    <TextBlock Text="—" FontSize="24" FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="2" Style="{StaticResource SubtleCard}" Padding="16,12">
+                <StackPanel>
+                    <TextBlock Text="ĐÃ KẾT NỐI" Style="{StaticResource LabelText}" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xF13C;"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="14"
+                                   Foreground="{DynamicResource SuccessBrush}"
+                                   Margin="0,0,6,0" />
+                        <TextBlock Text="—" FontSize="24" FontWeight="Bold"
+                                   Foreground="{DynamicResource SuccessBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="4" Style="{StaticResource SubtleCard}" Padding="16,12">
+                <StackPanel>
+                    <TextBlock Text="CHỜ DUYỆT" Style="{StaticResource LabelText}" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE9F5;"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="14"
+                                   Foreground="{DynamicResource WarningBrush}"
+                                   Margin="0,0,6,0" />
+                        <TextBlock Text="—" FontSize="24" FontWeight="Bold"
+                                   Foreground="{DynamicResource WarningBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="6" Style="{StaticResource SubtleCard}" Padding="16,12">
+                <StackPanel>
+                    <TextBlock Text="CHƯA KẾT NỐI" Style="{StaticResource LabelText}" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE978;"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="14"
+                                   Foreground="{DynamicResource TextMutedBrush}"
+                                   Margin="0,0,6,0" />
+                        <TextBlock Text="—" FontSize="24" FontWeight="Bold"
+                                   Foreground="{DynamicResource TextMutedBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
         </Grid>
 
-        <!-- Content -->
-        <Grid Grid.Row="2">
+        <!-- ═══ Main content ═══ -->
+        <Grid Grid.Row="4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.35*" />
                 <ColumnDefinition Width="16" />
@@ -55,15 +140,23 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <Grid Grid.Row="0" Margin="18,16,18,10">
-                        <TextBlock Text="Yêu cầu tham gia"
-                                   Style="{StaticResource SectionTitleText}" />
+                    <Grid Grid.Row="0" Margin="18,16,18,0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="&#xE716;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="15"
+                                       Foreground="{DynamicResource PrimaryBrush}"
+                                       Margin="0,0,8,0" />
+                            <TextBlock Text="Yêu cầu tham gia"
+                                       Style="{StaticResource SectionTitleText}" />
+                        </StackPanel>
                         <Button Content="Duyệt tất cả"
                                 Command="{Binding BulkApproveCommand}"
                                 Style="{StaticResource SecondaryButton}"
                                 HorizontalAlignment="Right"
-                                MinHeight="34" />
+                                MinHeight="36" />
                     </Grid>
+                    <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
                     <DataGrid Grid.Row="1"
                               ItemsSource="{Binding Participants}"
                               SelectedItem="{Binding SelectedParticipant}">
@@ -75,91 +168,119 @@
                             <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="120" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <StackPanel Grid.Row="2"
-                                Orientation="Horizontal"
-                                Margin="18,12,18,16">
-                        <Button Content="Duyệt"
-                                Command="{Binding ApproveCommand}"
-                                Style="{StaticResource PrimaryButton}" />
-                        <Button Content="Từ chối"
-                                Command="{Binding RejectCommand}"
-                                Style="{StaticResource DangerButton}"
-                                Margin="8,0,0,0" />
-                    </StackPanel>
+                    <Border Grid.Row="2"
+                            Background="{DynamicResource SurfaceSubtleBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="0,1,0,0"
+                            CornerRadius="0,0,12,12"
+                            Padding="18,12">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Duyệt"
+                                    Command="{Binding ApproveCommand}"
+                                    Style="{StaticResource PrimaryButton}"
+                                    MinHeight="42" />
+                            <Button Content="Từ chối"
+                                    Command="{Binding RejectCommand}"
+                                    Style="{StaticResource DangerButton}"
+                                    MinHeight="42"
+                                    Margin="8,0,0,0" />
+                        </StackPanel>
+                    </Border>
                 </Grid>
             </Border>
 
-            <!-- Sidebar tools -->
-            <StackPanel Grid.Column="2">
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="Thông báo phòng chờ"
-                                   Style="{StaticResource SectionTitleText}" />
-                        <TextBox Text="{Binding Message}"
-                                 Height="100"
-                                 AcceptsReturn="True"
-                                 Margin="0,14,0,0" />
-                        <Button Content="Gửi thông báo"
-                                Command="{Binding MessageCommand}"
-                                Style="{StaticResource PrimaryButton}"
-                                Margin="0,12,0,0" />
-                    </StackPanel>
-                </Border>
-                <Border Style="{StaticResource Card}" Margin="0,14,0,0">
-                    <StackPanel>
-                        <TextBlock Text="Checklist trước khi bắt đầu"
-                                   Style="{StaticResource SectionTitleText}" />
-                        <StackPanel Margin="0,14,0,0">
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                <TextBlock Text="&#xE73E;"
+            <!-- Sidebar -->
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                <TextBlock Text="&#xE715;"
                                            Style="{StaticResource IconText}"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource SuccessBrush}"
+                                           FontSize="15"
+                                           Foreground="{DynamicResource AccentBrush}"
                                            Margin="0,0,8,0" />
-                                <TextBlock Text="Danh tính học sinh đã được duyệt"
-                                           Style="{StaticResource BodyText}" />
+                                <TextBlock Text="Thông báo phòng chờ"
+                                           Style="{StaticResource SectionTitleText}" />
                             </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                <TextBlock Text="&#xE73E;"
-                                           Style="{StaticResource IconText}"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource SuccessBrush}"
-                                           Margin="0,0,8,0" />
-                                <TextBlock Text="Thiết bị có quyền ghi và đủ dung lượng"
-                                           Style="{StaticResource BodyText}" />
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                <TextBlock Text="&#xE73E;"
-                                           Style="{StaticResource IconText}"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource SuccessBrush}"
-                                           Margin="0,0,8,0" />
-                                <TextBlock Text="Đề đã phát hành và có manifest hợp lệ"
-                                           Style="{StaticResource BodyText}" />
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#xE73E;"
-                                           Style="{StaticResource IconText}"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource SuccessBrush}"
-                                           Margin="0,0,8,0" />
-                                <TextBlock Text="Chính sách kiểm soát đã được xác nhận"
-                                           Style="{StaticResource BodyText}" />
-                            </StackPanel>
+                            <TextBox Text="{Binding Message}" Height="100" AcceptsReturn="True" />
+                            <Button Content="Gửi thông báo"
+                                    Command="{Binding MessageCommand}"
+                                    Style="{StaticResource PrimaryButton}"
+                                    Margin="0,12,0,0" />
                         </StackPanel>
-                    </StackPanel>
-                </Border>
-            </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                <TextBlock Text="&#xE73E;"
+                                           Style="{StaticResource IconText}"
+                                           FontSize="15"
+                                           Foreground="{DynamicResource SuccessBrush}"
+                                           Margin="0,0,8,0" />
+                                <TextBlock Text="Checklist trước khi bắt đầu"
+                                           Style="{StaticResource SectionTitleText}" />
+                            </StackPanel>
+                            <Border Style="{StaticResource SubtleCard}" Padding="12">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                        <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="13"
+                                                   Foreground="{DynamicResource SuccessBrush}" Margin="0,0,10,0" />
+                                        <TextBlock Text="Danh tính học sinh đã được duyệt"
+                                                   Style="{StaticResource BodyText}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                        <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="13"
+                                                   Foreground="{DynamicResource SuccessBrush}" Margin="0,0,10,0" />
+                                        <TextBlock Text="Thiết bị có quyền ghi và đủ dung lượng"
+                                                   Style="{StaticResource BodyText}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                        <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="13"
+                                                   Foreground="{DynamicResource SuccessBrush}" Margin="0,0,10,0" />
+                                        <TextBlock Text="Đề đã phát hành và có manifest hợp lệ"
+                                                   Style="{StaticResource BodyText}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="13"
+                                                   Foreground="{DynamicResource SuccessBrush}" Margin="0,0,10,0" />
+                                        <TextBlock Text="Chính sách kiểm soát đã được xác nhận"
+                                                   Style="{StaticResource BodyText}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="0,14,0,0"
+                            Background="{DynamicResource InfoSoftBrush}"
+                            CornerRadius="10"
+                            Padding="14,10">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE946;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="16"
+                                       Foreground="{DynamicResource InfoBrush}"
+                                       Margin="0,0,10,0"
+                                       VerticalAlignment="Top" />
+                            <TextBlock Text="Chỉ bắt đầu phiên sau khi tất cả thí sinh đã kết nối và checklist hoàn tất."
+                                       Style="{StaticResource BodyText}"
+                                       Foreground="{DynamicResource InfoBrush}"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
         </Grid>
 
         <!-- Status bar -->
-        <Border Grid.Row="4"
-                Style="{StaticResource StatusPill}"
-                HorizontalAlignment="Left"
-                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-            <TextBlock Text="{Binding Status}"
-                       Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"
-                       FontSize="12" />
+        <Border Grid.Row="6" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
+            <StackPanel Orientation="Horizontal">
+                <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </StackPanel>
         </Border>
     </Grid>
 </UserControl>

@@ -11,31 +11,92 @@
             <RowDefinition Height="12" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0">
-            <TextBlock Text="Xuất dữ liệu" Style="{StaticResource PageTitleText}" />
-            <TextBlock Text="Tạo gói ZIP, manifest, biên nhận và audit theo phạm vi phiên thi."
-                       Style="{StaticResource BodyText}" Margin="0,5,0,0" />
-        </StackPanel>
+
+        <!-- ═══ Header ═══ -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="12"
+                Padding="20,14">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="&#xE896;"
+                               Style="{StaticResource IconText}"
+                               FontSize="20"
+                               Foreground="{DynamicResource PrimaryBrush}"
+                               Margin="0,0,10,0"
+                               VerticalAlignment="Center" />
+                    <TextBlock Text="Xuất dữ liệu"
+                               Style="{StaticResource PageTitleText}"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock Text="Tạo gói ZIP, manifest, biên nhận và audit theo phạm vi phiên thi."
+                           Style="{StaticResource BodyText}"
+                           Margin="30,4,0,0" />
+            </StackPanel>
+        </Border>
+
+        <!-- ═══ Main content ═══ -->
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="0.85*" />
                 <ColumnDefinition Width="16" />
                 <ColumnDefinition Width="1.2*" />
             </Grid.ColumnDefinitions>
+
+            <!-- Config card -->
             <Border Style="{StaticResource Card}">
-                <StackPanel>
-                    <TextBlock Text="Cấu hình export" Style="{StaticResource SectionTitleText}" />
-                    <TextBlock Text="Phiên thi" Style="{StaticResource LabelText}" Margin="0,16,0,6" />
-                    <ComboBox ItemsSource="{Binding Sessions}" SelectedItem="{Binding SelectedSession}" DisplayMemberPath="Title" />
-                    <TextBlock Text="Quy tắc đặt tên" Style="{StaticResource LabelText}" Margin="0,12,0,6" />
-                    <TextBox Text="{Binding NamingPattern}" />
-                    <CheckBox Content="Bao gồm file bài nộp" IsChecked="{Binding IncludeFiles}" Margin="0,16,0,0" />
-                    <CheckBox Content="Bao gồm manifest" IsChecked="{Binding IncludeManifest}" Margin="0,8,0,0" />
-                    <CheckBox Content="Bao gồm biên nhận" IsChecked="{Binding IncludeReceipts}" Margin="0,8,0,0" />
-                    <CheckBox Content="Bao gồm audit" IsChecked="{Binding IncludeAudit}" Margin="0,8,0,0" />
-                    <Button Content="Tạo export job" Command="{Binding CreateCommand}" Style="{StaticResource PrimaryButton}" Margin="0,18,0,0" />
-                </StackPanel>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <TextBlock Text="&#xE713;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="15"
+                                       Foreground="{DynamicResource PrimaryBrush}"
+                                       Margin="0,0,8,0" />
+                            <TextBlock Text="Cấu hình export"
+                                       Style="{StaticResource SectionTitleText}" />
+                        </StackPanel>
+                        <TextBlock Text="Phiên thi" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                        <ComboBox ItemsSource="{Binding Sessions}"
+                                  SelectedItem="{Binding SelectedSession}"
+                                  DisplayMemberPath="Title" />
+                        <TextBlock Text="Quy tắc đặt tên" Style="{StaticResource LabelText}" Margin="0,14,0,6" />
+                        <TextBox Text="{Binding NamingPattern}" />
+                        <Separator Margin="0,16" />
+                        <TextBlock Text="Nội dung bao gồm" Style="{StaticResource LabelText}" Margin="0,0,0,10" />
+                        <CheckBox Content="Bao gồm file bài nộp" IsChecked="{Binding IncludeFiles}" Margin="0,0,0,8" />
+                        <CheckBox Content="Bao gồm manifest" IsChecked="{Binding IncludeManifest}" Margin="0,0,0,8" />
+                        <CheckBox Content="Bao gồm biên nhận" IsChecked="{Binding IncludeReceipts}" Margin="0,0,0,8" />
+                        <CheckBox Content="Bao gồm audit" IsChecked="{Binding IncludeAudit}" />
+                        <Separator Margin="0,16" />
+                        <Border Background="{DynamicResource InfoSoftBrush}"
+                                CornerRadius="8"
+                                Padding="12,10"
+                                Margin="0,0,0,16">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE946;"
+                                           Style="{StaticResource IconText}"
+                                           FontSize="14"
+                                           Foreground="{DynamicResource InfoBrush}"
+                                           Margin="0,0,8,0"
+                                           VerticalAlignment="Top" />
+                                <TextBlock Text="Quá trình export có thể mất vài phút tùy dung lượng. Không đóng ứng dụng trong khi xuất."
+                                           FontSize="12"
+                                           Foreground="{DynamicResource InfoBrush}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                        <Button Content="Tạo export job"
+                                Command="{Binding CreateCommand}"
+                                Style="{StaticResource PrimaryButton}"
+                                MinHeight="42" />
+                    </StackPanel>
+                </ScrollViewer>
             </Border>
+
+            <!-- Jobs card -->
             <Border Grid.Column="2" Style="{StaticResource Card}" Padding="0">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -43,8 +104,21 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <TextBlock Text="Tiến trình và lịch sử export" Style="{StaticResource SectionTitleText}" Margin="18,16,18,10" />
-                    <DataGrid Grid.Row="1" ItemsSource="{Binding Jobs}" SelectedItem="{Binding SelectedJob}">
+                    <Grid Margin="18,16,18,0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="&#xE8F4;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="15"
+                                       Foreground="{DynamicResource AccentBrush}"
+                                       Margin="0,0,8,0" />
+                            <TextBlock Text="Tiến trình và lịch sử export"
+                                       Style="{StaticResource SectionTitleText}" />
+                        </StackPanel>
+                    </Grid>
+                    <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
+                    <DataGrid Grid.Row="1"
+                              ItemsSource="{Binding Jobs}"
+                              SelectedItem="{Binding SelectedJob}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="THỜI GIAN" Binding="{Binding CreatedAtUtc}" Width="150" />
                             <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="100" />
@@ -52,17 +126,41 @@
                             <DataGridTextColumn Header="FILE" Binding="{Binding OutputFileName}" Width="*" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="18,12,18,16">
-                        <Button Content="Cập nhật" Command="{Binding PollCommand}" Style="{StaticResource SecondaryButton}" />
-                        <Button Content="Tải file" Command="{Binding DownloadCommand}" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" />
-                        <Button Content="Hủy job" Command="{Binding CancelCommand}" Style="{StaticResource DangerButton}" Margin="8,0,0,0" />
-                    </StackPanel>
+                    <Border Grid.Row="2"
+                            Background="{DynamicResource SurfaceSubtleBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="0,1,0,0"
+                            CornerRadius="0,0,12,12"
+                            Padding="18,12">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="Cập nhật"
+                                        Command="{Binding PollCommand}"
+                                        Style="{StaticResource SecondaryButton}" />
+                                <Button Content="Tải file"
+                                        Command="{Binding DownloadCommand}"
+                                        Style="{StaticResource PrimaryButton}"
+                                        MinHeight="42"
+                                        Margin="8,0,0,0" />
+                            </StackPanel>
+                            <Button Content="Hủy job"
+                                    Command="{Binding CancelCommand}"
+                                    Style="{StaticResource DangerButton}"
+                                    MinHeight="42"
+                                    HorizontalAlignment="Right" />
+                        </Grid>
+                    </Border>
                 </Grid>
             </Border>
         </Grid>
-        <Border Grid.Row="4" Style="{StaticResource StatusPill}" HorizontalAlignment="Left"
-                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-            <TextBlock Text="{Binding Status}" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" FontSize="12" />
+
+        <!-- Status bar -->
+        <Border Grid.Row="4" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
+            <StackPanel Orientation="Horizontal">
+                <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </StackPanel>
         </Border>
     </Grid>
 </UserControl>

@@ -29,7 +29,8 @@ public sealed class LanDiscoveryService(int discoveryPort = DiscoveryProtocol.De
         udp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
 
         var request = Encoding.UTF8.GetBytes(DiscoveryProtocol.RequestMagic);
-        await udp.SendAsync(request, new IPEndPoint(IPAddress.Broadcast, discoveryPort), ct);
+        foreach (var candidatePort in DiscoveryProtocol.CandidatePorts(discoveryPort))
+            await udp.SendAsync(request, new IPEndPoint(IPAddress.Broadcast, candidatePort), ct);
 
         var found = new Dictionary<string, DiscoveryServerDto>(StringComparer.OrdinalIgnoreCase);
         while (!linked.IsCancellationRequested)

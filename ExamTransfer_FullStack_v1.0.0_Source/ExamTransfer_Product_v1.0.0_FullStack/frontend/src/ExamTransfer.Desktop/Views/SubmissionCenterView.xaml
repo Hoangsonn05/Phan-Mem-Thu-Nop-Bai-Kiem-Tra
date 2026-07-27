@@ -6,37 +6,135 @@
     <Grid Margin="28,24,28,20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="16" />
+            <RowDefinition Height="14" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="14" />
             <RowDefinition Height="*" />
             <RowDefinition Height="12" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Header -->
-        <Grid Grid.Row="0">
-            <StackPanel>
-                <TextBlock Text="Trung tâm thu bài"
-                           Style="{StaticResource PageTitleText}" />
-                <TextBlock Text="Theo dõi attempt, trạng thái xác minh, biên nhận và quyền nộp lại của từng học sinh."
-                           Style="{StaticResource BodyText}"
-                           Margin="0,5,0,0" />
-            </StackPanel>
-            <StackPanel Orientation="Horizontal"
-                        HorizontalAlignment="Right"
-                        VerticalAlignment="Center">
-                <ComboBox ItemsSource="{Binding Sessions}"
-                          SelectedItem="{Binding SelectedSession}"
-                          DisplayMemberPath="Title"
-                          Width="260" />
-                <Button Content="Tải bài nộp"
-                        Command="{Binding LoadCommand}"
-                        Style="{StaticResource PrimaryButton}"
-                        Margin="8,0,0,0" />
-            </StackPanel>
+        <!-- ═══ Header ═══ -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="12"
+                Padding="20,14">
+            <Grid>
+                <StackPanel VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="&#xE7B8;"
+                                   Style="{StaticResource IconText}"
+                                   FontSize="20"
+                                   Foreground="{DynamicResource PrimaryBrush}"
+                                   Margin="0,0,10,0"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Text="Trung tâm thu bài"
+                                   Style="{StaticResource PageTitleText}"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="Theo dõi attempt, trạng thái xác minh, biên nhận và quyền nộp lại của từng học sinh."
+                               Style="{StaticResource BodyText}"
+                               Margin="30,4,0,0" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center">
+                    <ComboBox ItemsSource="{Binding Sessions}"
+                              SelectedItem="{Binding SelectedSession}"
+                              DisplayMemberPath="Title"
+                              Width="260" />
+                    <Button Content="Tải bài nộp"
+                            Command="{Binding LoadCommand}"
+                            Style="{StaticResource PrimaryButton}"
+                            MinHeight="42"
+                            Margin="8,0,0,0" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ═══ KPI strip ═══ -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0"
+                    Background="{DynamicResource SuccessSoftBrush}"
+                    BorderBrush="{DynamicResource SuccessBrush}"
+                    BorderThickness="0,0,0,3"
+                    CornerRadius="8"
+                    Padding="16,12">
+                <StackPanel>
+                    <TextBlock Text="ĐÃ NỘP" Style="{StaticResource LabelText}"
+                               Foreground="{DynamicResource SuccessOnSoftBrush}" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="16"
+                                   Foreground="{DynamicResource SuccessBrush}" Margin="0,0,6,0" />
+                        <TextBlock Text="—" FontSize="22" FontWeight="Bold"
+                                   Foreground="{DynamicResource SuccessBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="2" Style="{StaticResource SubtleCard}" Padding="16,12">
+                <StackPanel>
+                    <TextBlock Text="CHƯA NỘP" Style="{StaticResource LabelText}" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE823;" Style="{StaticResource IconText}" FontSize="16"
+                                   Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,6,0" />
+                        <TextBlock Text="—" FontSize="22" FontWeight="Bold"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="4"
+                    Background="{DynamicResource WarningSoftBrush}"
+                    BorderBrush="{DynamicResource WarningBrush}"
+                    BorderThickness="0,0,0,3"
+                    CornerRadius="8"
+                    Padding="16,12">
+                <StackPanel>
+                    <TextBlock Text="NỘP MUỘN" Style="{StaticResource LabelText}"
+                               Foreground="{DynamicResource WarningBrush}" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#x23F1;" FontFamily="Segoe UI Symbol" FontSize="17"
+                                   Foreground="{DynamicResource WarningBrush}" Margin="0,0,6,0" />
+                        <TextBlock Text="—" FontSize="22" FontWeight="Bold"
+                                   Foreground="{DynamicResource WarningBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="6"
+                    Background="{DynamicResource DangerSoftBrush}"
+                    BorderBrush="{DynamicResource DangerBrush}"
+                    BorderThickness="0,0,0,3"
+                    CornerRadius="8"
+                    Padding="16,12">
+                <StackPanel>
+                    <TextBlock Text="LỖI / THIẾU FILE" Style="{StaticResource LabelText}"
+                               Foreground="{DynamicResource DangerBrush}" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xEA39;" Style="{StaticResource IconText}" FontSize="16"
+                                   Foreground="{DynamicResource DangerBrush}" Margin="0,0,6,0" />
+                        <TextBlock Text="—" FontSize="22" FontWeight="Bold"
+                                   Foreground="{DynamicResource DangerBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
         </Grid>
 
-        <!-- Content -->
-        <Grid Grid.Row="2">
+        <!-- ═══ Main content ═══ -->
+        <Grid Grid.Row="4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.4*" />
                 <ColumnDefinition Width="16" />
@@ -50,9 +148,18 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <TextBlock Text="Bài nộp theo phiên"
-                               Style="{StaticResource SectionTitleText}"
-                               Margin="18,16,18,10" />
+                    <Grid Margin="18,16,18,0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="&#xE7B8;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="15"
+                                       Foreground="{DynamicResource PrimaryBrush}"
+                                       Margin="0,0,8,0" />
+                            <TextBlock Text="Bài nộp theo phiên"
+                                       Style="{StaticResource SectionTitleText}" />
+                        </StackPanel>
+                    </Grid>
+                    <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
                     <DataGrid Grid.Row="1"
                               ItemsSource="{Binding Submissions}"
                               SelectedItem="{Binding SelectedSubmission}">
@@ -69,50 +176,84 @@
             </Border>
 
             <!-- Action panel -->
-            <StackPanel Grid.Column="2">
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="Xử lý bài nộp"
-                                   Style="{StaticResource SectionTitleText}" />
-                        <TextBlock Text="Lý do"
-                                   Style="{StaticResource LabelText}"
-                                   Margin="0,14,0,6" />
-                        <TextBox Text="{Binding Reason}"
-                                 Height="80"
-                                 AcceptsReturn="True" />
-                        <Button Content="Tải file đầu tiên"
-                                Command="{Binding DownloadCommand}"
-                                Style="{StaticResource SecondaryButton}"
-                                Margin="0,14,0,0" />
-                        <Button Content="Sao chép mã biên nhận"
-                                Command="{Binding CopyReceiptCommand}"
-                                Style="{StaticResource SecondaryButton}"
-                                Margin="0,8,0,0" />
-                        <Button Content="Cho nộp lại"
-                                Command="{Binding ResubmitCommand}"
-                                Style="{StaticResource PrimaryButton}"
-                                Margin="0,8,0,0" />
-                        <Button Content="Từ chối attempt"
-                                Command="{Binding RejectCommand}"
-                                Style="{StaticResource DangerButton}"
-                                Margin="0,8,0,0" />
-                    </StackPanel>
-                </Border>
-                <Border Style="{StaticResource SubtleCard}" Margin="0,14,0,0">
-                    <TextBlock Text="Mọi attempt được lưu append-only. Từ chối không xóa file cũ; nộp lại sẽ tạo attempt mới."
-                               Style="{StaticResource BodyText}" />
-                </Border>
-            </StackPanel>
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                                <TextBlock Text="&#xE90F;"
+                                           Style="{StaticResource IconText}"
+                                           FontSize="15"
+                                           Foreground="{DynamicResource PrimaryBrush}"
+                                           Margin="0,0,8,0" />
+                                <TextBlock Text="Xử lý bài nộp"
+                                           Style="{StaticResource SectionTitleText}" />
+                            </StackPanel>
+                            <TextBlock Text="Lý do" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                            <TextBox Text="{Binding Reason}" Height="80" AcceptsReturn="True" />
+                            <Separator Margin="0,14" />
+                            <Button Content="Tải file đầu tiên"
+                                    Command="{Binding DownloadCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Margin="0,0,0,8" />
+                            <Button Content="Sao chép mã biên nhận"
+                                    Command="{Binding CopyReceiptCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Margin="0,0,0,8" />
+                            <Button Content="Cho nộp lại"
+                                    Command="{Binding ResubmitCommand}"
+                                    Style="{StaticResource PrimaryButton}"
+                                    MinHeight="42" />
+                            <Border Background="{DynamicResource DangerSoftBrush}"
+                                    BorderBrush="{DynamicResource DangerBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Padding="12,10"
+                                    Margin="0,16,0,0">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                        <TextBlock Text="&#xE7BA;"
+                                                   Style="{StaticResource IconText}"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource DangerBrush}"
+                                                   Margin="0,0,6,0" />
+                                        <TextBlock Text="Hành động không thể hoàn tác"
+                                                   FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource DangerBrush}" />
+                                    </StackPanel>
+                                    <Button Content="Từ chối attempt"
+                                            Command="{Binding RejectCommand}"
+                                            Style="{StaticResource DangerButton}"
+                                            MinHeight="42" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource SubtleCard}" Margin="0,14,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE946;"
+                                       Style="{StaticResource IconText}"
+                                       FontSize="14"
+                                       Foreground="{DynamicResource AccentBrush}"
+                                       Margin="0,0,8,0"
+                                       VerticalAlignment="Top" />
+                            <TextBlock Text="Mọi attempt được lưu append-only. Từ chối không xóa file cũ; nộp lại sẽ tạo attempt mới."
+                                       Style="{StaticResource BodyText}"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
         </Grid>
 
         <!-- Status bar -->
-        <Border Grid.Row="4"
-                Style="{StaticResource StatusPill}"
-                HorizontalAlignment="Left"
-                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-            <TextBlock Text="{Binding Status}"
-                       Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"
-                       FontSize="12" />
+        <Border Grid.Row="6" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
+            <StackPanel Orientation="Horizontal">
+                <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </StackPanel>
         </Border>
     </Grid>
 </UserControl>

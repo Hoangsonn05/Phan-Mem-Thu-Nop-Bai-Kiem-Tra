@@ -3,59 +3,110 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
              beh:EntranceAnimation.IsEnabled="True">
-    <Grid Margin="28,24,28,20">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="20" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="12" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0">
-            <TextBlock Text="Cài đặt học sinh" Style="{StaticResource PageTitleText}" />
-            <TextBlock Text="Hồ sơ, thư mục mặc định, thông báo, định danh thiết bị và log hỗ trợ."
-                       Style="{StaticResource BodyText}" Margin="0,5,0,0" />
-        </StackPanel>
-        <Grid Grid.Row="2">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition />
-                <ColumnDefinition Width="16" />
-                <ColumnDefinition />
-            </Grid.ColumnDefinitions>
-            <Border Style="{StaticResource Card}">
-                <StackPanel>
-                    <TextBlock Text="Hồ sơ" Style="{StaticResource SectionTitleText}" />
-                    <TextBlock Text="Họ tên" Style="{StaticResource LabelText}" Margin="0,16,0,6" />
-                    <TextBox Text="{Binding DisplayName}" />
-                    <TextBlock Text="Mã học sinh" Style="{StaticResource LabelText}" Margin="0,12,0,6" />
-                    <TextBox Text="{Binding StudentCode}" />
-                    <TextBlock Text="Device ID" Style="{StaticResource LabelText}" Margin="0,12,0,6" />
-                    <TextBox Text="{Binding DeviceId}" IsReadOnly="True" />
-                    <CheckBox Content="Bật thông báo" IsChecked="{Binding Notifications}" Margin="0,16,0,0" />
-                    <Button Content="Lưu hồ sơ" Command="{Binding SaveCommand}"
-                            Style="{StaticResource PrimaryButton}" Margin="0,18,0,0" />
-                </StackPanel>
-            </Border>
-            <Border Grid.Column="2" Style="{StaticResource Card}">
-                <StackPanel>
-                    <TextBlock Text="Workspace và hỗ trợ" Style="{StaticResource SectionTitleText}" />
-                    <TextBlock Text="Thư mục làm bài mặc định của kỳ thi"
-                               Style="{StaticResource LabelText}" Margin="0,16,0,6" />
-                    <TextBox Text="{Binding Workspace}" />
-                    <Button Content="Chọn thư mục" Command="{Binding BrowseCommand}"
-                            Style="{StaticResource SecondaryButton}" Margin="0,10,0,0" />
-                    <Button Content="Mở thư mục log" Command="{Binding OpenLogCommand}"
-                            Style="{StaticResource SecondaryButton}" Margin="0,8,0,0" />
-                    <Border Style="{StaticResource SubtleCard}" Margin="0,18,0,0">
-                        <TextBlock Text="Device ID và thông tin phiên thi không thể thay đổi trong giao diện để bảo đảm đối chiếu đúng với máy chủ."
-                                   Style="{StaticResource BodyText}" />
-                    </Border>
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid Margin="32,24,32,20" MaxWidth="800" HorizontalAlignment="Center">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="24" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="16" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <StackPanel Grid.Row="0">
+                <TextBlock Text="Cài đặt học sinh" Style="{StaticResource DisplayTitleText}" HorizontalAlignment="Center"/>
+                <TextBlock Text="Hồ sơ, thư mục mặc định, thông báo, định danh thiết bị và log hỗ trợ."
+                           Style="{StaticResource BodyText}" Margin="0,8,0,0" HorizontalAlignment="Center"/>
+            </StackPanel>
+            
+            <StackPanel Grid.Row="2">
+                <!-- Hồ sơ -->
+                <Border Style="{StaticResource Card}" Padding="32" Margin="0,0,0,24">
+                    <StackPanel>
+                        <TextBlock Text="Hồ sơ" Style="{StaticResource SectionTitleText}" Margin="0,0,0,24" />
+                        
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            
+                            <StackPanel>
+                                <TextBlock Text="Họ tên" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                                <TextBox Text="{Binding DisplayName}" />
+                            </StackPanel>
+                            
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="Mã học sinh" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                                <TextBox Text="{Binding StudentCode}" />
+                            </StackPanel>
+                        </Grid>
+                        
+                        <TextBlock Text="Device ID" Style="{StaticResource LabelText}" Margin="0,16,0,6" />
+                        <TextBox Text="{Binding DeviceId, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" Foreground="{DynamicResource TextMutedBrush}" Background="{DynamicResource SurfaceSubtleBrush}" />
+                        
+                        <CheckBox Content="Nhận thông báo từ hệ thống" IsChecked="{Binding Notifications}" Margin="0,24,0,0" />
+                        
+                        <Border Margin="0,24,0,24" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource BorderBrush}" />
+                        
+                        <Button Command="{Binding SaveCommand}"
+                                Style="{StaticResource PrimaryButton}" Height="46" Padding="32,0" HorizontalAlignment="Left">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE74E;" Style="{StaticResource IconText}" Margin="0,0,8,0" FontSize="16" />
+                                <TextBlock Text="Lưu hồ sơ" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Border>
+                
+                <!-- Workspace & Hỗ trợ -->
+                <Border Style="{StaticResource Card}" Padding="32">
+                    <StackPanel>
+                        <TextBlock Text="Workspace và hỗ trợ" Style="{StaticResource SectionTitleText}" Margin="0,0,0,24" />
+                        
+                        <TextBlock Text="Thư mục làm bài mặc định của kỳ thi"
+                                   Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox Text="{Binding Workspace}" IsReadOnly="True" Margin="0,0,12,0" />
+                            <Button Grid.Column="1" Command="{Binding BrowseCommand}"
+                                    Style="{StaticResource SecondaryButton}" Padding="16,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE8B7;" Style="{StaticResource IconText}" Margin="0,0,8,0" />
+                                    <TextBlock Text="Chọn thư mục" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                        
+                        <Button Command="{Binding OpenLogCommand}"
+                                Style="{StaticResource SecondaryButton}" Margin="0,24,0,0" HorizontalAlignment="Left" Padding="16,0" Height="40">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE81C;" Style="{StaticResource IconText}" Margin="0,0,8,0" />
+                                <TextBlock Text="Mở thư mục log" />
+                            </StackPanel>
+                        </Button>
+                        
+                        <Border Style="{StaticResource SubtleCard}" Margin="0,24,0,0" Background="{DynamicResource InfoSoftBrush}" BorderBrush="{DynamicResource InfoBrush}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE946;" Style="{StaticResource IconText}" Foreground="{DynamicResource InfoBrush}" Margin="0,0,12,0" VerticalAlignment="Center" FontSize="16"/>
+                                <TextBlock Text="Device ID và thông tin phiên thi không thể thay đổi trong giao diện để bảo đảm đối chiếu đúng với máy chủ."
+                                           Style="{StaticResource BodyText}" Foreground="{DynamicResource InfoBrush}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+            
+            <Border Grid.Row="4" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                    BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
+                <StackPanel Orientation="Horizontal">
+                    <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                    <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
                 </StackPanel>
             </Border>
         </Grid>
-        <Border Grid.Row="4" Style="{StaticResource StatusPill}" HorizontalAlignment="Left"
-                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-            <TextBlock Text="{Binding Status}" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" FontSize="12" />
-        </Border>
-    </Grid>
+    </ScrollViewer>
 </UserControl>

@@ -3,36 +3,47 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
              beh:EntranceAnimation.IsEnabled="True">
-    <Grid Margin="28,24,28,20">
+    <Grid Margin="32,24,32,20" MaxWidth="1100" HorizontalAlignment="Center">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="16" />
+            <RowDefinition Height="24" />
             <RowDefinition Height="*" />
-            <RowDefinition Height="12" />
+            <RowDefinition Height="16" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
+        
         <Grid Grid.Row="0">
             <StackPanel>
-                <TextBlock Text="Lịch sử trên thiết bị" Style="{StaticResource PageTitleText}" />
-                <TextBlock Text="Các phiên, bài đã nộp và mã biên nhận thuộc hồ sơ hiện tại."
-                           Style="{StaticResource BodyText}" Margin="0,5,0,0" />
+                <TextBlock Text="Lịch sử nộp bài" Style="{StaticResource DisplayTitleText}" />
+                <TextBlock Text="Các phiên, bài đã nộp và mã biên nhận thuộc hồ sơ hiện tại trên thiết bị này."
+                           Style="{StaticResource BodyText}" Margin="0,8,0,0" />
             </StackPanel>
-            <Button Content="Làm mới" Command="{Binding RefreshCommand}"
-                    Style="{StaticResource SecondaryButton}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+            <Button Command="{Binding RefreshCommand}"
+                    Style="{StaticResource SecondaryButton}" HorizontalAlignment="Right" VerticalAlignment="Center" Height="40" Padding="16,0">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE72C;" Style="{StaticResource IconText}" Margin="0,0,8,0" />
+                    <TextBlock Text="Làm mới" />
+                </StackPanel>
+            </Button>
         </Grid>
+        
         <Border Grid.Row="2" Style="{StaticResource Card}" Padding="0">
-            <DataGrid ItemsSource="{Binding History}">
+            <DataGrid ItemsSource="{Binding History}" BorderThickness="0" Background="{DynamicResource SurfaceSubtleBrush}" RowHeight="48">
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="PHÒNG" Binding="{Binding RoomCode}" Width="120" />
-                    <DataGridTextColumn Header="BIÊN NHẬN" Binding="{Binding ReceiptCode}" Width="*" />
-                    <DataGridTextColumn Header="THỜI GIAN" Binding="{Binding SubmittedAt}" Width="180" />
-                    <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="120" />
+                    <DataGridTextColumn Header="PHÒNG" Binding="{Binding RoomCode}" Width="120" FontWeight="SemiBold" />
+                    <DataGridTextColumn Header="MÃ BIÊN NHẬN" Binding="{Binding ReceiptCode}" Width="*" FontFamily="Consolas" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+                    <DataGridTextColumn Header="THỜI GIAN" Binding="{Binding SubmittedAt}" Width="200" />
+                    <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="160" />
                 </DataGrid.Columns>
             </DataGrid>
         </Border>
-        <Border Grid.Row="4" Style="{StaticResource StatusPill}" HorizontalAlignment="Left"
-                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-            <TextBlock Text="{Binding Status}" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" FontSize="12" />
+        
+        <Border Grid.Row="4" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
+            <StackPanel Orientation="Horizontal">
+                <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </StackPanel>
         </Border>
     </Grid>
 </UserControl>

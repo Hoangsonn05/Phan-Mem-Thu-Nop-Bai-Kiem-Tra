@@ -208,9 +208,59 @@ public sealed class SystemService(AppDbContext db, IStoragePaths paths, ICloudAd
     public async Task<CloudSyncStatusDto> GetCloudStatusAsync(CancellationToken cancellationToken)
     {
         var pending = await db.SyncQueueSet.CountAsync(x => x.Status == SyncStatus.Pending || x.Status == SyncStatus.Failed, cancellationToken);
-        var failed = await db.SyncQueueSet.OrderByDescending(x => x.UpdatedAtUtc).FirstOrDefaultAsync(x => x.Status == SyncStatus.Failed, cancellationToken);
-        var success = await db.SyncQueueSet.Where(x => x.Status == SyncStatus.Synced).OrderByDescending(x => x.UpdatedAtUtc).Select(x => (DateTimeOffset?)x.UpdatedAtUtc).FirstOrDefaultAsync(cancellationToken);
-        var preflight = await cloud.PreflightAsync(cancellationToken);
+        var failed = (await db.SyncQueueSet
+                .AsNoTracking()
+                .Where(x => x.Status == SyncStatus.Failed)
+                .ToListAsync(cancellationToken))
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefault();
+        var success = (await db.SyncQueueSet
+                .AsNoTracking()
+                .Where(x => x.Status == SyncStatus.Synced)
+                .Select(x => x.UpdatedAtUtc)
+                .ToListAsync(cancellationToken))
+            .OrderByDescending(x => x)
+            .Cast<DateTimeOffset?>()
+            .FirstOrDefault();
+
+        if (!_options.Cloud.Enabled)
+        {
+            return new CloudSyncStatusDto(
+                false,
+                SyncStatus.LocalOnly,
+                pending,
+                success,
+                failed?.LastError,
+                false,
+                _options.Cloud.OrganizationId,
+                "LocalOnly",
+                _options.Cloud.AccessMode,
+                false,
+                false);
+        }
+
+        CloudPreflightResult preflight;
+        try
+        {
+            preflight = await cloud.PreflightAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new CloudSyncStatusDto(
+                true,
+                SyncStatus.Failed,
+                pending,
+                success,
+                failed?.LastError ?? $"Cloud preflight không khả dụng: {ex.Message}",
+                cloud.Configured,
+                _options.Cloud.OrganizationId,
+                _options.Cloud.UseResumableUploads ? "Resumable" : "Standard",
+                _options.Cloud.AccessMode,
+                cloud.Authenticated,
+                false);
+        }
+
         return new CloudSyncStatusDto(
             _options.Cloud.Enabled,
             !_options.Cloud.Enabled

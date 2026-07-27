@@ -1823,20 +1823,111 @@ public sealed class StudentWaitingViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
     private readonly StudentSessionState state;
+    private readonly AppAuthSessionState authState;
     private ParticipantDto? participant;
     private SessionDetailDto? session;
 
-    public StudentWaitingViewModel(IBackendClient api, StudentSessionState state)
+    public StudentWaitingViewModel(
+        IBackendClient api,
+        StudentSessionState state,
+        AppAuthSessionState authState)
     {
         this.api = api;
         this.state = state;
+        this.authState = authState;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy && state.HasSession);
         LeaveCommand = new RelayCommand(Leave);
     }
 
-    public ParticipantDto? Participant { get => participant; private set => Set(ref participant, value); }
-    public SessionDetailDto? Session { get => session; private set => Set(ref session, value); }
-    public string RoomCode => state.RoomCode;
+    public ParticipantDto? Participant
+    {
+        get => participant;
+        private set
+        {
+            if (!Set(ref participant, value)) return;
+            RaiseConnectionDetails();
+        }
+    }
+
+    public SessionDetailDto? Session
+    {
+        get => session;
+        private set
+        {
+            if (!Set(ref session, value)) return;
+            Raise(nameof(RoomCodeDisplay));
+            Raise(nameof(RoomCodeHint));
+            Raise(nameof(SessionTitleDisplay));
+        }
+    }
+
+    public string RoomCodeDisplay =>
+        !string.IsNullOrWhiteSpace(state.RoomCode)
+            ? state.RoomCode
+            : "—";
+
+    public string RoomCodeHint =>
+        state.HasSession
+            ? Session?.Summary.Title ?? "Đang tải thông tin kỳ thi"
+            : "Chưa tham gia phòng thi";
+
+    public string CandidateNameDisplay =>
+        FirstAvailable(
+            Participant?.DisplayName,
+            state.DisplayName,
+            authState.CurrentAccount?.DisplayName,
+            "Chưa có thông tin thí sinh");
+
+    public string StudentCodeDisplay =>
+        FirstAvailable(
+            Participant?.StudentCode,
+            state.StudentCode,
+            authState.CurrentAccount?.StudentCode,
+            "Chưa cập nhật");
+
+    public string DeviceNameDisplay =>
+        FirstAvailable(Participant?.MachineName, Environment.MachineName, "Thiết bị hiện tại");
+
+    public string DeviceIdDisplay =>
+        FirstAvailable(
+            Participant?.DeviceId,
+            authState.CurrentAccount?.DeviceId,
+            $"{Environment.MachineName}-{Environment.UserName}");
+
+    public string ParticipantStatusDisplay => Participant?.Status switch
+    {
+        ParticipantStatus.Connected => "Đã kết nối",
+        ParticipantStatus.PendingApproval => "Đang chờ giáo viên duyệt",
+        ParticipantStatus.Approved => "Đã được duyệt",
+        ParticipantStatus.Rejected => "Yêu cầu tham gia bị từ chối",
+        ParticipantStatus.Disconnected => "Mất kết nối",
+        ParticipantStatus.NotConnected => "Chưa kết nối",
+        _ => state.HasSession ? "Đang kiểm tra trạng thái" : "Chưa tham gia phòng"
+    };
+
+    public string ConnectionDetailDisplay
+    {
+        get
+        {
+            var mode = state.AccessMode == SessionAccessMode.PublicCloud
+                ? "Kết nối Public Cloud"
+                : "Kết nối mạng LAN";
+            var connection = Participant?.ConnectionState switch
+            {
+                ConnectionState.Online => "trực tuyến",
+                ConnectionState.Connecting => "đang kết nối",
+                ConnectionState.Reconnecting => "đang kết nối lại",
+                ConnectionState.Degraded => "kết nối không ổn định",
+                ConnectionState.Offline => "ngoại tuyến",
+                _ => state.HasSession ? "đang xác minh" : "chưa thiết lập"
+            };
+            return $"{mode} · {connection}";
+        }
+    }
+
+    public string SessionTitleDisplay =>
+        Session?.Summary.Title ?? "Chưa có kỳ thi được chọn";
+
     public ICommand RefreshCommand { get; }
     public ICommand LeaveCommand { get; }
 
@@ -1875,10 +1966,27 @@ public sealed class StudentWaitingViewModel : ProductPageBase
             api.SetParticipantToken(null);
             Participant = null;
             Session = null;
+            RaiseConnectionDetails();
             Status = "Đã rời phòng chờ";
             StatusTone = "info";
         }
     }
+
+    private void RaiseConnectionDetails()
+    {
+        Raise(nameof(RoomCodeDisplay));
+        Raise(nameof(RoomCodeHint));
+        Raise(nameof(CandidateNameDisplay));
+        Raise(nameof(StudentCodeDisplay));
+        Raise(nameof(DeviceNameDisplay));
+        Raise(nameof(DeviceIdDisplay));
+        Raise(nameof(ParticipantStatusDisplay));
+        Raise(nameof(ConnectionDetailDisplay));
+        Raise(nameof(SessionTitleDisplay));
+    }
+
+    private static string FirstAvailable(params string?[] values) =>
+        values.First(value => !string.IsNullOrWhiteSpace(value))!;
 
     protected override void RaiseCommands() => (RefreshCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
 }

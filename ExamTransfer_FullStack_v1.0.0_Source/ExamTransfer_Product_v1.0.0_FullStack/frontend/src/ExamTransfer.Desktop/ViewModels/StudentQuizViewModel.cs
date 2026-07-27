@@ -393,7 +393,7 @@ internal static class QuizLocalStore
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly SemaphoreSlim Gate = new(1, 1);
-    private static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExamTransfer", "quiz-outbox");
+    private static string Root => Path.Combine(AppProfile.LocalDataRoot, "quiz-outbox");
     private static string PathFor(Guid attemptId) => Path.Combine(Root, attemptId.ToString("N") + ".json");
     public static async Task<IReadOnlyList<QuizAnswerDto>> LoadAsync(Guid attemptId, CancellationToken ct)
     {

@@ -18,6 +18,11 @@ builder.Configuration.AddExamTransferRuntimeSettings();
 builder.Configuration.AddEnvironmentVariables();
 if (args.Length > 0)
     builder.Configuration.AddCommandLine(args);
+// The default Windows Event Log provider can throw when the app is run by a
+// standard user and turn an otherwise recoverable startup error into a crash.
+// LocalServer writes structured logs to stdout; service hosts can collect that
+// stream without requiring access to the machine-wide event log.
+builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole();
 
 var port = builder.Configuration.GetValue<int?>("Server:Port") ?? 5048;

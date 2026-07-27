@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using ExamTransfer.Desktop.Core;
 using ExamTransfer.Shared.Contracts;
 
 namespace ExamTransfer.Desktop.Infrastructure;
@@ -57,9 +58,9 @@ public static class SubmissionQueueStore
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-    private static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExamTransfer", "submission-queue");
-    private static string SpoolRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExamTransfer", "submission-spool");
-    private static string ReceiptRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExamTransfer", "receipts");
+    private static string Root => Path.Combine(AppProfile.LocalDataRoot, "submission-queue");
+    private static string SpoolRoot => Path.Combine(AppProfile.LocalDataRoot, "submission-spool");
+    private static string ReceiptRoot => Path.Combine(AppProfile.LocalDataRoot, "receipts");
     private static string QueuePath => Path.Combine(Root, "queue.json");
 
     public static string ProtectToken(string? token)

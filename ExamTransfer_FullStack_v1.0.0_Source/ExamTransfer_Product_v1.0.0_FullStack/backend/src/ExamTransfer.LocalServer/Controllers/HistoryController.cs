@@ -25,15 +25,25 @@ public sealed class HistoryController(AppDbContext db, ISessionService sessions)
         if (!string.IsNullOrWhiteSpace(action)) query = query.Where(x => x.Action.Contains(action));
         if (fromUtc.HasValue) query = query.Where(x => x.CreatedAtUtc >= fromUtc.Value);
         if (toUtc.HasValue) query = query.Where(x => x.CreatedAtUtc <= toUtc.Value);
-        var total = await query.CountAsync(ct);
-        var rows = await query.OrderByDescending(x => x.CreatedAtUtc).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        var filtered = await query.ToListAsync(ct);
+        var total = filtered.Count;
+        var rows = filtered
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToList();
         return Data(new PagedResult<AuditLogDto>(rows.Select(x => new AuditLogDto(x.Id, x.SessionId, x.ActorId, x.Action, x.EntityType, x.EntityId, x.IpAddress, x.BeforeJson, x.AfterJson, x.TraceId, x.CreatedAtUtc)).ToList(), page, pageSize, total));
     }
 
     [HttpPost("audit-logs/export")]
     public async Task<IActionResult> ExportAudit([FromBody] Dictionary<string, string>? filters, CancellationToken ct)
     {
-        var rows = await db.AuditLogsSet.AsNoTracking().OrderBy(x => x.CreatedAtUtc).Take(100000).ToListAsync(ct);
+        var rows = (await db.AuditLogsSet.AsNoTracking().ToListAsync(ct))
+            .OrderBy(x => x.CreatedAtUtc)
+            .ThenBy(x => x.Id)
+            .Take(100000)
+            .ToList();
         var sb = new System.Text.StringBuilder("time,actor,action,entityType,entityId,sessionId,ip,traceId\n");
         foreach (var x in rows) sb.AppendLine($"{x.CreatedAtUtc:O},{E(x.ActorId)},{E(x.Action)},{E(x.EntityType)},{E(x.EntityId)},{x.SessionId},{E(x.IpAddress)},{E(x.TraceId)}");
         return File(System.Text.Encoding.UTF8.GetPreamble().Concat(System.Text.Encoding.UTF8.GetBytes(sb.ToString())).ToArray(), "text/csv; charset=utf-8", "audit-logs.csv");

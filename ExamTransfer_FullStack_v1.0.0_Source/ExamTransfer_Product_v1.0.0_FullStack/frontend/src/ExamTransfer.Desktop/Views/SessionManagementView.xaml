@@ -14,6 +14,10 @@
 
         <!-- Header -->
         <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
             <StackPanel>
                 <TextBlock Text="Quản lý phòng thi"
                            Style="{StaticResource PageTitleText}" />
@@ -21,7 +25,7 @@
                            Style="{StaticResource BodyText}"
                            Margin="0,5,0,0" />
             </StackPanel>
-            <Button Content="Làm mới"
+            <Button Grid.Column="1" Content="Làm mới"
                     Command="{Binding RefreshCommand}"
                     Style="{StaticResource SecondaryButton}"
                     HorizontalAlignment="Right"
@@ -124,12 +128,12 @@
                     <CheckBox Content="Tự động duyệt học sinh"
                               IsChecked="{Binding AutoApprove}"
                               Margin="0,16,0,0" />
-                    <TextBlock Text="Phạm vi phiên thi"
+                    <TextBlock Text="Phạm vi truy cập"
                                Style="{StaticResource LabelText}"
-                               Margin="0,12,0,6" />
+                               Margin="0,16,0,6" />
                     <ComboBox ItemsSource="{Binding AccessModes}"
                               SelectedItem="{Binding AccessMode}" />
-                    <Button Content="Lưu chế độ duyệt"
+                    <Button Content="Lưu phạm vi phiên đã chọn"
                             Command="{Binding SaveSettingsCommand}"
                             Style="{StaticResource SecondaryButton}"
                             Margin="0,12,0,0" />
@@ -146,13 +150,12 @@
         </Grid>
 
         <!-- Status bar -->
-        <Border Grid.Row="4"
-                Style="{StaticResource StatusPill}"
-                HorizontalAlignment="Left"
-                Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-            <TextBlock Text="{Binding Status}"
-                       Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"
-                       FontSize="12" />
+        <Border Grid.Row="4" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
+            <StackPanel Orientation="Horizontal">
+                <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </StackPanel>
         </Border>
     </Grid>
 </UserControl>

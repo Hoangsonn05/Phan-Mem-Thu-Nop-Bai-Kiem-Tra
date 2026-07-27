@@ -10,7 +10,7 @@ public static class FrontendLogger
     private static readonly object Sync = new();
 
     public static string LogDirectory { get; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExamTransfer", "logs");
+        Path.Combine(AppProfile.LocalDataRoot, "logs");
 
     public static string LogPath { get; } = Path.Combine(LogDirectory, "frontend.log");
 
@@ -38,6 +38,7 @@ public static class FrontendLogger
             .AppendLine("------------------------------------------------------------")
             .AppendLine($"timestamp_utc: {DateTimeOffset.UtcNow:O}")
             .AppendLine($"trace_id: {traceId}")
+            .AppendLine($"profile: {AppProfile.DisplayName}")
             .AppendLine($"source: {source}")
             .AppendLine($"mode: {CurrentMode}")
             .AppendLine($"page_key: {CurrentPageKey}")

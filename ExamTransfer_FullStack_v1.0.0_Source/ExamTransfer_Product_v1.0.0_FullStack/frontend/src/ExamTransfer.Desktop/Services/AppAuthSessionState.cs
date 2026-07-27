@@ -122,10 +122,7 @@ public sealed class AppAuthSessionState : ObservableObject
     }
 
     private static string StorePath =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ExamTransfer",
-            "auth-session.bin");
+        Path.Combine(AppProfile.LocalDataRoot, "auth-session.bin");
 
     private sealed record StoredAuthSession(string AccessToken);
 }

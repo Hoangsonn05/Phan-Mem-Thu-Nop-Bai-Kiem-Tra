@@ -9,6 +9,16 @@ public static class DiscoveryProtocol
     public const string RequestMagic = "EXAMTRANSFER_DISCOVER_V1";
     public const string ProtocolVersion = "ExamTransfer/1";
     public const int DefaultPort = 5050;
+    public const int CandidatePortCount = 6;
+
+    public static IReadOnlyList<int> CandidatePorts(int preferredPort)
+    {
+        if (preferredPort is <= 0 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(preferredPort));
+
+        var count = Math.Min(CandidatePortCount, 65536 - preferredPort);
+        return Enumerable.Range(preferredPort, count).ToArray();
+    }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {

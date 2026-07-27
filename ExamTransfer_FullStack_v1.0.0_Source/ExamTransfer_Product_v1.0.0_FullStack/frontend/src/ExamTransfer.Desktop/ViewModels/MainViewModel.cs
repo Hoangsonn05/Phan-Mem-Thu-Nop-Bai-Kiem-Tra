@@ -365,7 +365,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "T-21" => new SettingsPageViewModel(api),
             "S-00" => new StudentHomeViewModel(authState),
             "S-01" => new StudentConnectViewModel(api, AppServices.StudentState, authState),
-            "S-03" => new StudentWaitingViewModel(api, AppServices.StudentState),
+            "S-03" => new StudentWaitingViewModel(api, AppServices.StudentState, authState),
             "S-04" => new StudentExamViewModel(api, AppServices.StudentState),
             "S-05" => new StudentDownloadViewModel(api, AppServices.StudentState),
             "S-06" => new StudentQuizViewModel(api, AppServices.StudentState),
@@ -488,7 +488,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         new NavigationItem[]
         {
             new("S-00", "Trang chủ", "Tài khoản", "Thông tin sinh viên và trạng thái phiên đăng nhập", "\uE80F"),
-            new("S-01", "Kết nối phòng", "Tham gia", "Tự tìm phòng đang mở trong mạng nội bộ", "\uE968"),
+            new("S-01", "Kết nối phòng", "Tham gia", "Quét LAN, nhập IP/cổng hoặc mã phòng", "\uE968"),
             new("S-03", "Phòng chờ", "Tham gia", "Chờ duyệt và kiểm tra sẵn sàng", "\uE823"),
             new("S-04", "Kỳ thi hiện tại", "Làm bài", "Đồng hồ server và tiến trình làm bài", "\uE916"),
             new("S-05", "Nhận đề", "Làm bài", "Tải file, resume và xác minh SHA-256", "\uE896"),

@@ -43,8 +43,18 @@ public sealed class ToastService : IToastService
 
 public sealed class LocalPreferenceService : ILocalPreferenceService
 {
-    public string? Get(string key) => Environment.GetEnvironmentVariable($"EXAMTRANSFER_PREF_{key}");
+    public string? Get(string key) =>
+        Environment.GetEnvironmentVariable(AppProfile.PreferenceVariable(key))
+        ?? Environment.GetEnvironmentVariable(
+            AppProfile.PreferenceVariable(key),
+            EnvironmentVariableTarget.User);
 
-    public void Set(string key, string value) =>
-        Environment.SetEnvironmentVariable($"EXAMTRANSFER_PREF_{key}", value, EnvironmentVariableTarget.User);
+    public void Set(string key, string value)
+    {
+        Environment.SetEnvironmentVariable(AppProfile.PreferenceVariable(key), value);
+        Environment.SetEnvironmentVariable(
+            AppProfile.PreferenceVariable(key),
+            value,
+            EnvironmentVariableTarget.User);
+    }
 }

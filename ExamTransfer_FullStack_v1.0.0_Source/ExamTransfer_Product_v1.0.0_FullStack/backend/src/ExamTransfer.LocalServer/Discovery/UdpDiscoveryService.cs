@@ -15,6 +15,7 @@ public sealed class DiscoveryRuntimeState
 {
     public bool Enabled { get; internal set; }
     public bool Listening { get; internal set; }
+    public int? ListeningPort { get; internal set; }
     public string? LastErrorCode { get; internal set; }
 }
 
@@ -29,62 +30,121 @@ public sealed class UdpDiscoveryService(
         state.Enabled = options.Value.Discovery.Enabled;
         if (!options.Value.Discovery.Enabled) return;
         var discoveryPort = options.Value.Discovery.Port;
+        var bindFailureLogged = false;
 
-        UdpClient? udp = null;
-        try
-        {
-            udp = new UdpClient(new IPEndPoint(IPAddress.Any, discoveryPort));
-            state.Listening = true;
-            logger.LogInformation("UDP discovery listening on 0.0.0.0:{Port}", discoveryPort);
-        }
-        catch (SocketException ex)
-        {
-            state.LastErrorCode = "UDP_DISCOVERY_BIND_FAILED";
-            logger.LogWarning(ex, "UDP discovery could not bind 0.0.0.0:{Port}; LAN auto-discovery is disabled for this run.", discoveryPort);
-            return;
-        }
-
-        using (udp)
         while (!stoppingToken.IsCancellationRequested)
         {
+            UdpClient? udp = null;
+            var listeningPort = discoveryPort;
             try
             {
-                var received = await udp.ReceiveAsync(stoppingToken);
-                var text = Encoding.UTF8.GetString(received.Buffer).Trim();
-                if (!text.Equals(options.Value.Discovery.RequestMagic, StringComparison.Ordinal)) continue;
-                using var scope = scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var rooms = await db.ExamSessionsSet.CountAsync(
-                    x => x.AccessMode == SessionAccessMode.LanOnly
-                        && x.Status == SessionStatus.Waiting
-                        && x.AcceptingParticipants,
-                    stoppingToken);
-                var endpoint = LanNetworkConfiguration.ResolveAdvertisedEndpoint(options.Value);
-                if (!endpoint.Ready)
+                SocketException? lastBindError = null;
+                foreach (var candidatePort in DiscoveryProtocol.CandidatePorts(discoveryPort))
                 {
-                    state.LastErrorCode = endpoint.Code;
-                    logger.LogWarning(
-                        "UDP discovery response suppressed: {Code}. {Detail}",
-                        endpoint.Code,
-                        endpoint.Detail);
-                    continue;
+                    try
+                    {
+                        udp = new UdpClient(new IPEndPoint(IPAddress.Any, candidatePort));
+                        listeningPort = candidatePort;
+                        break;
+                    }
+                    catch (SocketException ex)
+                    {
+                        lastBindError = ex;
+                        udp?.Dispose();
+                        udp = null;
+                    }
                 }
-                var response = JsonSerializer.SerializeToUtf8Bytes(new DiscoveryServerDto(
-                    DiscoveryProtocol.ProtocolVersion,
-                    Environment.MachineName,
-                    endpoint.Address!,
-                    options.Value.Server.Port,
-                    MachineFingerprint(),
-                    rooms,
-                    typeof(UdpDiscoveryService).Assembly.GetName().Version?.ToString() ?? "1.0.0",
-                    DateTimeOffset.UtcNow,
-                    MachineFingerprint()));
-                await udp.SendAsync(response, received.RemoteEndPoint, stoppingToken);
+
+                if (udp is null)
+                    throw lastBindError ?? new SocketException((int)SocketError.AddressAlreadyInUse);
+
+                state.Listening = true;
+                state.ListeningPort = listeningPort;
+                state.LastErrorCode = null;
+                bindFailureLogged = false;
+                if (listeningPort == discoveryPort)
+                {
+                    logger.LogInformation("UDP discovery listening on 0.0.0.0:{Port}", listeningPort);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "UDP discovery port {PreferredPort} is unavailable; listening on fallback port {Port}.",
+                        discoveryPort,
+                        listeningPort);
+                }
+
+                while (!stoppingToken.IsCancellationRequested)
+                {
+                    try
+                    {
+                        var received = await udp.ReceiveAsync(stoppingToken);
+                        var text = Encoding.UTF8.GetString(received.Buffer).Trim();
+                        if (!text.Equals(options.Value.Discovery.RequestMagic, StringComparison.Ordinal)) continue;
+                        using var scope = scopeFactory.CreateScope();
+                        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var rooms = await db.ExamSessionsSet.CountAsync(
+                            x => x.AccessMode == SessionAccessMode.LanOnly
+                                && x.Status == SessionStatus.Waiting
+                                && x.AcceptingParticipants,
+                            stoppingToken);
+                        var endpoint = LanNetworkConfiguration.ResolveAdvertisedEndpoint(options.Value);
+                        if (!endpoint.Ready)
+                        {
+                            state.LastErrorCode = endpoint.Code;
+                            logger.LogWarning(
+                                "UDP discovery response suppressed: {Code}. {Detail}",
+                                endpoint.Code,
+                                endpoint.Detail);
+                            continue;
+                        }
+                        var response = JsonSerializer.SerializeToUtf8Bytes(new DiscoveryServerDto(
+                            DiscoveryProtocol.ProtocolVersion,
+                            Environment.MachineName,
+                            endpoint.Address!,
+                            options.Value.Server.Port,
+                            MachineFingerprint(),
+                            rooms,
+                            typeof(UdpDiscoveryService).Assembly.GetName().Version?.ToString() ?? "1.0.0",
+                            DateTimeOffset.UtcNow,
+                            MachineFingerprint()));
+                        await udp.SendAsync(response, received.RemoteEndPoint, stoppingToken);
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "UDP discovery request failed");
+                    }
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-            catch (Exception ex) { logger.LogWarning(ex, "UDP discovery request failed"); }
+            catch (SocketException ex)
+            {
+                state.Listening = false;
+                state.ListeningPort = null;
+                state.LastErrorCode = "UDP_DISCOVERY_BIND_FAILED";
+                if (!bindFailureLogged)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "UDP discovery could not bind any port in the fallback range beginning at {Port}; retrying while REST remains available.",
+                        discoveryPort);
+                    bindFailureLogged = true;
+                }
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+            }
+            finally
+            {
+                udp?.Dispose();
+                state.Listening = false;
+                state.ListeningPort = null;
+            }
         }
-        state.Listening = false;
+
         if (stoppingToken.IsCancellationRequested)
         {
             state.LastErrorCode = null;
