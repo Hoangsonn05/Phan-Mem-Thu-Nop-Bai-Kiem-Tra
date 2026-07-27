@@ -10,13 +10,26 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
-            
-            <StackPanel Grid.Row="0" HorizontalAlignment="Center" MaxWidth="720">
-                <Border Width="58" Height="58" CornerRadius="18" Background="{DynamicResource PrimarySoftBrush}" HorizontalAlignment="Center">
-                    <TextBlock Text="&#xE968;" Style="{StaticResource IconText}" FontSize="25" Foreground="{DynamicResource PrimaryBrush}"/>
+
+            <StackPanel Grid.Row="0" HorizontalAlignment="Center" MaxWidth="760">
+                <Border Width="58" Height="58" CornerRadius="18"
+                        Background="{DynamicResource PrimarySoftBrush}" HorizontalAlignment="Center">
+                    <TextBlock Text="&#xE968;" Style="{StaticResource IconText}" FontSize="25"
+                               Foreground="{DynamicResource PrimaryBrush}"/>
                 </Border>
-                <TextBlock Text="Kết nối với máy giáo viên" Style="{StaticResource DisplayTitleText}" HorizontalAlignment="Center" Margin="0,16,0,0"/>
-                <TextBlock Text="Tự động tìm máy chủ trong LAN hoặc nhập địa chỉ thủ công. Không tự tham gia phòng khi chưa xác nhận." Style="{StaticResource BodyText}" TextAlignment="Center" Margin="0,7,0,0"/>
+                <TextBlock Text="Tham gia kỳ thi" Style="{StaticResource DisplayTitleText}"
+                           HorizontalAlignment="Center" Margin="0,16,0,0"/>
+                <TextBlock Text="Chọn kỳ thi đang chờ trong LAN hoặc tham gia PublicCloud bằng mã phòng."
+                           Style="{StaticResource BodyText}" TextAlignment="Center" Margin="0,7,0,0"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
+                    <RadioButton Content="Trong mạng LAN"
+                                 GroupName="ConnectionMode"
+                                 IsChecked="{Binding IsLanMode, Mode=TwoWay}"/>
+                    <RadioButton Content="PublicCloud"
+                                 GroupName="ConnectionMode"
+                                 IsChecked="{Binding IsPublicCloudMode, Mode=TwoWay}"
+                                 Margin="24,0,0,0"/>
+                </StackPanel>
             </StackPanel>
 
             <Grid Grid.Row="1" Margin="0,28,0,0">
@@ -25,7 +38,7 @@
                     <ColumnDefinition Width="16"/>
                     <ColumnDefinition Width="1*"/>
                 </Grid.ColumnDefinitions>
-                
+
                 <Border Grid.Column="0" Style="{StaticResource Card}" Padding="0">
                     <Grid>
                         <Grid.RowDefinitions>
@@ -33,90 +46,134 @@
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
-                        
+
                         <Grid Margin="20,18,20,12">
                             <StackPanel>
-                                <TextBlock Text="Máy chủ được phát hiện" Style="{StaticResource SectionTitleText}"/>
-                                <TextBlock Text="{Binding Status}" Style="{StaticResource CaptionText}" Margin="0,3,0,0"/>
+                                <TextBlock Text="Kỳ thi đang chờ trong LAN" Style="{StaticResource SectionTitleText}"/>
+                                <TextBlock Text="{Binding Status}" Style="{StaticResource CaptionText}"
+                                           Margin="0,3,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
-                            <Button Command="{Binding ScanCommand}" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Button Command="{Binding ScanCommand}" Style="{StaticResource SecondaryButton}"
+                                    HorizontalAlignment="Right" VerticalAlignment="Center"
+                                    Visibility="{Binding IsLanMode, Converter={StaticResource BooleanToVisibilityConverter}}">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="&#xE72C;" Style="{StaticResource IconText}" FontSize="15"/>
                                     <TextBlock Text="Quét lại" Margin="7,0,0,0"/>
                                 </StackPanel>
                             </Button>
                         </Grid>
-                        
-                        <ListBox Grid.Row="1" ItemsSource="{Binding Servers}" SelectedItem="{Binding SelectedServer}" Background="Transparent" BorderThickness="0" Margin="12,0,12,8">
-                            <ListBox.ItemContainerStyle>
-                                <Style TargetType="ListBoxItem">
-                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                    <Setter Property="Padding" Value="0"/>
-                                    <Setter Property="Margin" Value="0,0,0,8"/>
-                                    <Setter Property="Background" Value="Transparent"/>
-                                    <Setter Property="Template">
-                                        <Setter.Value>
-                                            <ControlTemplate TargetType="ListBoxItem">
-                                                <Border x:Name="Root" Padding="15" CornerRadius="11" Background="{DynamicResource SurfaceSubtleBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
-                                                    <ContentPresenter/>
-                                                </Border>
-                                                <ControlTemplate.Triggers>
-                                                    <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource PrimaryBrush}"/>
-                                                    </Trigger>
-                                                    <Trigger Property="IsSelected" Value="True">
-                                                        <Setter TargetName="Root" Property="Background" Value="{DynamicResource PrimarySoftBrush}"/>
-                                                        <Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource PrimaryBrush}"/>
-                                                        <Setter TargetName="Root" Property="BorderThickness" Value="2"/>
-                                                    </Trigger>
-                                                </ControlTemplate.Triggers>
-                                            </ControlTemplate>
-                                        </Setter.Value>
-                                    </Setter>
-                                </Style>
-                            </ListBox.ItemContainerStyle>
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="46"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <Border Width="38" Height="38" CornerRadius="11" Background="{Binding Tone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-                                            <TextBlock Text="&#xE7FC;" Style="{StaticResource IconText}" Foreground="{Binding Tone, Converter={StaticResource ToneBrushConverter}}"/>
-                                        </Border>
-                                        <StackPanel Grid.Column="1" Margin="10,0">
-                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
-                                            <TextBlock Text="{Binding Teacher}" Style="{StaticResource CaptionText}"/>
-                                            <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                                                <TextBlock Text="{Binding Address}" Style="{StaticResource CaptionText}" FontFamily="Consolas"/>
-                                                <TextBlock Text=" · " Style="{StaticResource CaptionText}"/>
-                                                <TextBlock Text="{Binding LatencyMs, StringFormat={}{0} ms}" Foreground="{DynamicResource SuccessBrush}" FontSize="11"/>
+
+                        <Grid Grid.Row="1">
+                            <ListBox ItemsSource="{Binding Rooms}"
+                                     SelectedItem="{Binding SelectedRoom, Mode=TwoWay}"
+                                     Background="Transparent" BorderThickness="0" Margin="12,0,12,8"
+                                     Visibility="{Binding IsLanMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                        <Setter Property="Padding" Value="0"/>
+                                        <Setter Property="Margin" Value="0,0,0,8"/>
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border x:Name="Root" Padding="15" CornerRadius="11"
+                                                            Background="{DynamicResource SurfaceSubtleBrush}"
+                                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                                        <ContentPresenter/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="Root" Property="BorderBrush"
+                                                                    Value="{DynamicResource PrimaryBrush}"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsSelected" Value="True">
+                                                            <Setter TargetName="Root" Property="Background"
+                                                                    Value="{DynamicResource PrimarySoftBrush}"/>
+                                                            <Setter TargetName="Root" Property="BorderBrush"
+                                                                    Value="{DynamicResource PrimaryBrush}"/>
+                                                            <Setter TargetName="Root" Property="BorderThickness" Value="2"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding ExamTitle}" FontWeight="SemiBold" FontSize="15"/>
+                                                <TextBlock Text="{Binding Subject}" Style="{StaticResource CaptionText}" Margin="0,3,0,0"/>
+                                                <WrapPanel Margin="0,7,0,0">
+                                                    <TextBlock Text="{Binding DurationText}" Style="{StaticResource CaptionText}"/>
+                                                    <TextBlock Text=" · " Style="{StaticResource CaptionText}"/>
+                                                    <TextBlock Text="{Binding DeliveryText}" Style="{StaticResource CaptionText}"/>
+                                                    <TextBlock Text=" · " Style="{StaticResource CaptionText}"/>
+                                                    <TextBlock Text="{Binding TeacherName}" Style="{StaticResource CaptionText}"/>
+                                                </WrapPanel>
+                                                <WrapPanel Margin="0,5,0,0">
+                                                    <TextBlock Text="{Binding ApprovalText}" Style="{StaticResource CaptionText}"/>
+                                                    <TextBlock Text=" · " Style="{StaticResource CaptionText}"/>
+                                                    <TextBlock Text="{Binding CapacityText}" Style="{StaticResource CaptionText}"/>
+                                                    <TextBlock Text=" · " Style="{StaticResource CaptionText}"/>
+                                                    <TextBlock Text="{Binding StartText}" Style="{StaticResource CaptionText}"/>
+                                                </WrapPanel>
                                             </StackPanel>
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="2" HorizontalAlignment="Right">
-                                            <Border Style="{StaticResource StatusPill}" Background="{Binding Tone, Converter={StaticResource ToneBrushConverter}, ConverterParameter=soft}">
-                                                <TextBlock Text="{Binding Status}" Foreground="{Binding Tone, Converter={StaticResource ToneBrushConverter}}" FontSize="10" FontWeight="SemiBold"/>
-                                            </Border>
-                                            <TextBlock Text="{Binding CapacityText}" Style="{StaticResource CaptionText}" HorizontalAlignment="Right" Margin="0,6,0,0"/>
-                                        </StackPanel>
-                                    </Grid>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                        
-                        <Border Grid.Row="2" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="20,15">
-                            <TextBlock Text="Chọn một máy chủ để tự điền IP, cổng và mã phòng" Style="{StaticResource CaptionText}"/>
+                                            <StackPanel Grid.Column="1" HorizontalAlignment="Right" Margin="12,0,0,0">
+                                                <Border Style="{StaticResource StatusPill}"
+                                                        Background="{DynamicResource SuccessSoftBrush}">
+                                                    <TextBlock Text="{Binding StatusText}"
+                                                               Foreground="{DynamicResource SuccessBrush}"
+                                                               FontSize="10" FontWeight="SemiBold"/>
+                                                </Border>
+                                                <TextBlock Text="{Binding RoomCode}" Style="{StaticResource CaptionText}"
+                                                           FontFamily="Consolas" HorizontalAlignment="Right" Margin="0,7,0,0"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <Border Style="{StaticResource SubtleCard}" Margin="20,8"
+                                    Visibility="{Binding HasNoRooms, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel>
+                                    <TextBlock Text="Chưa tìm thấy kỳ thi LanOnly đang chờ."
+                                               FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                    <TextBlock Text="Hãy quét lại hoặc mở Kết nối thủ công (nâng cao)."
+                                               Style="{StaticResource CaptionText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource SubtleCard}" Margin="20,8"
+                                    Visibility="{Binding IsPublicCloudMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel>
+                                    <TextBlock Text="Tham gia PublicCloud" FontWeight="SemiBold"/>
+                                    <TextBlock Text="Nhập mã phòng ở panel bên phải. Danh sách phòng không được công khai."
+                                               Style="{StaticResource CaptionText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <Border Grid.Row="2" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="0,1,0,0" Padding="20,15">
+                            <TextBlock Text="Chọn một kỳ thi đang chờ để xem thông tin và gửi yêu cầu tham gia."
+                                       Style="{StaticResource CaptionText}" TextWrapping="Wrap"/>
                         </Border>
                     </Grid>
                 </Border>
 
                 <Border Grid.Column="2" Style="{StaticResource Card}">
                     <StackPanel>
-                        <TextBlock Text="Tham gia bằng địa chỉ" Style="{StaticResource SectionTitleText}"/>
-                        <TextBlock Text="Dùng khi máy chủ không xuất hiện trong danh sách tự động." Style="{StaticResource CaptionText}" Margin="0,4,0,18"/>
-                        
+                        <TextBlock Text="Thông tin kỳ thi và tham gia" Style="{StaticResource SectionTitleText}"/>
+                        <TextBlock Text="Thông tin tài khoản được lấy từ phiên đăng nhập hiện tại."
+                                   Style="{StaticResource CaptionText}" Margin="0,4,0,18"/>
+
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition/>
@@ -124,63 +181,130 @@
                                 <ColumnDefinition/>
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="Họ tên *" Style="{StaticResource LabelText}"/>
-                                <TextBox Text="{Binding DisplayName, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                <TextBlock Text="Họ tên" Style="{StaticResource LabelText}"/>
+                                <TextBox Text="{Binding DisplayName}" IsReadOnly="True" Margin="0,6,0,0"/>
                             </StackPanel>
                             <StackPanel Grid.Column="2">
-                                <TextBlock Text="Mã học sinh *" Style="{StaticResource LabelText}"/>
-                                <TextBox Text="{Binding StudentCode, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                <TextBlock Text="Mã sinh viên" Style="{StaticResource LabelText}"/>
+                                <TextBox Text="{Binding StudentCode}" IsReadOnly="True" Margin="0,6,0,0"/>
                             </StackPanel>
                         </Grid>
-                        
-                        <Grid Margin="0,12,0,12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition/>
-                                <ColumnDefinition Width="14"/>
-                                <ColumnDefinition/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel>
-                                <TextBlock Text="Lớp" Style="{StaticResource LabelText}"/>
-                                <TextBox Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,0"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="2">
-                                <TextBlock Text="Mã lớp (Public Cloud)" Style="{StaticResource LabelText}"/>
-                                <TextBox Text="{Binding ClassCode, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,0"/>
-                            </StackPanel>
-                        </Grid>
-                        
-                        <TextBlock Text="Địa chỉ IP" Style="{StaticResource LabelText}"/>
-                        <TextBox Text="{Binding Ip, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,14"/>
-                        
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition/>
-                                <ColumnDefinition Width="14"/>
-                                <ColumnDefinition/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel>
-                                <TextBlock Text="Cổng" Style="{StaticResource LabelText}"/>
-                                <TextBox Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,0"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="2">
-                                <TextBlock Text="Mã phòng" Style="{StaticResource LabelText}"/>
-                                <TextBox Text="{Binding RoomCode, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,0" CharacterCasing="Upper"/>
-                            </StackPanel>
-                        </Grid>
-                        
-                        <Button Command="{Binding JoinCommand}" Style="{StaticResource PrimaryButton}" Margin="0,24,0,0" Height="46" FontSize="16">
+
+                        <StackPanel Margin="0,16,0,0"
+                                    Visibility="{Binding IsLanMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Text="Tên bài" Style="{StaticResource LabelText}"/>
+                            <TextBox Text="{Binding SelectedRoom.ExamTitle}" IsReadOnly="True" Margin="0,6,0,0"/>
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition/>
+                                    <ColumnDefinition Width="14"/>
+                                    <ColumnDefinition/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Môn học" Style="{StaticResource LabelText}"/>
+                                    <TextBox Text="{Binding SelectedRoom.Subject}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Thời lượng" Style="{StaticResource LabelText}"/>
+                                    <TextBox Text="{Binding SelectedRoom.DurationText}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                </StackPanel>
+                            </Grid>
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition/>
+                                    <ColumnDefinition Width="14"/>
+                                    <ColumnDefinition/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Giáo viên" Style="{StaticResource LabelText}"/>
+                                    <TextBox Text="{Binding SelectedRoom.TeacherName}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Trạng thái" Style="{StaticResource LabelText}"/>
+                                    <TextBox Text="{Binding SelectedRoom.StatusText}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                </StackPanel>
+                            </Grid>
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition/>
+                                    <ColumnDefinition Width="14"/>
+                                    <ColumnDefinition/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Chế độ" Style="{StaticResource LabelText}"/>
+                                    <TextBox Text="{Binding SelectedRoom.DeliveryText}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Duyệt tham gia" Style="{StaticResource LabelText}"/>
+                                    <TextBox Text="{Binding SelectedRoom.ApprovalText}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                </StackPanel>
+                            </Grid>
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition/>
+                                    <ColumnDefinition Width="14"/>
+                                    <ColumnDefinition/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Giờ dự kiến" Style="{StaticResource LabelText}"/>
+                                    <TextBox Text="{Binding SelectedRoom.StartText}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Số lượng" Style="{StaticResource LabelText}"/>
+                                    <TextBox Text="{Binding SelectedRoom.CapacityText}" IsReadOnly="True" Margin="0,6,0,0"/>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Text="Mã phòng" Style="{StaticResource LabelText}" Margin="0,12,0,0"/>
+                            <TextBox Text="{Binding RoomCode}" IsReadOnly="True"
+                                     Margin="0,6,0,0" FontFamily="Consolas"/>
+                        </StackPanel>
+
+                        <StackPanel Margin="0,16,0,0"
+                                    Visibility="{Binding IsPublicCloudMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Text="Mã phòng" Style="{StaticResource LabelText}"/>
+                            <TextBox Text="{Binding RoomCode, UpdateSourceTrigger=PropertyChanged}"
+                                     Margin="0,6,0,0" CharacterCasing="Upper"/>
+                            <TextBlock Text="PublicCloud OpenRequest không yêu cầu mã lớp hoặc ghi danh lớp."
+                                       Style="{StaticResource CaptionText}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+
+                        <Button Command="{Binding JoinCommand}" Style="{StaticResource PrimaryButton}"
+                                Margin="0,24,0,0" Height="46" FontSize="16"
+                                AutomationProperties.Name="Yêu cầu tham gia kỳ thi">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" Margin="0,0,8,0" FontSize="18"/>
-                                <TextBlock Text="Gửi yêu cầu tham gia"/>
+                                <TextBlock Text="Yêu cầu tham gia"/>
                             </StackPanel>
                         </Button>
-                        
-                        <Border Style="{StaticResource SubtleCard}" Margin="0,16,0,0" Padding="13">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#xE72E;" Style="{StaticResource IconText}" Foreground="{DynamicResource InfoBrush}"/>
-                                <TextBlock Text="Token phiên sẽ được gắn với thiết bị sau khi giáo viên duyệt." Style="{StaticResource CaptionText}" Margin="10,0,0,0"/>
+
+                        <Expander Header="Kết nối thủ công (nâng cao)" Margin="0,18,0,0"
+                                  Visibility="{Binding IsLanMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <StackPanel Margin="0,10,0,0">
+                                <TextBlock Text="Chỉ dùng khi kỳ thi không xuất hiện trong danh sách LAN."
+                                           Style="{StaticResource CaptionText}" TextWrapping="Wrap"/>
+                                <TextBlock Text="Địa chỉ IP" Style="{StaticResource LabelText}" Margin="0,10,0,0"/>
+                                <TextBox Text="{Binding Ip, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,0"/>
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition/>
+                                        <ColumnDefinition Width="14"/>
+                                        <ColumnDefinition/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Cổng" Style="{StaticResource LabelText}"/>
+                                        <TextBox Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="Mã phòng" Style="{StaticResource LabelText}"/>
+                                        <TextBox Text="{Binding RoomCode, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,6,0,0" CharacterCasing="Upper"/>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="Máy chủ chẩn đoán" Style="{StaticResource LabelText}" Margin="0,12,0,6"/>
+                                <ComboBox ItemsSource="{Binding Servers}" SelectedItem="{Binding SelectedServer}"
+                                          DisplayMemberPath="Address"/>
                             </StackPanel>
-                        </Border>
+                        </Expander>
                     </StackPanel>
                 </Border>
             </Grid>
@@ -193,9 +317,9 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Margin="20">
                         <TextBlock Text="Kiểm tra sẵn sàng" Style="{StaticResource SectionTitleText}"/>
-                        <TextBlock Text="Thiết bị đáp ứng điều kiện cơ bản trước khi tham gia." Style="{StaticResource CaptionText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                        <TextBlock Text="Thiết bị đáp ứng điều kiện cơ bản trước khi tham gia."
+                                   Style="{StaticResource CaptionText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
-                    
                     <ItemsControl Grid.Column="1" ItemsSource="{Binding Readiness}" Margin="0,14,16,14">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -207,7 +331,8 @@
                                 <Border Style="{StaticResource SubtleCard}" Margin="0,0,8,0" Padding="12">
                                     <StackPanel>
                                         <StackPanel Orientation="Horizontal">
-                                            <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="14" Foreground="{DynamicResource SuccessBrush}"/>
+                                            <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="14"
+                                                       Foreground="{DynamicResource SuccessBrush}"/>
                                             <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="12" Margin="7,0,0,0"/>
                                         </StackPanel>
                                         <TextBlock Text="{Binding Description}" Style="{StaticResource CaptionText}" Margin="0,5,0,0"/>

@@ -25,7 +25,16 @@ public sealed record InitFileUploadRequest(string FileName, long SizeBytes, stri
 public sealed record InitFileUploadResponse(Guid FileId, int ChunkSizeBytes, int TotalChunks, IReadOnlyList<int> MissingChunks);
 public sealed record FinalizeFileUploadRequest(string Sha256);
 
-public sealed record CreateSessionRequest(Guid ExamId, Guid? ClassId, DateTimeOffset? PlannedStartUtc, string SettingsJson, bool AutoApprove, int? Capacity, string? CustomRoomCode, SessionAccessMode AccessMode = SessionAccessMode.LanOnly);
+public sealed record CreateSessionRequest(
+    Guid ExamId,
+    Guid? ClassId,
+    DateTimeOffset? PlannedStartUtc,
+    string SettingsJson,
+    bool AutoApprove,
+    int? Capacity,
+    string? CustomRoomCode,
+    SessionAccessMode AccessMode = SessionAccessMode.LanOnly,
+    SessionAdmissionMode AdmissionMode = SessionAdmissionMode.ClassMembersOnly);
 public sealed record UpdateSessionRequest(DateTimeOffset? PlannedStartUtc, string SettingsJson, bool AutoApprove, int? Capacity, string RowVersion, bool ApprovePendingParticipants = false);
 public sealed record JoinSessionRequest(string RoomCode, string StudentCode, string DisplayName, string? ClassName, string DeviceId, string MachineName, string AppVersion, string Nonce);
 public sealed record JoinSessionResponse(Guid SessionId, Guid ParticipantId, ParticipantStatus Status, string AccessToken, DateTimeOffset TokenExpiresAtUtc, ParticipantDto Participant);

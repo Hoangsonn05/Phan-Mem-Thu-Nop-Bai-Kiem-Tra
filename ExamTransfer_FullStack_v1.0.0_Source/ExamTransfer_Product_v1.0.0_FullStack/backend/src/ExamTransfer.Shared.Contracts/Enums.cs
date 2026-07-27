@@ -4,6 +4,7 @@ public enum UserRole { Admin, Teacher, Student }
 public enum ClassStatus { Active, Archived }
 public enum ClassAccessMode { Private, Public }
 public enum SessionAccessMode { LanOnly, PublicCloud }
+public enum SessionAdmissionMode { ClassMembersOnly, OpenRequest }
 public enum ExamStatus { Draft, Published, Archived, Cancelled }
 public enum ExamDeliveryType { FileSubmission, MultipleChoice }
 public enum QuizResultPolicy { Hidden, ShowAfterSubmission }

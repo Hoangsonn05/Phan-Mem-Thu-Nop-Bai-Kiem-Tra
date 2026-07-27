@@ -85,7 +85,13 @@ public sealed class DiscoveryController(
                 Environment.MachineName,
                 baseAddress,
                 now,
-                DiscoveryProtocol.ProtocolVersion);
+                DiscoveryProtocol.ProtocolVersion,
+                session.Exam.Subject,
+                session.Exam.DurationMinutes,
+                session.DeliveryTypeSnapshot,
+                session.SupervisionModeSnapshot,
+                session.AdmissionMode,
+                session.ExamId);
         }).ToList();
 
         return Data<IReadOnlyList<OpenSessionDiscoveryDto>>(result);

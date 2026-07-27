@@ -414,6 +414,109 @@ public sealed class CoreWorkflowPersistenceTests
     }
 
     [Fact]
+    public async Task OpenRequest_CreateAndOpen_AllowsClasslessStudentApprovalAndStart()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var exam = await services.Exams.CreateAsync(ExamRequest(null, false), CancellationToken.None);
+        await services.Exams.PublishAsync(exam.Id, CancellationToken.None);
+
+        var session = await services.Sessions.CreateAndOpenAsync(
+            new(
+                exam.Id,
+                null,
+                DateTimeOffset.UtcNow.AddMinutes(5),
+                "{}",
+                false,
+                40,
+                "OPEN01",
+                SessionAccessMode.LanOnly,
+                SessionAdmissionMode.OpenRequest),
+            "host",
+            CancellationToken.None);
+        var joined = await services.Sessions.JoinAsync(
+            new("OPEN01", "SV-OPEN", "Học sinh mở", null, "device-open", "machine", "1", "nonce"),
+            Guid.NewGuid(),
+            "SV-OPEN",
+            "Học sinh mở",
+            "127.0.0.1",
+            CancellationToken.None);
+
+        Assert.Null(await database.Context.ExamSessionsSet
+            .Where(x => x.Id == session.Summary.Id)
+            .Select(x => x.ClassId)
+            .SingleAsync());
+        Assert.Equal(SessionAdmissionMode.OpenRequest, session.Summary.AdmissionMode);
+        Assert.Equal(SessionStatus.Waiting, session.Summary.Status);
+        Assert.True((await database.Context.ExamSessionsSet.SingleAsync(x => x.Id == session.Summary.Id)).AcceptingParticipants);
+        Assert.Equal(ParticipantStatus.PendingApproval, joined.Status);
+
+        var approved = await services.Sessions.ApproveAsync(
+            session.Summary.Id,
+            joined.ParticipantId,
+            Guid.NewGuid(),
+            CancellationToken.None);
+        var started = await services.Sessions.TransitionAsync(
+            session.Summary.Id,
+            SessionStatus.InProgress,
+            null,
+            CancellationToken.None);
+        Assert.Equal(ParticipantStatus.Approved, approved.Status);
+        Assert.Equal(SessionStatus.InProgress, started.Summary.Status);
+    }
+
+    [Fact]
+    public async Task SessionAdmissionMode_RejectsAmbiguousOpenClass_AndLocalPublicCloudJoin()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var classroom = await services.Classes.CreateAsync(
+            new("Legacy", "LEGACY", "2026-2027", null, ClassAccessMode.Public),
+            CancellationToken.None);
+        var exam = await services.Exams.CreateAsync(ExamRequest(classroom.Id, false), CancellationToken.None);
+        await services.Exams.PublishAsync(exam.Id, CancellationToken.None);
+
+        var ambiguous = await Assert.ThrowsAsync<ApiException>(() => services.Sessions.CreateAsync(
+            new(
+                exam.Id,
+                classroom.Id,
+                null,
+                "{}",
+                false,
+                40,
+                "AMBIG01",
+                SessionAccessMode.LanOnly,
+                SessionAdmissionMode.OpenRequest),
+            "host",
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.ValidationFailed, ambiguous.Code);
+
+        var cloud = await services.Sessions.CreateAndOpenAsync(
+            new(
+                exam.Id,
+                null,
+                null,
+                "{}",
+                false,
+                40,
+                "CLOUD01",
+                SessionAccessMode.PublicCloud,
+                SessionAdmissionMode.OpenRequest),
+            "host",
+            CancellationToken.None);
+        Assert.Equal(SessionStatus.Waiting, cloud.Summary.Status);
+
+        var routeError = await Assert.ThrowsAsync<ApiException>(() => services.Sessions.JoinAsync(
+            new("CLOUD01", "SV-CLOUD", "Học sinh cloud", null, "device-cloud", "machine", "1", "nonce"),
+            Guid.NewGuid(),
+            "SV-CLOUD",
+            "Học sinh cloud",
+            "127.0.0.1",
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.PublicCloudRouteRequired, routeError.Code);
+    }
+
+    [Fact]
     public async Task RestartPersistence_RetainsIdsAndFinalStates_InSamePhysicalSqliteFile()
     {
         await using var database = await FileDatabase.CreateAsync();
@@ -678,7 +781,16 @@ public sealed class CoreWorkflowPersistenceTests
         new FileRuleDto([".txt"], 1024 * 1024, 2 * 1024 * 1024, 2, false, requireFile));
 
     private static CreateSessionRequest SessionRequest(Guid examId, Guid? classId, string roomCode) =>
-        new(examId, classId, DateTimeOffset.UtcNow.AddMinutes(5), "{}", false, 40, roomCode);
+        new(
+            examId,
+            classId,
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            "{}",
+            false,
+            40,
+            roomCode,
+            SessionAccessMode.LanOnly,
+            classId.HasValue ? SessionAdmissionMode.ClassMembersOnly : SessionAdmissionMode.OpenRequest);
 
     private static ServiceSet Services(AppDbContext db, IRealtimePublisher? realtime = null)
     {

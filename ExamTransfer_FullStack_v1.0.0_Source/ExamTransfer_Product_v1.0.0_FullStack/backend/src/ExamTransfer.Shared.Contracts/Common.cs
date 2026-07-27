@@ -111,6 +111,7 @@ public static class ErrorCodes
     public const string PolicyUnsupported = "POLICY_UNSUPPORTED";
     public const string PolicyApplyFailed = "POLICY_APPLY_FAILED";
     public const string CloudOffline = "CLOUD_OFFLINE";
+    public const string PublicCloudRouteRequired = "PUBLIC_CLOUD_ROUTE_REQUIRED";
     public const string SyncConflict = "SYNC_CONFLICT";
     public const string CloudUploadFailed = "CLOUD_UPLOAD_FAILED";
     public const string ConcurrencyConflict = "CONCURRENCY_CONFLICT";

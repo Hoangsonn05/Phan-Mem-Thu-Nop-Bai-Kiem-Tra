@@ -12,14 +12,17 @@ public enum CloudEntityAuthority
 
 public static class CloudSchemaCompatibility
 {
-    public const int RequiredVersion = 18;
+    public const int RequiredVersion = 21;
     public static readonly IReadOnlySet<string> CriticalRpcs = new HashSet<string>(StringComparer.Ordinal)
     {
         "join_public_session",
+        "join_open_public_session_by_room_code",
+        "get_public_exam_manifest",
         "init_public_submission",
         "finalize_public_submission",
         "upsert_public_device_heartbeat",
         "ack_public_device_command",
+        "report_public_violation",
         "start_public_quiz_attempt",
         "save_public_quiz_answers",
         "finalize_public_quiz_attempt",

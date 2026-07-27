@@ -66,45 +66,40 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
     {
         return await InTransactionAsync(async () =>
         {
-            var exam = await db.ExamsSet.FirstOrDefaultAsync(x => x.Id == request.ExamId, cancellationToken)
-                ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
-            if (exam.Status != ExamStatus.Published) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ tạo phòng từ bài kiểm tra đã phát hành.", 409);
-            if (exam.DeliveryType == ExamDeliveryType.MultipleChoice
-                && exam.SupervisionMode != SupervisionMode.Standard)
-                throw new ApiException(ErrorCodes.InvalidStateTransition, "Trắc nghiệm bắt buộc dùng giám sát chuẩn.", 409);
-            ValidateSessionConfiguration(request.SettingsJson, request.Capacity);
-            var effectiveClassId = request.ClassId ?? exam.ClassId;
-            if (request.ClassId.HasValue && exam.ClassId.HasValue && request.ClassId.Value != exam.ClassId.Value)
-                throw new ApiException(ErrorCodes.ValidationFailed, "Lớp của phòng thi phải trùng với lớp của bài kiểm tra.", 422);
-            ClassRoom? classroom = null;
-            if (effectiveClassId.HasValue)
-            {
-                classroom = await db.ClassesSet.FirstOrDefaultAsync(x => x.Id == effectiveClassId.Value, cancellationToken)
-                    ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp được chọn.", 404);
-            }
-            if (request.AccessMode == SessionAccessMode.PublicCloud && classroom?.AccessMode != ClassAccessMode.Public)
-                throw new ApiException(ErrorCodes.ValidationFailed, "Chỉ lớp public mới có thể tạo phòng PublicCloud.", 422);
-            var roomCode = string.IsNullOrWhiteSpace(request.CustomRoomCode) ? await GenerateRoomCodeAsync(cancellationToken) : request.CustomRoomCode.Trim().ToUpperInvariant();
-            if (roomCode.Length < 4 || roomCode.Length > 12) throw new ApiException(ErrorCodes.ValidationFailed, "Mã phòng phải dài 4-12 ký tự.");
-            if (await db.ExamSessionsSet.AnyAsync(x => x.RoomCode == roomCode && x.Status != SessionStatus.Archived && x.Status != SessionStatus.Cancelled && x.Status != SessionStatus.Finished, cancellationToken))
-                throw new ApiException(ErrorCodes.RoomCodeConflict, "Mã phòng đang được sử dụng.", 409);
-            var session = new ExamSession
-            {
-                ExamId = request.ExamId, ClassId = effectiveClassId, RoomCode = roomCode,
-                HostDeviceId = hostDeviceId, PlannedStartUtc = request.PlannedStartUtc, SettingsJson = string.IsNullOrWhiteSpace(request.SettingsJson) ? "{}" : request.SettingsJson,
-                AutoApprove = request.AutoApprove, Capacity = request.Capacity, Status = SessionStatus.Draft, AcceptingParticipants = true,
-                AccessMode = request.AccessMode,
-                DeliveryTypeSnapshot = exam.DeliveryType,
-                SupervisionModeSnapshot = exam.SupervisionMode,
-                QuizResultPolicySnapshot = exam.QuizResultPolicy,
-                ExamVersionSnapshot = exam.Version
-            };
-            db.ExamSessionsSet.Add(session); await db.SaveChangesAsync(cancellationToken);
-            session.Exam = exam;
+            var session = await CreateCoreAsync(request, hostDeviceId, cancellationToken);
             await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, ToCloud(session), cancellationToken);
             await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", ToCloud(session), cancellationToken: cancellationToken);
             return ToDetail(session);
         }, cancellationToken);
+    }
+
+    public async Task<SessionDetailDto> CreateAndOpenAsync(CreateSessionRequest request, string hostDeviceId, CancellationToken cancellationToken)
+    {
+        var detail = await InTransactionAsync(async () =>
+        {
+            var session = await CreateCoreAsync(request, hostDeviceId, cancellationToken);
+            await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, ToCloud(session), cancellationToken);
+            var before = session.Status;
+            session.TransitionTo(SessionStatus.Waiting);
+            await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync(
+                "SessionStateChanged",
+                nameof(ExamSession),
+                session.Id.ToString(),
+                session.Id,
+                new { status = before },
+                new { status = session.Status, reason = "CreateAndOpen" },
+                cancellationToken);
+            await outbox.EnqueueAsync(
+                "exam_sessions",
+                session.Id.ToString(),
+                "upsert",
+                ToCloud(session),
+                cancellationToken: cancellationToken);
+            return ToDetail(session);
+        }, cancellationToken);
+        await PublishSessionStateSafeAsync(detail, cancellationToken);
+        return detail;
     }
 
     public async Task<SessionDetailDto> UpdateAsync(Guid id, UpdateSessionRequest request, CancellationToken cancellationToken)
@@ -174,11 +169,18 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         var roomCode = request.RoomCode.Trim().ToUpperInvariant();
         var session = await db.ExamSessionsSet.Include(x => x.Exam).Include(x => x.Participants).FirstOrDefaultAsync(x => x.RoomCode == roomCode, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
+        if (session.AccessMode == SessionAccessMode.PublicCloud)
+            throw new ApiException(
+                ErrorCodes.PublicCloudRouteRequired,
+                "Phòng PublicCloud phải được tham gia qua RPC PublicCloud.",
+                409);
         if (session.Status != SessionStatus.Waiting || !session.AcceptingParticipants) throw new ApiException(ErrorCodes.InvalidStateTransition, "Phòng chưa mở hoặc đã khóa nhận người mới.", 409);
         if (session.AccessMode == SessionAccessMode.LanOnly && !_lanAccessPolicy.IsAllowed(ipAddress))
             throw new ApiException(ErrorCodes.LanAccessDenied, "Thiết bị không nằm trong mạng nội bộ được phép của phòng thi.", 403);
-        if (session.ClassId.HasValue)
+        if (session.AdmissionMode == SessionAdmissionMode.ClassMembersOnly)
         {
+            if (!session.ClassId.HasValue)
+                throw new ApiException(ErrorCodes.InvalidStateTransition, "Phòng giới hạn theo lớp đang thiếu lớp học.", 409);
             var members = await db.ClassMembersSet.AsNoTracking().Where(x => x.ClassId == session.ClassId.Value).ToListAsync(cancellationToken);
             var normalizedCode = studentCode.Trim();
             var isMember = members.Any(x => x.UserId == accountUserId)
@@ -530,7 +532,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
     {
         var p = s.Participants; var now = DateTimeOffset.UtcNow;
         var counts = new SessionCountsDto(p.Count, p.Count(x => x.Status == ParticipantStatus.PendingApproval), p.Count(x => x.Status == ParticipantStatus.Approved), p.Count(x => x.LastSeenUtc.HasValue && now - x.LastSeenUtc <= TimeSpan.FromSeconds(_options.Session.DisconnectAfterSeconds)), p.Count(x => x.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted), p.Count(x => x.SubmissionStatus == SubmissionStatus.Uploading), p.Count(x => x.Status == ParticipantStatus.Disconnected));
-        return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion, s.AccessMode, s.AutoApprove, s.DeliveryTypeSnapshot, s.SupervisionModeSnapshot, s.QuizResultPolicySnapshot, s.ExamVersionSnapshot);
+        return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion, s.AccessMode, s.AutoApprove, s.DeliveryTypeSnapshot, s.SupervisionModeSnapshot, s.QuizResultPolicySnapshot, s.ExamVersionSnapshot, s.AdmissionMode);
     }
     private static DateTimeOffset? EffectiveDeadline(ExamSession s) => s.StartedAtUtc?.AddMinutes(s.Exam.DurationMinutes);
     private static DateTimeOffset? ParticipantDeadline(SessionParticipant participant) =>
@@ -618,6 +620,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         settings_json = x.SettingsJson,
         auto_approve = x.AutoApprove,
         access_mode = x.AccessMode.ToString(),
+        admission_mode = x.AdmissionMode.ToString(),
         capacity = x.Capacity,
         accepting_participants = x.AcceptingParticipants,
         sequence = x.Sequence,
@@ -661,6 +664,88 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
             await transaction.RollbackAsync(CancellationToken.None);
             throw;
         }
+    }
+
+    private async Task<ExamSession> CreateCoreAsync(
+        CreateSessionRequest request,
+        string hostDeviceId,
+        CancellationToken cancellationToken)
+    {
+        if (!Enum.IsDefined(request.AdmissionMode))
+            throw new ApiException(ErrorCodes.ValidationFailed, "Chế độ tiếp nhận không hợp lệ.", 422);
+        var exam = await db.ExamsSet.FirstOrDefaultAsync(x => x.Id == request.ExamId, cancellationToken)
+            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
+        if (exam.Status != ExamStatus.Published)
+            throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ tạo phòng từ bài kiểm tra đã phát hành.", 409);
+        if (exam.DeliveryType == ExamDeliveryType.MultipleChoice
+            && exam.SupervisionMode != SupervisionMode.Standard)
+            throw new ApiException(ErrorCodes.InvalidStateTransition, "Trắc nghiệm bắt buộc dùng giám sát chuẩn.", 409);
+        ValidateSessionConfiguration(request.SettingsJson, request.Capacity);
+
+        Guid? effectiveClassId;
+        ClassRoom? classroom = null;
+        if (request.AdmissionMode == SessionAdmissionMode.OpenRequest)
+        {
+            if (request.ClassId.HasValue)
+                throw new ApiException(
+                    ErrorCodes.ValidationFailed,
+                    "OpenRequest không được gắn ClassId.",
+                    422);
+            effectiveClassId = null;
+        }
+        else
+        {
+            effectiveClassId = request.ClassId ?? exam.ClassId;
+            if (!effectiveClassId.HasValue)
+                throw new ApiException(
+                    ErrorCodes.ValidationFailed,
+                    "ClassMembersOnly bắt buộc phải có lớp học.",
+                    422);
+            if (request.ClassId.HasValue && exam.ClassId.HasValue && request.ClassId.Value != exam.ClassId.Value)
+                throw new ApiException(ErrorCodes.ValidationFailed, "Lớp của phòng thi phải trùng với lớp của bài kiểm tra.", 422);
+            classroom = await db.ClassesSet.FirstOrDefaultAsync(x => x.Id == effectiveClassId.Value, cancellationToken)
+                ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp được chọn.", 404);
+            if (request.AccessMode == SessionAccessMode.PublicCloud
+                && classroom.AccessMode != ClassAccessMode.Public)
+                throw new ApiException(ErrorCodes.ValidationFailed, "Chỉ lớp public mới có thể tạo phòng PublicCloud theo lớp.", 422);
+        }
+
+        var roomCode = string.IsNullOrWhiteSpace(request.CustomRoomCode)
+            ? await GenerateRoomCodeAsync(cancellationToken)
+            : request.CustomRoomCode.Trim().ToUpperInvariant();
+        if (roomCode.Length < 4 || roomCode.Length > 12)
+            throw new ApiException(ErrorCodes.ValidationFailed, "Mã phòng phải dài 4-12 ký tự.");
+        if (await db.ExamSessionsSet.AnyAsync(
+                x => x.RoomCode == roomCode
+                    && x.Status != SessionStatus.Archived
+                    && x.Status != SessionStatus.Cancelled
+                    && x.Status != SessionStatus.Finished,
+                cancellationToken))
+            throw new ApiException(ErrorCodes.RoomCodeConflict, "Mã phòng đang được sử dụng.", 409);
+
+        var session = new ExamSession
+        {
+            ExamId = request.ExamId,
+            Exam = exam,
+            ClassId = effectiveClassId,
+            RoomCode = roomCode,
+            HostDeviceId = hostDeviceId,
+            PlannedStartUtc = request.PlannedStartUtc,
+            SettingsJson = string.IsNullOrWhiteSpace(request.SettingsJson) ? "{}" : request.SettingsJson,
+            AutoApprove = request.AutoApprove,
+            Capacity = request.Capacity,
+            Status = SessionStatus.Draft,
+            AcceptingParticipants = true,
+            AccessMode = request.AccessMode,
+            AdmissionMode = request.AdmissionMode,
+            DeliveryTypeSnapshot = exam.DeliveryType,
+            SupervisionModeSnapshot = exam.SupervisionMode,
+            QuizResultPolicySnapshot = exam.QuizResultPolicy,
+            ExamVersionSnapshot = exam.Version
+        };
+        db.ExamSessionsSet.Add(session);
+        await db.SaveChangesAsync(cancellationToken);
+        return session;
     }
 
     private static void ValidateSessionConfiguration(string? settingsJson, int? capacity)

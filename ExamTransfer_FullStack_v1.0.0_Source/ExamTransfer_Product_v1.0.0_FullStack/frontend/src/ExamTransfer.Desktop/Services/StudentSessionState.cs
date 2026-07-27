@@ -15,7 +15,11 @@ public sealed class StudentSessionState : ObservableObject
     private Guid? lastSubmissionId;
     private ReceiptDto? lastReceipt;
     private SessionAccessMode accessMode = SessionAccessMode.LanOnly;
+    private SessionAdmissionMode admissionMode = SessionAdmissionMode.ClassMembersOnly;
     private string? serverId;
+    private string examTitle = string.Empty;
+    private string subject = string.Empty;
+    private int durationMinutes;
     private int examVersion = 1;
     private ExamDeliveryType deliveryType = ExamDeliveryType.FileSubmission;
     private SupervisionMode supervisionMode = SupervisionMode.None;
@@ -37,7 +41,11 @@ public sealed class StudentSessionState : ObservableObject
     public Guid? LastSubmissionId { get => lastSubmissionId; set => Set(ref lastSubmissionId, value); }
     public ReceiptDto? LastReceipt { get => lastReceipt; set => Set(ref lastReceipt, value); }
     public SessionAccessMode AccessMode { get => accessMode; set => Set(ref accessMode, value); }
+    public SessionAdmissionMode AdmissionMode { get => admissionMode; set => Set(ref admissionMode, value); }
     public string? ServerId { get => serverId; set => Set(ref serverId, value); }
+    public string ExamTitle { get => examTitle; set => Set(ref examTitle, value); }
+    public string Subject { get => subject; set => Set(ref subject, value); }
+    public int DurationMinutes { get => durationMinutes; set => Set(ref durationMinutes, value); }
     public int ExamVersion { get => examVersion; set => Set(ref examVersion, value); }
     public ExamDeliveryType DeliveryType { get => deliveryType; set => Set(ref deliveryType, value); }
     public SupervisionMode SupervisionMode { get => supervisionMode; set => Set(ref supervisionMode, value); }
@@ -75,7 +83,11 @@ public sealed class StudentSessionState : ObservableObject
         LastSubmissionId = null;
         LastReceipt = null;
         AccessMode = SessionAccessMode.LanOnly;
+        AdmissionMode = SessionAdmissionMode.ClassMembersOnly;
         ServerId = null;
+        ExamTitle = string.Empty;
+        Subject = string.Empty;
+        DurationMinutes = 0;
         ExamVersion = 1;
         DeliveryType = ExamDeliveryType.FileSubmission;
         SupervisionMode = SupervisionMode.None;

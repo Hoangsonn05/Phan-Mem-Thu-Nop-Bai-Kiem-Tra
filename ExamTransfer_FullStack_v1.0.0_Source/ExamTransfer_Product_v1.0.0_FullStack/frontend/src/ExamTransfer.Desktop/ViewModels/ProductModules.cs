@@ -259,6 +259,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
     private SupervisionMode supervisionMode = SupervisionMode.None;
     private bool currentHasCommittedQuizSource;
     private int currentQuizQuestionCount;
+    private bool useClassAssignment;
 
     public ExamManagementViewModel(IBackendClient api)
     {
@@ -293,6 +294,11 @@ public sealed class ExamManagementViewModel : ProductPageBase
         }
     }
     public ClassSummaryDto? SelectedClass { get => selectedClass; set => Set(ref selectedClass, value); }
+    public bool UseClassAssignment
+    {
+        get => useClassAssignment;
+        set => Set(ref useClassAssignment, value);
+    }
     public FileDescriptorDto? SelectedFile { get => selectedFile; set { if (Set(ref selectedFile, value)) RaiseCommands(); } }
     public string Title { get => title; set => Set(ref title, value); }
     public string Subject { get => subject; set => Set(ref subject, value); }
@@ -435,8 +441,8 @@ public sealed class ExamManagementViewModel : ProductPageBase
             ? Exams.FirstOrDefault(x => x.Id == selectedId.Value) ?? Exams.FirstOrDefault()
             : Exams.FirstOrDefault();
         SelectedClass = selectedClassId.HasValue
-            ? Classes.FirstOrDefault(x => x.Id == selectedClassId.Value) ?? Classes.FirstOrDefault()
-            : Classes.FirstOrDefault();
+            ? Classes.FirstOrDefault(x => x.Id == selectedClassId.Value)
+            : null;
         if (SelectedExam is not null)
             await LoadSelectedAsync(ct);
         else
@@ -486,6 +492,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         currentAutoZip = detail.FileRule.AutoZip;
         currentRequireAtLeastOneFile = detail.FileRule.RequireAtLeastOneFile;
         SelectedClass = detail.ClassId.HasValue ? Classes.FirstOrDefault(x => x.Id == detail.ClassId.Value) : null;
+        UseClassAssignment = detail.ClassId.HasValue;
         Files.ReplaceWith(detail.Files);
         SelectedFile = Files.FirstOrDefault();
         currentExamRowVersion = detail.RowVersion;
@@ -504,7 +511,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         var updated = ApiGuard.Require(await api.PutAsync<UpdateExamRequest, ExamDetailDto>(
             $"api/v1/exams/{SelectedExam.Id}",
             new(
-                SelectedClass?.Id,
+                UseClassAssignment ? SelectedClass?.Id : null,
                 Title.Trim(),
                 Subject.Trim(),
                 Description.Trim(),
@@ -542,7 +549,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         var exam = ApiGuard.Require(await api.PostAsync<CreateExamRequest, ExamDetailDto>(
             "api/v1/exams",
             new(
-                SelectedClass?.Id,
+                UseClassAssignment ? SelectedClass?.Id : null,
                 Title.Trim(),
                 Subject.Trim(),
                 Description.Trim(),
@@ -662,12 +669,14 @@ public sealed class SessionManagementViewModel : ProductPageBase
     private string capacity = "36";
     private bool autoApprove;
     private SessionAccessMode accessMode = SessionAccessMode.LanOnly;
+    private bool useClassAdmission;
 
     public SessionManagementViewModel(IBackendClient api)
     {
         this.api = api;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         CreateCommand = new AsyncRelayCommand(CreateAsync, () => !IsBusy && SelectedExam is not null);
+        CreateDraftCommand = new AsyncRelayCommand(CreateDraftAsync, () => !IsBusy && UseClassAdmission && SelectedExam?.ClassId is not null);
         OpenCommand = new AsyncRelayCommand(() => TransitionAsync("open", "Phòng thi đã mở và sẵn sàng nhận học sinh"), () => !IsBusy && SelectedSession?.Status == SessionStatus.Draft);
         DistributeCommand = new AsyncRelayCommand(() => TransitionAsync("distribute", "Đề thi đã được phân phối"), () => !IsBusy && SelectedSession?.Status == SessionStatus.Waiting);
         StartCommand = new AsyncRelayCommand(() => TransitionAsync("start", "Phiên thi đã bắt đầu"), () => !IsBusy && (SelectedSession?.Status is SessionStatus.Waiting or SessionStatus.Distributing));
@@ -701,8 +710,18 @@ public sealed class SessionManagementViewModel : ProductPageBase
     public bool AutoApprove { get => autoApprove; set => Set(ref autoApprove, value); }
     public IReadOnlyList<SessionAccessMode> AccessModes { get; } = Enum.GetValues<SessionAccessMode>();
     public SessionAccessMode AccessMode { get => accessMode; set => Set(ref accessMode, value); }
+    public bool UseClassAdmission
+    {
+        get => useClassAdmission;
+        set
+        {
+            if (Set(ref useClassAdmission, value))
+                RaiseCommands();
+        }
+    }
     public ICommand RefreshCommand { get; }
     public ICommand CreateCommand { get; }
+    public ICommand CreateDraftCommand { get; }
     public ICommand OpenCommand { get; }
     public ICommand DistributeCommand { get; }
     public ICommand StartCommand { get; }
@@ -735,11 +754,44 @@ public sealed class SessionManagementViewModel : ProductPageBase
             : Sessions.FirstOrDefault();
     }
 
-    private Task CreateAsync() => RunAsync("Đang tạo phòng thi", "Phòng thi đã được tạo ở trạng thái nháp", async ct =>
+    private Task CreateAsync() => RunAsync("Đang tạo và mở kỳ thi", "Kỳ thi đã mở và đang chờ học sinh", async ct =>
     {
         if (SelectedExam is null) return;
         if (!int.TryParse(Capacity, out var cap) || cap <= 0) throw new InvalidOperationException("Sức chứa phải lớn hơn 0.");
-        var detail = ApiGuard.Require(await api.PostAsync<CreateSessionRequest, SessionDetailDto>("api/v1/sessions", new(SelectedExam.Id, SelectedExam.ClassId, DateTimeOffset.UtcNow.AddMinutes(5), $"{{\"autoApprove\":{AutoApprove.ToString().ToLowerInvariant()}}}", AutoApprove, cap, string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim(), AccessMode), ct));
+        var detail = ApiGuard.Require(await api.PostAsync<CreateSessionRequest, SessionDetailDto>(
+            "api/v1/sessions/create-and-open",
+            new(
+                SelectedExam.Id,
+                null,
+                DateTimeOffset.UtcNow.AddMinutes(5),
+                $"{{\"autoApprove\":{AutoApprove.ToString().ToLowerInvariant()}}}",
+                AutoApprove,
+                cap,
+                string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim(),
+                AccessMode,
+                SessionAdmissionMode.OpenRequest),
+            ct));
+        RoomCode = detail.Summary.RoomCode;
+        await RefreshSessionsCoreAsync(SelectedExam.Id, detail.Summary.Id, ct);
+    });
+
+    private Task CreateDraftAsync() => RunAsync("Đang tạo phòng theo lớp", "Phòng theo lớp đã được tạo ở trạng thái nháp", async ct =>
+    {
+        if (SelectedExam?.ClassId is null) return;
+        if (!int.TryParse(Capacity, out var cap) || cap <= 0) throw new InvalidOperationException("Sức chứa phải lớn hơn 0.");
+        var detail = ApiGuard.Require(await api.PostAsync<CreateSessionRequest, SessionDetailDto>(
+            "api/v1/sessions",
+            new(
+                SelectedExam.Id,
+                SelectedExam.ClassId,
+                DateTimeOffset.UtcNow.AddMinutes(5),
+                $"{{\"autoApprove\":{AutoApprove.ToString().ToLowerInvariant()}}}",
+                AutoApprove,
+                cap,
+                string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim(),
+                AccessMode,
+                SessionAdmissionMode.ClassMembersOnly),
+            ct));
         await RefreshSessionsCoreAsync(SelectedExam.Id, detail.Summary.Id, ct);
     });
 
@@ -798,7 +850,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, CreateDraftCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
     }
 }
 
@@ -1868,7 +1920,7 @@ public sealed class StudentWaitingViewModel : ProductPageBase
 
     public string RoomCodeHint =>
         state.HasSession
-            ? Session?.Summary.Title ?? "Đang tải thông tin kỳ thi"
+            ? Session?.Summary.Title ?? FirstAvailable(state.ExamTitle, "Đang tải thông tin kỳ thi")
             : "Chưa tham gia phòng thi";
 
     public string CandidateNameDisplay =>
@@ -1926,7 +1978,7 @@ public sealed class StudentWaitingViewModel : ProductPageBase
     }
 
     public string SessionTitleDisplay =>
-        Session?.Summary.Title ?? "Chưa có kỳ thi được chọn";
+        Session?.Summary.Title ?? FirstAvailable(state.ExamTitle, "Chưa có kỳ thi được chọn");
 
     public ICommand RefreshCommand { get; }
     public ICommand LeaveCommand { get; }
@@ -1943,11 +1995,28 @@ public sealed class StudentWaitingViewModel : ProductPageBase
         {
             if (state.AccessMode == SessionAccessMode.PublicCloud)
             {
-                var publicStatus = await AppServices.PublicCloud.GetParticipantStatusAsync(state.ParticipantId!.Value, token);
-                Participant = new ParticipantDto(state.ParticipantId.Value, state.SessionId!.Value,
+                var timeline = await AppServices.PublicCloud.GetStudentTimelineAsync(state.SessionId!.Value, token);
+                state.ExamId = timeline.ExamId;
+                state.ExamTitle = timeline.ExamTitle ?? state.ExamTitle;
+                state.Subject = timeline.Subject ?? state.Subject;
+                state.DurationMinutes = timeline.DurationMinutes;
+                state.AdmissionMode = Enum.TryParse<SessionAdmissionMode>(timeline.AdmissionMode, true, out var admission)
+                    ? admission
+                    : state.AdmissionMode;
+                state.SessionStatus = Enum.TryParse<SessionStatus>(timeline.SessionStatus, true, out var sessionStatus)
+                    ? sessionStatus
+                    : state.SessionStatus;
+                var publicStatus = Enum.TryParse<ParticipantStatus>(timeline.ParticipantStatus, true, out var participantStatus)
+                    ? participantStatus
+                    : ParticipantStatus.PendingApproval;
+                var participantId = state.ParticipantId
+                    ?? throw new InvalidOperationException("PublicCloud participant state is missing.");
+                Participant = new ParticipantDto(participantId, state.SessionId!.Value,
                     state.StudentCode, state.DisplayName, Environment.MachineName + "-" + Environment.UserName,
                     Environment.MachineName, null, "1.0.0", publicStatus, DateTimeOffset.UtcNow,
                     DownloadStatus.NotStarted, SubmissionStatus.NotStarted, 0, null, ConnectionState.Online);
+                Raise(nameof(RoomCodeHint));
+                Raise(nameof(SessionTitleDisplay));
                 return;
             }
             api.SetParticipantToken(state.AccessToken);
@@ -2031,7 +2100,7 @@ public sealed class StudentDownloadViewModel : ProductPageBase
             if (state.AccessMode == SessionAccessMode.PublicCloud)
             {
                 if (!state.ExamId.HasValue) throw new InvalidOperationException("Phiên PublicCloud chưa có ExamId.");
-                Files.ReplaceWith(await AppServices.PublicCloud.ListExamFilesAsync(state.ExamId.Value, token));
+                Files.ReplaceWith(await AppServices.PublicCloud.ListExamFilesAsync(state.SessionId!.Value, token));
                 SelectedFile = Files.FirstOrDefault();
                 return;
             }

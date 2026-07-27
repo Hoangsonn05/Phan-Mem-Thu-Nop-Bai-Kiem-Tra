@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "8";
+    public const string SchemaVersion = "9";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -78,6 +78,7 @@ public static class DbInitializer
         await EnsureColumnAsync(db, "classes", "EnrollmentClosedAtUtc", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "classes", "PublicVersion", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exam_sessions", "AccessMode", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exam_sessions", "AdmissionMode", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exam_sessions", "DeliveryTypeSnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exam_sessions", "SupervisionModeSnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exam_sessions", "QuizResultPolicySnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
@@ -92,6 +93,12 @@ public static class DbInitializer
               AND "DeliveryTypeSnapshot" = 0
               AND "SupervisionModeSnapshot" = 0
               AND "QuizResultPolicySnapshot" = 0;
+            """, cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            UPDATE "exam_sessions"
+            SET "AdmissionMode" = 1
+            WHERE "ClassId" IS NULL
+              AND "AdmissionMode" = 0;
             """, cancellationToken);
         await EnsureQuizTablesAsync(db, cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "ResultPolicySnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);

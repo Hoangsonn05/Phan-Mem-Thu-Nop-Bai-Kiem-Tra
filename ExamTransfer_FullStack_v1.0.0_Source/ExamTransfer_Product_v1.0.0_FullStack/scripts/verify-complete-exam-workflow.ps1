@@ -92,6 +92,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "verify-supabase-source exited with $LASTEXITCODE." }
         $migration = Get-Content (Join-Path $projectRoot 'backend\supabase\migrations\20260725174327_complete_exam_workflow.sql') -Raw
         $finalMigration = Get-Content (Join-Path $projectRoot 'backend\supabase\migrations\20260726064745_final_remaining_quiz_source_cloud_version.sql') -Raw
+        $sessionFirstMigration = Get-Content (Join-Path $projectRoot 'backend\supabase\migrations\20260727122721_session_first_open_request.sql') -Raw
         foreach ($requiredText in @(
             'revoke select on public.quiz_attempts from authenticated',
             'create or replace function public.get_public_quiz_attempt',
@@ -111,8 +112,36 @@ try {
                 throw "Missing final workflow invariant: $requiredText"
             }
         }
-        $diff = (Invoke-NativeCommandCaptured -Command 'git' -Arguments @('diff', '--') -FailureContext 'secret scan').OutputText
-        if ($diff -match '(?i)(service_role_key|supabase_service_role_key|postgres(?:ql)?://[^\s]+:[^\s]+@|eyJ[A-Za-z0-9_-]{20,}\.)') {
+        foreach ($requiredText in @(
+            'add column if not exists admission_mode text not null default ''ClassMembersOnly''',
+            'create or replace function public.join_open_public_session_by_room_code',
+            'create or replace function public.get_public_exam_manifest',
+            'set schema_version = 19'
+        )) {
+            if ($sessionFirstMigration.IndexOf($requiredText, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                throw "Missing session-first invariant: $requiredText"
+            }
+        }
+        $trackedDiff = (Invoke-NativeCommandCaptured -Command 'git' -Arguments @(
+            'diff', '--unified=0', '--no-ext-diff', '--', '.'
+        ) -FailureContext 'tracked secret scan').OutputText
+        $addedText = (($trackedDiff -split "`r?`n") |
+            Where-Object { $_ -match '^\+(?!\+\+\+)' }) -join "`n"
+        $untrackedOutput = (Invoke-NativeCommandCaptured -Command 'git' -Arguments @(
+            'ls-files', '--others', '--exclude-standard', '--', '.'
+        ) -FailureContext 'untracked secret scan').OutputText
+        $untrackedText = foreach ($relativePath in ($untrackedOutput -split "`r?`n")) {
+            if ([string]::IsNullOrWhiteSpace($relativePath)) { continue }
+            $candidate = [IO.Path]::GetFullPath((Join-Path $projectRoot $relativePath))
+            if (-not $candidate.StartsWith($projectRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Untracked secret-scan path escaped the project root: $relativePath"
+            }
+            Get-Content -LiteralPath $candidate -Raw
+        }
+        $secretScanText = $addedText + "`n" + ($untrackedText -join "`n")
+        $secretPattern = '(?i)(service' + '_role_key|supabase_service' +
+            '_role_key|postgres(?:ql)?://[^\s]+:[^\s]+@|eyJ[A-Za-z0-9_-]{20,}\.)'
+        if ($secretScanText -match $secretPattern) {
             throw 'Potential credential material detected in the working diff.'
         }
     }

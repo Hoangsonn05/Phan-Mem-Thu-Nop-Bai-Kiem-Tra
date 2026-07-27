@@ -77,35 +77,37 @@ public sealed class SupabasePublicCloudClient
         string appVersion,
         CancellationToken cancellationToken)
     {
-        await EnsureFreshSessionAsync(cancellationToken);
-        using var request = ProjectRequest(HttpMethod.Get,
-            $"/rest/v1/exam_sessions?select=id,exam_id,room_code,status&access_mode=eq.PublicCloud&room_code=eq.{Uri.EscapeDataString(roomCode)}&limit=2");
-        using var response = await SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, "PublicCloud session lookup", cancellationToken);
-        var sessions = JsonSerializer.Deserialize<List<PublicSessionRow>>(
-            await response.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
-        if (sessions.Count != 1)
-            throw new InvalidOperationException("Không tìm thấy đúng một phòng PublicCloud khả dụng cho tài khoản này.");
-        var session = sessions[0];
-        var participantId = await RpcAsync<Guid>("join_public_session", new
+        var result = await RpcAsync<OpenPublicJoinRpcResult>("join_open_public_session_by_room_code", new
         {
-            p_session_id = session.Id,
+            p_room_code = roomCode,
             p_device_id = deviceId,
             p_machine_name = machineName,
             p_app_version = appVersion,
             p_capability_json = new { platform = Environment.OSVersion.Platform.ToString() }
         }, cancellationToken);
-        using var participantRequest = ProjectRequest(HttpMethod.Get,
-            $"/rest/v1/session_participants?select=status&id=eq.{participantId}&limit=1");
-        using var participantResponse = await SendAsync(participantRequest, cancellationToken);
-        await EnsureSuccessAsync(participantResponse, "PublicCloud participant snapshot", cancellationToken);
-        var participants = JsonSerializer.Deserialize<List<ParticipantStatusRow>>(
-            await participantResponse.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
-        var status = participants.Count == 1
-            && Enum.TryParse<ParticipantStatus>(participants[0].Status, true, out var parsed)
-                ? parsed
-                : ParticipantStatus.PendingApproval;
-        return new PublicCloudJoinResult(session.Id, session.ExamId, participantId, status, accessToken!);
+        if (!Enum.TryParse<ParticipantStatus>(result.ParticipantStatus, true, out var participantStatus)
+            || !Enum.TryParse<SessionStatus>(result.SessionStatus, true, out var sessionStatus)
+            || !Enum.TryParse<ExamDeliveryType>(result.DeliveryType, true, out var deliveryType)
+            || !Enum.TryParse<SupervisionMode>(result.SupervisionMode, true, out var supervisionMode)
+            || !Enum.TryParse<QuizResultPolicy>(result.QuizResultPolicy, true, out var resultPolicy))
+            throw new InvalidDataException("PublicCloud open-session join returned invalid typed metadata.");
+        return new(
+            result.SessionId,
+            result.ExamId,
+            result.ParticipantId,
+            participantStatus,
+            sessionStatus,
+            result.RoomCode,
+            result.ExamTitle,
+            result.Subject,
+            result.DurationMinutes,
+            deliveryType,
+            supervisionMode,
+            resultPolicy,
+            result.PlannedStartUtc,
+            result.Capacity,
+            result.CurrentParticipantCount,
+            accessToken!);
     }
 
     public async Task<ParticipantStatus> GetParticipantStatusAsync(Guid participantId, CancellationToken cancellationToken)
@@ -133,15 +135,12 @@ public sealed class SupabasePublicCloudClient
             ?? throw new InvalidDataException("Signed URL response is empty.");
     }
 
-    public async Task<IReadOnlyList<FileDescriptorDto>> ListExamFilesAsync(Guid examId, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<FileDescriptorDto>> ListExamFilesAsync(Guid sessionId, CancellationToken cancellationToken)
     {
-        await EnsureFreshSessionAsync(cancellationToken);
-        using var request = ProjectRequest(HttpMethod.Get,
-            $"/rest/v1/exam_files?select=id,name,size_bytes,sha256,mime_type&exam_id=eq.{examId}&order=created_at.asc");
-        using var response = await SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, "PublicCloud exam manifest", cancellationToken);
-        var rows = JsonSerializer.Deserialize<List<ExamFileRow>>(
-            await response.Content.ReadAsStringAsync(cancellationToken), Json) ?? [];
+        var rows = await RpcAsync<List<ExamFileRow>>(
+            "get_public_exam_manifest",
+            new { p_session_id = sessionId },
+            cancellationToken);
         return rows.Select(x => new FileDescriptorDto(x.Id, x.Name, x.SizeBytes, x.Sha256,
             x.MimeType ?? "application/octet-stream")).ToList();
     }
@@ -420,11 +419,22 @@ public sealed class SupabasePublicCloudClient
         throw new HttpRequestException($"{operation} failed ({(int)response.StatusCode}): {detail}", null, response.StatusCode);
     }
 
-    private sealed record PublicSessionRow(
-        Guid Id,
-        [property: JsonPropertyName("exam_id")] Guid ExamId,
-        [property: JsonPropertyName("room_code")] string RoomCode,
-        string Status);
+    private sealed record OpenPublicJoinRpcResult(
+        Guid SessionId,
+        Guid ExamId,
+        Guid ParticipantId,
+        string ParticipantStatus,
+        string SessionStatus,
+        string RoomCode,
+        string ExamTitle,
+        string Subject,
+        int DurationMinutes,
+        string DeliveryType,
+        string SupervisionMode,
+        string QuizResultPolicy,
+        DateTimeOffset? PlannedStartUtc,
+        int? Capacity,
+        int CurrentParticipantCount);
     private sealed record ParticipantStatusRow(string Status);
     private sealed record EnrollmentRow(Guid Id, string Status);
     private sealed record SubmissionFilePlanRow(Guid Id,
@@ -468,7 +478,23 @@ public sealed class SupabasePublicCloudClient
         IReadOnlyList<PublicQuizAnswerSnapshot> Answers);
 }
 
-public sealed record PublicCloudJoinResult(Guid SessionId, Guid ExamId, Guid ParticipantId, ParticipantStatus Status, string AccessToken);
+public sealed record PublicCloudJoinResult(
+    Guid SessionId,
+    Guid ExamId,
+    Guid ParticipantId,
+    ParticipantStatus ParticipantStatus,
+    SessionStatus SessionStatus,
+    string RoomCode,
+    string ExamTitle,
+    string Subject,
+    int DurationMinutes,
+    ExamDeliveryType DeliveryType,
+    SupervisionMode SupervisionMode,
+    QuizResultPolicy QuizResultPolicy,
+    DateTimeOffset? PlannedStartUtc,
+    int? Capacity,
+    int CurrentParticipantCount,
+    string AccessToken);
 public sealed record PublicExamFileUrl(Uri Url, int ExpiresIn, string FileName, long SizeBytes, string Sha256);
 public sealed record PublicSubmissionPlan(Guid SubmissionId, Guid FileId, string CloudObjectPath);
 public sealed record PublicEnrollmentState(Guid RequestId, string Status);
@@ -495,4 +521,7 @@ public sealed record PublicStudentTimeline(
     bool ScoreVisible = false,
     decimal? Score = null,
     decimal? MaxScore = null,
-    string SubmissionStatus = "NotStarted");
+    string SubmissionStatus = "NotStarted",
+    string AdmissionMode = "ClassMembersOnly",
+    string? ExamTitle = null,
+    string? Subject = null);

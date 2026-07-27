@@ -29,7 +29,7 @@ public sealed class OpenSessionDiscoveryTests
         var exam = new Exam { Class = classroom, Title = "Kiểm tra", Subject = "Tin", DurationMinutes = 45, Status = ExamStatus.Published, CreatedBy = teacher.Id };
         db.AddRange(classroom, teacher, exam);
         db.ExamSessionsSet.AddRange(
-            new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "OPEN1", Status = SessionStatus.Waiting, AcceptingParticipants = true, AccessMode = SessionAccessMode.LanOnly },
+            new ExamSession { Exam = exam, ClassId = null, AdmissionMode = SessionAdmissionMode.OpenRequest, RoomCode = "OPEN1", Status = SessionStatus.Waiting, AcceptingParticipants = true, AccessMode = SessionAccessMode.LanOnly },
             new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "DRAFT1", Status = SessionStatus.Draft, AcceptingParticipants = true, AccessMode = SessionAccessMode.LanOnly },
             new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "CLOSED1", Status = SessionStatus.Waiting, AcceptingParticipants = false, AccessMode = SessionAccessMode.LanOnly },
             new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "PUBLIC1", Status = SessionStatus.Waiting, AcceptingParticipants = true, AccessMode = SessionAccessMode.PublicCloud });
@@ -52,6 +52,16 @@ public sealed class OpenSessionDiscoveryTests
         var room = Assert.Single(response.Data!);
         Assert.Equal("OPEN1", room.RoomCode);
         Assert.Equal(SessionAccessMode.LanOnly, room.AccessMode);
+        Assert.Equal(SessionAdmissionMode.OpenRequest, room.AdmissionMode);
+        Assert.Null(room.ClassId);
+        Assert.Null(room.ClassCode);
+        Assert.Null(room.ClassName);
+        Assert.Equal(exam.Id, room.ExamId);
+        Assert.Equal(exam.Title, room.ExamTitle);
+        Assert.Equal("Tin", room.Subject);
+        Assert.Equal(45, room.DurationMinutes);
+        Assert.Equal(ExamDeliveryType.FileSubmission, room.DeliveryType);
+        Assert.DoesNotContain("settings", System.Text.Json.JsonSerializer.Serialize(room), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

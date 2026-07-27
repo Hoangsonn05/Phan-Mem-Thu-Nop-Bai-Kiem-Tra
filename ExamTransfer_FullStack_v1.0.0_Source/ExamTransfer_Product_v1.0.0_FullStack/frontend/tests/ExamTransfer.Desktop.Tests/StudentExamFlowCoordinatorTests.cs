@@ -11,7 +11,7 @@ public sealed class StudentExamFlowCoordinatorTests
         { Snapshot(false), StudentExamFlowState.NoSession, "S-01", false },
         { Snapshot(participant: ParticipantStatus.PendingApproval), StudentExamFlowState.PendingApproval, "S-03", false },
         { Snapshot(participant: ParticipantStatus.Rejected), StudentExamFlowState.RejectedOrExpired, "S-01", false },
-        { Snapshot(status: SessionStatus.Waiting), StudentExamFlowState.ApprovedWaiting, "S-04", false },
+        { Snapshot(status: SessionStatus.Waiting), StudentExamFlowState.ApprovedWaiting, "S-03", false },
         { Snapshot(delivery: ExamDeliveryType.FileSubmission), StudentExamFlowState.ReadyToStartFileExam, "S-05", false },
         { Snapshot(delivery: ExamDeliveryType.FileSubmission, submission: SubmissionStatus.Uploading), StudentExamFlowState.InProgressFileExam, "S-07", false },
         { Snapshot(delivery: ExamDeliveryType.FileSubmission, submission: SubmissionStatus.Submitted), StudentExamFlowState.SubmittedFileExam, "S-08", false },

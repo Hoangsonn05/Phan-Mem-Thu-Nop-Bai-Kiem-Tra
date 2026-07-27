@@ -236,6 +236,7 @@ public sealed class ExamSession : EntityBase
     public string SettingsJson { get; set; } = "{}";
     public bool AutoApprove { get; set; }
     public SessionAccessMode AccessMode { get; set; } = SessionAccessMode.LanOnly;
+    public SessionAdmissionMode AdmissionMode { get; set; } = SessionAdmissionMode.ClassMembersOnly;
     public int? Capacity { get; set; }
     public bool AcceptingParticipants { get; set; } = true;
     public long Sequence { get; set; }

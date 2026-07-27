@@ -23,7 +23,46 @@ public sealed class DbInitializerQuizTests
                 await DbInitializer.InitializeAsync(db, paths);
 
                 Assert.Equal(6, await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name LIKE 'quiz_%'").SingleAsync());
-                Assert.Equal("\"8\"", (await db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
+                Assert.Equal("\"9\"", (await db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
+
+                var classroom = new ClassRoom
+                {
+                    Name = "Legacy class",
+                    Code = "LEGACY",
+                    SchoolYear = "2026-2027"
+                };
+                var admissionExam = new Exam
+                {
+                    Class = classroom,
+                    Title = "Admission backfill",
+                    Subject = "Upgrade",
+                    DurationMinutes = 30
+                };
+                var classSession = new ExamSession
+                {
+                    Exam = admissionExam,
+                    ClassId = classroom.Id,
+                    RoomCode = "CLASS01",
+                    AdmissionMode = SessionAdmissionMode.ClassMembersOnly
+                };
+                var classlessSession = new ExamSession
+                {
+                    Exam = admissionExam,
+                    ClassId = null,
+                    RoomCode = "OPEN01",
+                    AdmissionMode = SessionAdmissionMode.ClassMembersOnly
+                };
+                db.AddRange(classroom, admissionExam, classSession, classlessSession);
+                await db.SaveChangesAsync();
+                db.ChangeTracker.Clear();
+
+                await DbInitializer.InitializeAsync(db, paths);
+                Assert.Equal(
+                    SessionAdmissionMode.ClassMembersOnly,
+                    await db.ExamSessionsSet.Where(x => x.Id == classSession.Id).Select(x => x.AdmissionMode).SingleAsync());
+                Assert.Equal(
+                    SessionAdmissionMode.OpenRequest,
+                    await db.ExamSessionsSet.Where(x => x.Id == classlessSession.Id).Select(x => x.AdmissionMode).SingleAsync());
 
                 var exam = new Exam
                 {

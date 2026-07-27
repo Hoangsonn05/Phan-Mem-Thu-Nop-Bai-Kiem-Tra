@@ -51,7 +51,7 @@ public sealed class FinalCloudSourceCompatibilityTests
     }
 
     [Fact]
-    public void QuizSourcePayloadAndObjectPath_AreStableLocalOwnedAndRequireSchema18()
+    public void QuizSourcePayloadAndObjectPath_AreStableLocalOwnedAndRequireSchema21()
     {
         var root = Path.Combine(
             Path.GetTempPath(),
@@ -123,13 +123,27 @@ public sealed class FinalCloudSourceCompatibilityTests
                 $"/quiz-sources/{sourceId}/source.bin",
                 firstPath,
                 StringComparison.Ordinal);
-            Assert.Equal(18, CloudSchemaCompatibility.RequiredVersion);
+            Assert.Equal(21, CloudSchemaCompatibility.RequiredVersion);
         }
         finally
         {
             if (Directory.Exists(root))
                 Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void OpenRequestSupervisionCapability_RequiresSchema21AndBothRpcs()
+    {
+        Assert.Equal(21, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Contains("report_public_violation", CloudSchemaCompatibility.CriticalRpcs);
+        Assert.Contains("ack_public_device_command", CloudSchemaCompatibility.CriticalRpcs);
+
+        var script = PublicCloudTestHarness.ReadRepositoryFile(
+            "backend/scripts/test-cloud-schema-version.ps1");
+        Assert.Contains("schemaVersion -ne 21", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'report_public_violation'", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'ack_public_device_command'", script, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class CloudSourcePaths(string root) : IStoragePaths

@@ -2,7 +2,7 @@
 
 ## Release gate
 
-PublicCloud schema compatibility is `15`. LAN remains usable when cloud is
+PublicCloud schema compatibility is `19`. LAN remains usable when cloud is
 unconfigured, offline, or incompatible. Both cloud workers stop when the
 capability RPC does not report schema 15, all critical RPCs, `exam-archives`,
 and `public-submission-archives`.
@@ -62,6 +62,9 @@ global submission constraints with PublicCloud-only partial indexes.
 `20260723043859_public_cloud_teacher_mutations_and_projection.sql` reaches
 schema 15 with server-authorized, idempotent teacher mutations and projection
 fields.
+`20260727122721_session_first_open_request.sql` reaches schema 19 with
+classless OpenRequest admission, atomic room-code joining, and guarded
+manifest/download access.
 
 Authorized staging deployment commands (not run by this implementation turn):
 
@@ -110,6 +113,7 @@ Never place a service-role or secret key on a student/teacher desktop.
 | `20260722141147` | 13 | Public classes, sessions, devices, submissions, Storage/RLS/RPC | Must create partial PublicCloud indexes; depends on earlier profile/auth schema | Determine with `migration list` |
 | `20260722161450` | 14 | Ownership completion, archive validation, private Realtime, capability RPC | Forward-fixes global indexes; trigger ignores Lan rows | Determine with `migration list` |
 | `20260723043859` | 15 | Teacher mutation RPCs/idempotency and projection completion | Depends on schema 14 and existing PublicCloud ownership columns | Determine with `migration list` |
+| `20260727122721` | 19 | OpenRequest admission and room-first PublicCloud joining | Forward-only; requires all schema 18 migrations | Determine with `migration list` |
 
 If `20260722141147` is pending remotely, use the corrected source migration.
 If it is already applied, do not rewrite remote history or use migration

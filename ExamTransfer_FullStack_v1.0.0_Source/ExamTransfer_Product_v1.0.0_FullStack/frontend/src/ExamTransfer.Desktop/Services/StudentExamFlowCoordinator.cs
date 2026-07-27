@@ -160,7 +160,7 @@ public sealed class StudentExamFlowCoordinator(
             return new(StudentExamFlowState.SessionFinished, "S-04", false, "Phiên thi đã kết thúc.");
         if (snapshot.ParticipantStatus != ParticipantStatus.Approved
             || snapshot.SessionStatus is not (SessionStatus.InProgress or SessionStatus.Paused))
-            return new(StudentExamFlowState.ApprovedWaiting, "S-04", false, "Phiên thi chưa bắt đầu.");
+            return new(StudentExamFlowState.ApprovedWaiting, "S-03", false, "Phiên thi chưa bắt đầu.");
 
         if (snapshot.DeliveryType == ExamDeliveryType.MultipleChoice)
         {
@@ -193,6 +193,10 @@ public sealed class StudentExamFlowCoordinator(
         state.DeliveryType = ParseEnum(timeline.DeliveryType, ExamDeliveryType.FileSubmission);
         state.SupervisionMode = ParseEnum(timeline.SupervisionMode, SupervisionMode.None);
         state.ResultPolicy = ParseEnum(timeline.ResultPolicy, QuizResultPolicy.Hidden);
+        state.AdmissionMode = ParseEnum(timeline.AdmissionMode, SessionAdmissionMode.ClassMembersOnly);
+        state.ExamTitle = timeline.ExamTitle ?? state.ExamTitle;
+        state.Subject = timeline.Subject ?? state.Subject;
+        state.DurationMinutes = timeline.DurationMinutes;
         state.SessionStatus = ParseEnum<SessionStatus>(timeline.SessionStatus);
         state.ParticipantStatus = ParseEnum<ParticipantStatus>(timeline.ParticipantStatus);
         state.SubmissionStatus = ParseEnum(timeline.SubmissionStatus, SubmissionStatus.NotStarted);

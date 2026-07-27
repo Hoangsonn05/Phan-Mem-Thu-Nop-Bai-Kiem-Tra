@@ -16,6 +16,10 @@ public sealed class SessionsController(ISessionService service) : ApiControllerB
     [HttpPost][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<SessionDetailDto>>> Create(CreateSessionRequest request, CancellationToken ct) => Data(await service.CreateAsync(request, Environment.MachineName, ct));
 
+    [HttpPost("create-and-open")][Authorize(Policy = "TeacherOrAdmin")]
+    public async Task<ActionResult<ApiResponse<SessionDetailDto>>> CreateAndOpen(CreateSessionRequest request, CancellationToken ct) =>
+        Data(await service.CreateAndOpenAsync(request, Environment.MachineName, ct));
+
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<ApiResponse<SessionDetailDto>>> Get(Guid id, CancellationToken ct)
     {

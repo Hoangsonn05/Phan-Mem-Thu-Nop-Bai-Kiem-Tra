@@ -85,7 +85,7 @@ public sealed class LanDiscoveryService(int discoveryPort = DiscoveryProtocol.De
             .GroupBy(x => $"{x.ServerId}|{x.SessionId}", StringComparer.OrdinalIgnoreCase)
             .Select(x => x.OrderByDescending(room => room.RespondedAtUtc).First())
             .OrderBy(x => x.ScheduledStartUtc)
-            .ThenBy(x => x.ClassCode)
+            .ThenBy(x => x.ExamTitle)
             .ThenBy(x => x.RoomCode)
             .ToList();
     }

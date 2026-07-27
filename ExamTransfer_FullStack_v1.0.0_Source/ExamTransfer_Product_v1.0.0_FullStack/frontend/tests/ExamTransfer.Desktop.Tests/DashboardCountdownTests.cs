@@ -70,7 +70,11 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
     public QuizAttemptDto? QuizAttemptResponse { get; init; }
     public ExamSummaryDto? ExamSummaryResponse { get; init; }
     public ExamDetailDto? ExamDetailResponse { get; init; }
+    public SessionDetailDto? SessionDetailResponse { get; init; }
+    public IReadOnlyList<ExamSummaryDto>? ExamResponses { get; init; }
+    public IReadOnlyList<SessionSummaryDto>? SessionResponses { get; init; }
     public List<string> PostPaths { get; } = [];
+    public List<object?> PostRequests { get; } = [];
     public Uri BaseAddress { get; } = new("https://localhost/");
     public bool HasTrustedAccountToken => false;
 
@@ -99,15 +103,21 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
     public Task<ApiResponse<SystemStatusDto>?> GetSystemStatusAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<SystemStatusDto>?>(null);
     public Task<ApiResponse<PagedResult<ClassSummaryDto>>?> GetClassesAsync(CancellationToken ct = default) =>
         Task.FromResult<ApiResponse<PagedResult<ClassSummaryDto>>?>(
-            ExamSummaryResponse is null
-                ? null
-                : ApiResponse<PagedResult<ClassSummaryDto>>.Ok(new([], 1, 50, 0), "test"));
+            ExamResponses is not null || ExamSummaryResponse is not null
+                ? ApiResponse<PagedResult<ClassSummaryDto>>.Ok(new([], 1, 50, 0), "test")
+                : null);
     public Task<ApiResponse<PagedResult<ExamSummaryDto>>?> GetExamsAsync(CancellationToken ct = default) =>
         Task.FromResult<ApiResponse<PagedResult<ExamSummaryDto>>?>(
-            ExamSummaryResponse is null
+            ExamResponses is not null
+                ? ApiResponse<PagedResult<ExamSummaryDto>>.Ok(new(ExamResponses, 1, 50, ExamResponses.Count), "test")
+                : ExamSummaryResponse is null
+                    ? null
+                    : ApiResponse<PagedResult<ExamSummaryDto>>.Ok(new([ExamSummaryResponse], 1, 50, 1), "test"));
+    public Task<ApiResponse<PagedResult<SessionSummaryDto>>?> GetSessionsAsync(CancellationToken ct = default) =>
+        Task.FromResult<ApiResponse<PagedResult<SessionSummaryDto>>?>(
+            SessionResponses is null
                 ? null
-                : ApiResponse<PagedResult<ExamSummaryDto>>.Ok(new([ExamSummaryResponse], 1, 50, 1), "test"));
-    public Task<ApiResponse<PagedResult<SessionSummaryDto>>?> GetSessionsAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<PagedResult<SessionSummaryDto>>?>(null);
+                : ApiResponse<PagedResult<SessionSummaryDto>>.Ok(new(SessionResponses, 1, 50, SessionResponses.Count), "test"));
     public Task<ApiResponse<SessionDetailDto>?> GetSessionAsync(Guid id, CancellationToken ct = default) => Task.FromResult<ApiResponse<SessionDetailDto>?>(null);
     public Task<ApiResponse<PagedResult<SubmissionSummaryDto>>?> GetSubmissionsAsync(Guid sessionId, CancellationToken ct = default) => Task.FromResult<ApiResponse<PagedResult<SubmissionSummaryDto>>?>(null);
     public Task<ApiResponse<CloudSyncStatusDto>?> GetCloudStatusAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<CloudSyncStatusDto>?>(null);
@@ -122,6 +132,10 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
     public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
     {
         PostPaths.Add(path);
+        PostRequests.Add(request);
+        if (SessionDetailResponse is not null && typeof(TResponse) == typeof(SessionDetailDto))
+            return Task.FromResult<ApiResponse<TResponse>?>(
+                ApiResponse<TResponse>.Ok((TResponse)(object)SessionDetailResponse, "test"));
         if (ExamDetailResponse is not null && typeof(TResponse) == typeof(ExamDetailDto))
             return Task.FromResult<ApiResponse<TResponse>?>(
                 ApiResponse<TResponse>.Ok((TResponse)(object)ExamDetailResponse, "test"));
