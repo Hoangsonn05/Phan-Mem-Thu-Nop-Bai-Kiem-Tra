@@ -59,6 +59,7 @@ public static class DependencyInjection
         services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
         services.AddScoped<IAuditService, AuditService>();
         services.AddScoped<IOutboxService, OutboxService>();
+        services.AddSingleton<ICloudSyncSignal, CloudSyncSignal>();
         services.AddScoped<IAccountSessionService, AccountSessionService>();
         services.AddScoped<IAccountAuthenticationService, AccountAuthenticationService>();
         services.AddScoped<IClassService, ClassService>();

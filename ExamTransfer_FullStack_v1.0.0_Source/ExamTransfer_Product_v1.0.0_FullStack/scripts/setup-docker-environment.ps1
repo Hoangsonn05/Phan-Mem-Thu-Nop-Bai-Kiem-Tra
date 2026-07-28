@@ -217,8 +217,7 @@ $lines = @(
     '',
     "Discovery__Enabled=$discoveryEnabled",
     'Discovery__Protocol=UdpBroadcast',
-    'Discovery__Port=5050',
-    'Discovery__RequestMagic=EXAMTRANSFER_DISCOVER_V1',
+    'Discovery__Port=40550',
     '',
     @($AllowedCidrs | ForEach-Object -Begin { $index = 0 } -Process {
         $line = "LanAccess__AllowedCidrs__$index=$($_.Trim())"

@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Text.Json;
+using System.Threading.Channels;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Shared.Contracts;
@@ -76,7 +77,9 @@ public sealed class AuditService(
     }
 }
 
-public sealed class OutboxService(IAppDbContext db) : IOutboxService
+public sealed class OutboxService(
+    IAppDbContext db,
+    ICloudSyncSignal? cloudSyncSignal = null) : IOutboxService
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
@@ -146,5 +149,37 @@ public sealed class OutboxService(IAppDbContext db) : IOutboxService
         }
 
         await db.SaveChangesAsync(cancellationToken);
+        cloudSyncSignal?.Pulse();
+    }
+}
+
+public sealed class CloudSyncSignal : ICloudSyncSignal
+{
+    private readonly Channel<bool> channel = Channel.CreateBounded<bool>(
+        new BoundedChannelOptions(1)
+        {
+            FullMode = BoundedChannelFullMode.DropWrite,
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+    public void Pulse() => channel.Writer.TryWrite(true);
+
+    public async Task<bool> WaitAsync(
+        TimeSpan maximumDelay,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(maximumDelay);
+        try
+        {
+            return await channel.Reader.ReadAsync(timeout.Token);
+        }
+        catch (OperationCanceledException) when (
+            !cancellationToken.IsCancellationRequested
+            && timeout.IsCancellationRequested)
+        {
+            return false;
+        }
     }
 }

@@ -183,7 +183,7 @@ public sealed class SystemService(AppDbContext db, IStoragePaths paths, ICloudAd
         _options.Server.Port = request.ServerPort;
         _options.Server.UseHttps = request.UseHttps;
         _options.Discovery.Enabled = request.DiscoveryEnabled;
-        _options.Discovery.Port = request.DiscoveryPort;
+        _options.Discovery.Port = DiscoveryProtocol.DefaultPort;
         _options.Storage.RootPath = request.StorageRootPath;
         _options.Storage.MinFreeBytes = request.MinFreeBytes;
         _options.Transfer.ChunkSizeBytes = request.ChunkSizeBytes;
@@ -359,7 +359,12 @@ public sealed class SystemService(AppDbContext db, IStoragePaths paths, ICloudAd
 
     private static void Validate(UpdateSettingsRequest r)
     {
-        if (r.ServerPort is < 1024 or > 65535 || r.DiscoveryPort is < 1024 or > 65535) throw new ApiException(ErrorCodes.ValidationFailed, "Cổng phải nằm trong 1024-65535.");
+        if (r.ServerPort is < 1024 or > 65535)
+            throw new ApiException(ErrorCodes.ValidationFailed, "Cổng HTTP phải nằm trong 1024-65535.");
+        if (r.DiscoveryPort != DiscoveryProtocol.DefaultPort)
+            throw new ApiException(
+                ErrorCodes.ValidationFailed,
+                $"ExamTransfer/2 yêu cầu cố định UDP {DiscoveryProtocol.DefaultPort}; không cho phép fallback hoặc đổi cổng.");
         if (r.ChunkSizeBytes is < 1048576 or > 16777216) throw new ApiException(ErrorCodes.ValidationFailed, "Chunk size phải từ 1 MiB đến 16 MiB.");
         if (r.HeartbeatSeconds is < 2 or > 60 || r.DisconnectAfterSeconds <= r.HeartbeatSeconds)
             throw new ApiException(ErrorCodes.ValidationFailed, "Cấu hình heartbeat không hợp lệ.");

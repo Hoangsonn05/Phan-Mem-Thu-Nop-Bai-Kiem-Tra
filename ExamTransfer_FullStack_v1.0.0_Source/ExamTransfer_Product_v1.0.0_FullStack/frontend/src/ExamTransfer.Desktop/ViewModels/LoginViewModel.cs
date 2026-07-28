@@ -122,6 +122,7 @@ public sealed class LoginViewModel : ObservableObject
             if (current.Role == UserRole.Student && AppServices.PublicCloud.Configured)
                 await AppServices.PublicCloud.LoginAsync(Account.Trim(), Password, cts.Token);
             authState.SetAuthenticated(current, result.AccessToken);
+            authState.SetTransientCredentials(Account, Password);
             Password = string.Empty;
             Status = "Đăng nhập thành công.";
             StatusTone = "success";

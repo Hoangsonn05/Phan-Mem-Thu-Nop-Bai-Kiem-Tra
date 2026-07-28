@@ -13,6 +13,7 @@ using ExamTransfer.LocalServer.Workers;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.OpenApi;
 
+using var singleInstance = LocalServerSingleInstance.Acquire();
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddExamTransferRuntimeSettings();
 builder.Configuration.AddEnvironmentVariables();
@@ -26,6 +27,11 @@ builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole();
 
 var port = builder.Configuration.GetValue<int?>("Server:Port") ?? 5048;
+var discoveryPort = builder.Configuration.GetValue<int?>("Discovery:Port")
+    ?? ExamTransfer.Shared.Contracts.DiscoveryProtocol.DefaultPort;
+if (discoveryPort != ExamTransfer.Shared.Contracts.DiscoveryProtocol.DefaultPort)
+    throw new InvalidOperationException(
+        $"UDP_DISCOVERY_PORT_CONFIG_INVALID: ExamTransfer/2 requires UDP {ExamTransfer.Shared.Contracts.DiscoveryProtocol.DefaultPort}; fallback and production overrides are not supported.");
 var useHttps = builder.Configuration.GetValue<bool?>("Server:UseHttps") ?? false;
 var scheme = useHttps ? "https" : "http";
 builder.WebHost.UseUrls($"{scheme}://0.0.0.0:{port}");

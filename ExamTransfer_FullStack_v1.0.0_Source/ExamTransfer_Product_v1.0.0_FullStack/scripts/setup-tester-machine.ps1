@@ -126,15 +126,15 @@ if ($OpenAdminFirewall) {
             Get-NetFirewallRule -DisplayName "ExamTransfer TCP 5048" | Set-NetFirewallRule -Profile Private
             Get-NetFirewallRule -DisplayName "ExamTransfer TCP 5048" | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet
         }
-        if (-not (Get-NetFirewallRule -DisplayName "ExamTransfer UDP 5050" -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -DisplayName "ExamTransfer UDP 5050" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5050 -Profile Private -RemoteAddress LocalSubnet | Out-Null
+        if (-not (Get-NetFirewallRule -DisplayName "ExamTransfer UDP 40550" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName "ExamTransfer UDP 40550" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 40550 -Profile Private,Domain -RemoteAddress LocalSubnet | Out-Null
         } else {
-            Get-NetFirewallRule -DisplayName "ExamTransfer UDP 5050" | Set-NetFirewallRule -Profile Private
-            Get-NetFirewallRule -DisplayName "ExamTransfer UDP 5050" | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet
+            Get-NetFirewallRule -DisplayName "ExamTransfer UDP 40550" | Set-NetFirewallRule -Profile Private,Domain
+            Get-NetFirewallRule -DisplayName "ExamTransfer UDP 40550" | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet
         }
-        Add-Result "Firewall" "FOUND" "TCP 5048 and UDP 5050 are restricted to Private/LocalSubnet."
+        Add-Result "Firewall" "FOUND" "TCP 5048 and UDP 40550 are restricted to Private/Domain and LocalSubnet."
     } catch {
-        Add-Result "Firewall" "MANUAL" "Run an elevated PowerShell to add TCP 5048 and UDP 5050: $($_.Exception.Message)"
+        Add-Result "Firewall" "MANUAL" "Run an elevated PowerShell to add TCP 5048 and UDP 40550: $($_.Exception.Message)"
     }
 } else {
     Add-Result "Firewall" "MANUAL" "Use -OpenAdminFirewall from elevated PowerShell on the teacher/admin host."

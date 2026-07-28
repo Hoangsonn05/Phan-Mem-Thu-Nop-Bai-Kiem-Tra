@@ -45,6 +45,9 @@ public interface IStudentExamFlowCoordinator
         StudentExamEntryPoint entryPoint,
         bool startConfirmed,
         CancellationToken cancellationToken);
+    void NavigateResolved(
+        StudentExamEntryPoint entryPoint,
+        StudentExamFlowResolution resolution) { }
     void ReturnToCurrentExam();
 }
 
@@ -63,6 +66,11 @@ public sealed class StudentExamFlowCoordinator(
                 "S-04",
                 false,
                 "Quay về Kỳ thi hiện tại."));
+
+    public void NavigateResolved(
+        StudentExamEntryPoint entryPoint,
+        StudentExamFlowResolution resolution) =>
+        Publish(entryPoint, resolution);
 
     public async Task<StudentExamFlowResolution> ResolveAsync(
         StudentExamEntryPoint entryPoint,

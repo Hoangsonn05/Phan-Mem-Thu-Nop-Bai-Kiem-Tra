@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ExpectedHostIp,
-    [int]$DiscoveryPort = 5050,
+    [int]$DiscoveryPort = 40550,
     [int]$TimeoutSeconds = 5,
     [switch]$TestProtocolOnly,
     [switch]$RequireOpenSession
@@ -44,12 +44,21 @@ $client = [Net.Sockets.UdpClient]::new([Net.Sockets.AddressFamily]::InterNetwork
 try {
     $client.EnableBroadcast = $true
     $client.Client.ReceiveTimeout = $TimeoutSeconds * 1000
-    $request = [Text.Encoding]::UTF8.GetBytes('EXAMTRANSFER_DISCOVER_V1')
+    $requestId = [Guid]::NewGuid().ToString('N')
+    $requestBody = @{
+        protocol = 'ExamTransfer/2'
+        requestId = $requestId
+        roomCode = if ($mustHaveOpenSession) { 'DOCKERDISC' } else { $null }
+    } | ConvertTo-Json -Compress
+    $request = [Text.Encoding]::UTF8.GetBytes($requestBody)
     [void]$client.Send($request, $request.Length, [Net.IPEndPoint]::new([Net.IPAddress]::Broadcast, $DiscoveryPort))
 
     $remote = [Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
     $payload = $client.Receive([ref]$remote)
     $response = [Text.Encoding]::UTF8.GetString($payload) | ConvertFrom-Json
+    if ($response.protocol -ne 'ExamTransfer/2' -or $response.requestId -ne $requestId) {
+        throw 'Discovery response protocol or request nonce does not match the request.'
+    }
     Write-Host "PASS UDP discovery remote=$($remote.Address):$($remote.Port)" -ForegroundColor Green
     if ($response.address -ne $expected.ToString()) {
         $safeRawResponse = [Text.Encoding]::UTF8.GetString($payload)
@@ -58,6 +67,13 @@ try {
     Write-Host "PASS Advertised IP address=$($response.address) port=$($response.port)" -ForegroundColor Green
     if ($mustHaveOpenSession -and [int]$response.activeRoomCount -le 0) {
         throw 'Discovery returned a response without an open LanOnly room.'
+    }
+    if ($mustHaveOpenSession) {
+        $room = @($response.sessions | Where-Object { $_.roomCode -eq 'DOCKERDISC' })
+        if ($room.Count -ne 1) { throw 'Discovery did not return the exact DOCKERDISC session.' }
+        if ($room[0].baseAddress -ne "http://$($response.address):$($response.port)") {
+            throw 'Discovery session endpoint does not match the advertised server endpoint.'
+        }
     }
     if (-not $mustHaveOpenSession -and [int]$response.activeRoomCount -ne 0) {
         throw "Protocol-only fixture unexpectedly contains $($response.activeRoomCount) open room(s)."

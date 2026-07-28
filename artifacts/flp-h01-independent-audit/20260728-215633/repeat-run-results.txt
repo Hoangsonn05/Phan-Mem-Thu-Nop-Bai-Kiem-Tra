@@ -1,0 +1,77 @@
+TASK: ET-FLP-H01-INDEPENDENT-ROOT-CAUSE-AUDIT
+TEST: SixFindingsV133BackendTests.PublicCreate_WakesWorkerAndBecomesExplicitlyShareReady
+COMMAND SHAPE:
+dotnet test backend/tests/ExamTransfer.Infrastructure.Tests/ExamTransfer.Infrastructure.Tests.csproj --no-build --no-restore --filter FullyQualifiedName=ExamTransfer.Infrastructure.Tests.SixFindingsV133BackendTests.PublicCreate_WakesWorkerAndBecomesExplicitlyShareReady
+
+INITIAL REPRODUCTION
+====================
+
+Result: PASS
+Test duration reported by xUnit: 1 s
+Process duration: 11.7 s including build on first invocation
+Observation: exact transient value 1 happened to be sampled.
+
+TEN SEQUENTIAL MONITORED RUNS
+=============================
+
+Run | Result | Process duration | Final PushCalls | Outbox rows | Session rows | Final synced rows | ShareReady from persisted contract | Push history
+1 | PASS | 3.146 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+2 | FAIL | 5.955 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+3 | PASS | 2.992 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+4 | PASS | 2.938 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+5 | PASS | 2.974 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+6 | PASS | 3.043 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+7 | PASS | 3.072 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+8 | PASS | 2.957 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+9 | PASS | 2.984 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+10 | PASS | 2.988 s | 3 | 3 | 1 | 3 | true | audit SessionCreated; audit SessionStateChanged; exam_sessions
+
+Sequential summary
+- PASS: 9
+- FAIL: 1
+- Final PushCalls distribution: 3 in 10/10
+- Final ShareReady distribution: true in 10/10
+- Duplicate logical session projection: 0 in 10/10
+- RetryCount: 0 for every row in 10/10
+- Classification: timing-sensitive/flaky fixture assertion
+
+Failed run evidence
+- Console: Assert.True() Failure; Expected True; Actual False.
+- Stack: WaitUntilAsync at SixFindingsV133BackendTests.cs:199.
+- Caller: PublicCreate_WakesWorkerAndBecomesExplicitlyShareReady at line 77.
+- The failure occurred before the final readiness assertion.
+- Read-only DB monitoring still observed all 3 rows Synced and the one exam_sessions projection complete.
+
+TARGETED BACKEND CLASS
+======================
+
+Command:
+dotnet test backend/tests/ExamTransfer.Infrastructure.Tests/ExamTransfer.Infrastructure.Tests.csproj --no-build --no-restore --filter FullyQualifiedName~ExamTransfer.Infrastructure.Tests.SixFindingsV133BackendTests --logger console;verbosity=normal
+
+Result:
+- CloudSyncSignal_CoalescesBurstAndKeepsPeriodicTimeout: PASS
+- ProjectionFailureAndRetry_PreserveLocalWaitingAndSingleOutbox: PASS
+- PublicCreate_WakesWorkerAndBecomesExplicitlyShareReady: FAIL
+- Total: 2 PASS / 1 FAIL
+- Total time: 5.4258 s
+
+PARALLELIZATION EFFECT
+======================
+
+- Each 10-run reproduction invocation matched exactly one test case, so no other test case existed inside that invocation to run in parallel.
+- No repository xUnit parallelization configuration was changed because the task explicitly locks configuration files.
+- The failing targeted-class run executes methods from the same xUnit class; the failure is at the same line 77 transient counter gate.
+- Fixture isolation uses a unique GUID SQLite path, a new provider, a new worker, a new signal and a new fake for every invocation.
+- Conclusion: inter-test parallelism is not required to reproduce the failure and does not explain it. A separate config-mutating "parallel disabled" experiment was intentionally not performed.
+
+STABILITY CONCLUSION
+====================
+
+The business state is stable:
+- exactly one exam_sessions row,
+- exactly one successful attempt for that row,
+- RetryCount 0,
+- Synced/ShareReady in every monitored run.
+
+Only the observation of the short-lived aggregate value PushCalls == 1 is unstable.
+

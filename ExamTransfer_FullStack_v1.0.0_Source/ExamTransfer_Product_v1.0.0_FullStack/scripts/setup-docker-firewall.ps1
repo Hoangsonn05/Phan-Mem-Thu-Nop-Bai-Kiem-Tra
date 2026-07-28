@@ -15,7 +15,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 $rules = @(
     @{ Name = 'ExamTransfer Docker Backend TCP 5048'; Protocol = 'TCP'; Port = 5048 },
-    @{ Name = 'ExamTransfer Docker Discovery UDP 5050'; Protocol = 'UDP'; Port = 5050 }
+    @{ Name = 'ExamTransfer Docker Discovery UDP 40550'; Protocol = 'UDP'; Port = 40550 }
 )
 
 foreach ($rule in $rules) {

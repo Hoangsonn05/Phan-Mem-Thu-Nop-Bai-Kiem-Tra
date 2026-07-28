@@ -1,9 +1,7 @@
-using System.Runtime.ExceptionServices;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Threading;
 using ExamTransfer.Desktop.ViewModels;
@@ -22,9 +20,8 @@ public sealed class BulkArchiveCheckboxWpfTests
     [Fact]
     public void RealCheckboxWpfClick_ImmediatelyUpdatesExactRowsCountAndHeader()
     {
-        RunOnSta(() =>
+        WpfTestHost.Run(() =>
         {
-            var application = EnsureApplicationResources();
             var first = MakeExam("First");
             var second = MakeExam("Second");
             var third = MakeExam("Third");
@@ -100,7 +97,6 @@ public sealed class BulkArchiveCheckboxWpfTests
             finally
             {
                 window.Close();
-                application.Shutdown();
             }
         });
     }
@@ -127,29 +123,6 @@ public sealed class BulkArchiveCheckboxWpfTests
             DispatcherPriority.DataBind);
     }
 
-    private static Application EnsureApplicationResources()
-    {
-        var application = Application.Current ?? new Application
-        {
-            ShutdownMode = ShutdownMode.OnExplicitShutdown
-        };
-        application.Resources["BooleanToVisibilityConverter"] =
-            new BooleanToVisibilityConverter();
-        application.Resources.MergedDictionaries.Add(new ResourceDictionary
-        {
-            Source = new Uri(
-                "pack://application:,,,/ExamTransfer.Desktop;component/Themes/Palette.Light.xaml",
-                UriKind.Absolute)
-        });
-        application.Resources.MergedDictionaries.Add(new ResourceDictionary
-        {
-            Source = new Uri(
-                "pack://application:,,,/ExamTransfer.Desktop;component/Themes/Theme.xaml",
-                UriKind.Absolute)
-        });
-        return application;
-    }
-
     private static IEnumerable<T> FindDescendants<T>(DependencyObject root)
         where T : DependencyObject
     {
@@ -161,27 +134,6 @@ public sealed class BulkArchiveCheckboxWpfTests
             foreach (var descendant in FindDescendants<T>(child))
                 yield return descendant;
         }
-    }
-
-    private static void RunOnSta(Action action)
-    {
-        Exception? failure = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                action();
-            }
-            catch (Exception ex)
-            {
-                failure = ex;
-            }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(15)), "WPF STA test timed out.");
-        if (failure is not null)
-            ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     private static ExamSummaryDto MakeExam(string title) => new(

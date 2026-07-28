@@ -8,23 +8,34 @@ public sealed class StudentRealtimeService : IStudentRealtimeService
     private readonly IBackendClient api;
     private readonly StudentSessionState session;
     private readonly SupabaseRealtimeService publicRealtime;
+    private readonly SupabasePublicCloudClient publicCloud;
     private readonly SemaphoreSlim gate = new(1, 1);
     private RealtimeService? realtime;
+    private Guid? activeSessionId;
+    private Guid? activeParticipantId;
+    private ExamTransfer.Shared.Contracts.SessionAccessMode? activeMode;
 
     public bool IsConnected => session.AccessMode == ExamTransfer.Shared.Contracts.SessionAccessMode.PublicCloud
         ? publicRealtime.IsConnected
         : realtime?.IsConnected == true;
+    public bool IsRunning => activeSessionId.HasValue
+        && (activeMode == ExamTransfer.Shared.Contracts.SessionAccessMode.PublicCloud
+            ? publicRealtime.IsRunning
+            : realtime is not null);
+    public Guid? ActiveSessionId => activeSessionId;
     public event EventHandler<string>? EventReceived;
     public event EventHandler<StudentRealtimeNotification>? NotificationReceived;
 
     public StudentRealtimeService(
         IBackendClient api,
         StudentSessionState session,
-        SupabaseRealtimeService publicRealtime)
+        SupabaseRealtimeService publicRealtime,
+        SupabasePublicCloudClient publicCloud)
     {
         this.api = api;
         this.session = session;
         this.publicRealtime = publicRealtime;
+        this.publicCloud = publicCloud;
         publicRealtime.EventReceived += Forward;
         publicRealtime.NotificationReceived += ForwardNotification;
     }
@@ -34,10 +45,40 @@ public sealed class StudentRealtimeService : IStudentRealtimeService
         await gate.WaitAsync(ct);
         try
         {
-            await StopCoreAsync(ct);
-            if (!session.HasSession || string.IsNullOrWhiteSpace(session.AccessToken)) return;
-            if (session.AccessMode == ExamTransfer.Shared.Contracts.SessionAccessMode.PublicCloud)
+            var nextSessionId = session.SessionId;
+            var nextParticipantId = session.ParticipantId;
+            var nextMode = session.AccessMode;
+            if (nextSessionId.HasValue
+                && nextParticipantId.HasValue
+                && activeSessionId == nextSessionId
+                && activeParticipantId == nextParticipantId
+                && activeMode == nextMode
+                && IsRunning)
                 return;
+
+            await StopCoreAsync(ct);
+            if (!nextSessionId.HasValue || !nextParticipantId.HasValue)
+                return;
+            activeSessionId = nextSessionId;
+            activeParticipantId = nextParticipantId;
+            activeMode = nextMode;
+            if (nextMode == ExamTransfer.Shared.Contracts.SessionAccessMode.PublicCloud)
+            {
+                await publicRealtime.StartAsync(
+                    nextSessionId.Value,
+                    Environment.MachineName + "-" + Environment.UserName,
+                    publicCloud,
+                    async token => _ = await publicCloud.GetStudentTimelineAsync(
+                        nextSessionId.Value,
+                        token),
+                    ct);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(session.AccessToken))
+            {
+                ClearIdentity();
+                return;
+            }
             realtime = new RealtimeService(api.BaseAddress.ToString());
             realtime.EventReceived += Forward;
             realtime.NotificationReceived += ForwardNotification;
@@ -51,8 +92,6 @@ public sealed class StudentRealtimeService : IStudentRealtimeService
         await gate.WaitAsync(ct);
         try
         {
-            if (session.AccessMode == ExamTransfer.Shared.Contracts.SessionAccessMode.PublicCloud)
-                publicRealtime.Stop();
             await StopCoreAsync(ct);
         }
         finally { gate.Release(); }
@@ -60,12 +99,23 @@ public sealed class StudentRealtimeService : IStudentRealtimeService
 
     private async Task StopCoreAsync(CancellationToken ct)
     {
-        if (realtime is null) return;
-        realtime.EventReceived -= Forward;
-        realtime.NotificationReceived -= ForwardNotification;
-        await realtime.DisconnectAsync(ct);
-        await realtime.DisposeAsync();
-        realtime = null;
+        publicRealtime.Stop();
+        if (realtime is not null)
+        {
+            realtime.EventReceived -= Forward;
+            realtime.NotificationReceived -= ForwardNotification;
+            await realtime.DisconnectAsync(ct);
+            await realtime.DisposeAsync();
+            realtime = null;
+        }
+        ClearIdentity();
+    }
+
+    private void ClearIdentity()
+    {
+        activeSessionId = null;
+        activeParticipantId = null;
+        activeMode = null;
     }
 
     private void Forward(object? sender, string eventName) => EventReceived?.Invoke(this, eventName);
@@ -76,7 +126,7 @@ public sealed class StudentRealtimeService : IStudentRealtimeService
     {
         publicRealtime.EventReceived -= Forward;
         publicRealtime.NotificationReceived -= ForwardNotification;
-        StopAsync().SafeFireAndForget("StudentRealtime.Dispose");
+        StopAsync().GetAwaiter().GetResult();
         gate.Dispose();
     }
 }

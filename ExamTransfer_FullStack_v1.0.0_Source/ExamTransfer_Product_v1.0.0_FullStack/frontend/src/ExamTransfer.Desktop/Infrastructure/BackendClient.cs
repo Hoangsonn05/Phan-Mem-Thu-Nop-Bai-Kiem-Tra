@@ -2,6 +2,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.Net;
 using System.Text.Json.Serialization;
 using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
@@ -22,13 +23,11 @@ public sealed class BackendClient : IBackendClient
     private string? participantToken;
     private Uri? participantTokenOrigin;
 
-    public BackendClient(string baseUrl)
+    public BackendClient(string baseUrl, HttpMessageHandler? handler = null)
     {
-        baseAddress = NormalizeBaseAddress(baseUrl, null);
-        http = new HttpClient
-        {
-            Timeout = TimeSpan.FromMinutes(10)
-        };
+        baseAddress = NormalizeBaseAddress(baseUrl, null, allowLoopback: true);
+        http = handler is null ? new HttpClient() : new HttpClient(handler);
+        http.Timeout = TimeSpan.FromMinutes(10);
     }
 
     public Uri BaseAddress
@@ -49,11 +48,13 @@ public sealed class BackendClient : IBackendClient
     {
         try
         {
-            var next = NormalizeBaseAddress(hostOrUrl, port);
+            var next = NormalizeBaseAddress(hostOrUrl, port, allowLoopback: false);
             lock (endpointGate)
             {
                 if (!SameOrigin(baseAddress, next))
                 {
+                    accountToken = null;
+                    accountTokenOrigin = null;
                     participantToken = null;
                     participantTokenOrigin = null;
                 }
@@ -262,7 +263,7 @@ public sealed class BackendClient : IBackendClient
         return request;
     }
 
-    private static Uri NormalizeBaseAddress(string hostOrUrl, int? port)
+    private static Uri NormalizeBaseAddress(string hostOrUrl, int? port, bool allowLoopback)
     {
         var value = hostOrUrl?.Trim();
         if (string.IsNullOrWhiteSpace(value))
@@ -282,6 +283,12 @@ public sealed class BackendClient : IBackendClient
         var effectivePort = port ?? (parsed.IsDefaultPort ? (parsed.Scheme == Uri.UriSchemeHttps ? 443 : 80) : parsed.Port);
         if (effectivePort is <= 0 or > 65535)
             throw new ArgumentException("Cổng máy chủ phải nằm trong khoảng 1-65535.");
+        if (!allowLoopback)
+        {
+            if (!IPAddress.TryParse(parsed.Host, out var address)
+                || !DiscoveryProtocol.IsUsableEndpointAddress(address))
+                throw new ArgumentException("Endpoint LAN phải là địa chỉ IPv4 hợp lệ, không được là localhost, loopback, unspecified hoặc link-local.");
+        }
 
         return new UriBuilder(parsed.Scheme, parsed.Host, effectivePort).Uri;
     }

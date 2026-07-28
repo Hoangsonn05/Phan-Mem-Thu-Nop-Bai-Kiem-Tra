@@ -254,21 +254,34 @@
                                     <TextBox Text="{Binding SelectedRoom.CapacityText}" IsReadOnly="True" Margin="0,6,0,0"/>
                                 </StackPanel>
                             </Grid>
-                            <TextBlock Text="Mã phòng" Style="{StaticResource LabelText}" Margin="0,12,0,0"/>
-                            <TextBox Text="{Binding RoomCode}" IsReadOnly="True"
-                                     Margin="0,6,0,0" FontFamily="Consolas"/>
+                        </StackPanel>
+
+                        <StackPanel x:Name="RoomCodeInputPanel" Margin="0,16,0,0">
+                            <TextBlock Text="Mã phòng" Style="{StaticResource LabelText}"/>
+                            <TextBox x:Name="RoomCodeInput"
+                                     AutomationProperties.Name="Mã phòng"
+                                     Text="{Binding RoomCode,
+                                                   Mode=TwoWay,
+                                                   UpdateSourceTrigger=PropertyChanged}"
+                                     Margin="0,6,0,0"
+                                     FontFamily="Consolas"
+                                     CharacterCasing="Upper"/>
+                            <TextBlock x:Name="RoomCodeValidation"
+                                       AutomationProperties.Name="Lỗi mã phòng"
+                                       Text="{Binding ValidationMessage}"
+                                       Style="{StaticResource CaptionText}"
+                                       Margin="0,6,0,0"
+                                       TextWrapping="Wrap"/>
                         </StackPanel>
 
                         <StackPanel Margin="0,16,0,0"
                                     Visibility="{Binding IsPublicCloudMode, Converter={StaticResource BooleanToVisibilityConverter}}">
-                            <TextBlock Text="Mã phòng" Style="{StaticResource LabelText}"/>
-                            <TextBox Text="{Binding RoomCode, UpdateSourceTrigger=PropertyChanged}"
-                                     Margin="0,6,0,0" CharacterCasing="Upper"/>
                             <TextBlock Text="PublicCloud OpenRequest không yêu cầu mã lớp hoặc ghi danh lớp."
-                                       Style="{StaticResource CaptionText}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                                       Style="{StaticResource CaptionText}" TextWrapping="Wrap"/>
                         </StackPanel>
 
-                        <Button Command="{Binding JoinCommand}" Style="{StaticResource PrimaryButton}"
+                        <Button x:Name="JoinButton"
+                                Command="{Binding JoinCommand}" Style="{StaticResource PrimaryButton}"
                                 Margin="0,24,0,0" Height="46" FontSize="16"
                                 AutomationProperties.Name="Yêu cầu tham gia kỳ thi">
                             <StackPanel Orientation="Horizontal">
@@ -277,34 +290,11 @@
                             </StackPanel>
                         </Button>
 
-                        <Expander Header="Kết nối thủ công (nâng cao)" Margin="0,18,0,0"
-                                  Visibility="{Binding IsLanMode, Converter={StaticResource BooleanToVisibilityConverter}}">
-                            <StackPanel Margin="0,10,0,0">
-                                <TextBlock Text="Chỉ dùng khi kỳ thi không xuất hiện trong danh sách LAN."
-                                           Style="{StaticResource CaptionText}" TextWrapping="Wrap"/>
-                                <TextBlock Text="Địa chỉ IP" Style="{StaticResource LabelText}" Margin="0,10,0,0"/>
-                                <TextBox Text="{Binding Ip, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,0"/>
-                                <Grid Margin="0,10,0,0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition/>
-                                        <ColumnDefinition Width="14"/>
-                                        <ColumnDefinition/>
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock Text="Cổng" Style="{StaticResource LabelText}"/>
-                                        <TextBox Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,0"/>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock Text="Mã phòng" Style="{StaticResource LabelText}"/>
-                                        <TextBox Text="{Binding RoomCode, UpdateSourceTrigger=PropertyChanged}"
-                                                 Margin="0,6,0,0" CharacterCasing="Upper"/>
-                                    </StackPanel>
-                                </Grid>
-                                <TextBlock Text="Máy chủ chẩn đoán" Style="{StaticResource LabelText}" Margin="0,12,0,6"/>
-                                <ComboBox ItemsSource="{Binding Servers}" SelectedItem="{Binding SelectedServer}"
-                                          DisplayMemberPath="Address"/>
-                            </StackPanel>
-                        </Expander>
+                        <TextBlock Text="Chế độ LAN tự tìm máy giáo viên từ mã phòng; học sinh không cần nhập IP hoặc cổng."
+                                   Visibility="{Binding IsLanMode, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                   Style="{StaticResource CaptionText}"
+                                   Margin="0,14,0,0"
+                                   TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
             </Grid>

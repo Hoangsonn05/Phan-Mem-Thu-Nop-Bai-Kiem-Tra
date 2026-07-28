@@ -35,60 +35,34 @@ public sealed class UdpDiscoveryService(
         while (!stoppingToken.IsCancellationRequested)
         {
             UdpClient? udp = null;
-            var listeningPort = discoveryPort;
             try
             {
-                SocketException? lastBindError = null;
-                foreach (var candidatePort in DiscoveryProtocol.CandidatePorts(discoveryPort))
-                {
-                    try
-                    {
-                        udp = new UdpClient(new IPEndPoint(IPAddress.Any, candidatePort));
-                        listeningPort = candidatePort;
-                        break;
-                    }
-                    catch (SocketException ex)
-                    {
-                        lastBindError = ex;
-                        udp?.Dispose();
-                        udp = null;
-                    }
-                }
-
-                if (udp is null)
-                    throw lastBindError ?? new SocketException((int)SocketError.AddressAlreadyInUse);
+                udp = new UdpClient(new IPEndPoint(IPAddress.Any, discoveryPort));
 
                 state.Listening = true;
-                state.ListeningPort = listeningPort;
+                state.ListeningPort = discoveryPort;
                 state.LastErrorCode = null;
                 bindFailureLogged = false;
-                if (listeningPort == discoveryPort)
-                {
-                    logger.LogInformation("UDP discovery listening on 0.0.0.0:{Port}", listeningPort);
-                }
-                else
-                {
-                    logger.LogWarning(
-                        "UDP discovery port {PreferredPort} is unavailable; listening on fallback port {Port}.",
-                        discoveryPort,
-                        listeningPort);
-                }
+                logger.LogInformation("UDP discovery listening on 0.0.0.0:{Port}", discoveryPort);
 
                 while (!stoppingToken.IsCancellationRequested)
                 {
                     try
                     {
                         var received = await udp.ReceiveAsync(stoppingToken);
-                        var text = Encoding.UTF8.GetString(received.Buffer).Trim();
-                        if (!text.Equals(options.Value.Discovery.RequestMagic, StringComparison.Ordinal)) continue;
+                        if (!DiscoveryProtocol.TryParseRequest(received.Buffer, out var request)
+                            || request is null)
+                        {
+                            logger.LogDebug(
+                                "Discarded malformed or incompatible UDP discovery request from {RemoteEndpoint}.",
+                                received.RemoteEndPoint);
+                            continue;
+                        }
                         using var scope = scopeFactory.CreateScope();
                         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                        var rooms = await db.ExamSessionsSet.CountAsync(
-                            x => x.AccessMode == SessionAccessMode.LanOnly
-                                && x.Status == SessionStatus.Waiting
-                                && x.AcceptingParticipants,
-                            stoppingToken);
-                        var endpoint = LanNetworkConfiguration.ResolveAdvertisedEndpoint(options.Value);
+                        var endpoint = LanNetworkConfiguration.ResolveAdvertisedEndpoint(
+                            options.Value,
+                            received.RemoteEndPoint.Address);
                         if (!endpoint.Ready)
                         {
                             state.LastErrorCode = endpoint.Code;
@@ -98,17 +72,38 @@ public sealed class UdpDiscoveryService(
                                 endpoint.Detail);
                             continue;
                         }
+                        var serverId = MachineFingerprint();
+                        var sessions = await OpenSessionDiscoveryBuilder.BuildAsync(
+                            db,
+                            options.Value,
+                            endpoint.Address!,
+                            serverId,
+                            request.RoomCode,
+                            stoppingToken);
                         var response = JsonSerializer.SerializeToUtf8Bytes(new DiscoveryServerDto(
                             DiscoveryProtocol.ProtocolVersion,
                             Environment.MachineName,
                             endpoint.Address!,
                             options.Value.Server.Port,
                             MachineFingerprint(),
-                            rooms,
-                            typeof(UdpDiscoveryService).Assembly.GetName().Version?.ToString() ?? "1.0.0",
+                            sessions.Count,
+                            ReleaseIdentity.SemanticVersion,
                             DateTimeOffset.UtcNow,
-                            MachineFingerprint()));
+                            serverId,
+                            request.RequestId,
+                            sessions,
+                            ReleaseIdentity.BuildId,
+                            discoveryPort,
+                            ReleaseIdentity.SemanticVersion));
                         await udp.SendAsync(response, received.RemoteEndPoint, stoppingToken);
+                        logger.LogInformation(
+                            "UDP discovery response sent. RequestId={RequestId}; Remote={Remote}; AdvertisedEndpoint=http://{Address}:{Port}; RoomFilter={RoomFilter}; SessionCount={SessionCount}",
+                            request.RequestId,
+                            received.RemoteEndPoint,
+                            endpoint.Address,
+                            options.Value.Server.Port,
+                            MaskRoomCode(request.RoomCode),
+                            sessions.Count);
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
                     catch (Exception ex)
@@ -122,12 +117,12 @@ public sealed class UdpDiscoveryService(
             {
                 state.Listening = false;
                 state.ListeningPort = null;
-                state.LastErrorCode = "UDP_DISCOVERY_BIND_FAILED";
+                state.LastErrorCode = "UDP_DISCOVERY_PORT_CONFLICT";
                 if (!bindFailureLogged)
                 {
                     logger.LogWarning(
                         ex,
-                        "UDP discovery could not bind any port in the fallback range beginning at {Port}; retrying while REST remains available.",
+                        "UDP discovery could not bind fixed port {Port}. ExamTransfer will not fall back to another port; close the owning process and restart Local Server. REST remains available for actionable health diagnostics.",
                         discoveryPort);
                     bindFailureLogged = true;
                 }
@@ -155,5 +150,13 @@ public sealed class UdpDiscoveryService(
     {
         var bytes = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Environment.MachineName + "|ExamTransfer|discovery"));
         return Convert.ToHexString(bytes)[..16].ToLowerInvariant();
+    }
+
+    private static string MaskRoomCode(string? roomCode)
+    {
+        if (string.IsNullOrWhiteSpace(roomCode)) return "<none>";
+        return roomCode.Length <= 2
+            ? new string('*', roomCode.Length)
+            : $"{roomCode[0]}{new string('*', roomCode.Length - 2)}{roomCode[^1]}";
     }
 }

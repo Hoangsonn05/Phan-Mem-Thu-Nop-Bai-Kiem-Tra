@@ -912,13 +912,25 @@ public sealed class SessionManagementViewModel : ProductPageBase
     private bool autoApprove;
     private SessionAccessMode accessMode = SessionAccessMode.LanOnly;
     private bool allVisibleChecked;
+    private readonly Func<TimeSpan, CancellationToken, Task> projectionDelay;
+    private readonly int projectionPollAttempts;
+    private Guid? projectionSessionId;
+    private string projectionStatus = "Phiên LAN không cần PublicCloud projection.";
+    private string projectionTone = "info";
+    private bool canShareRoomCode = true;
+    private bool canRetryProjection;
+    private string createResult = "Kỳ thi đã mở và đang chờ học sinh";
 
     public SessionManagementViewModel(
         IBackendClient api,
-        IDialogService? archiveDialogs = null)
+        IDialogService? archiveDialogs = null,
+        Func<TimeSpan, CancellationToken, Task>? projectionDelay = null,
+        int projectionPollAttempts = 24)
     {
         this.api = api;
         this.archiveDialogs = archiveDialogs ?? AppServices.Dialogs;
+        this.projectionDelay = projectionDelay ?? Task.Delay;
+        this.projectionPollAttempts = Math.Max(1, projectionPollAttempts);
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         CreateCommand = new AsyncRelayCommand(CreateAsync, () => !IsBusy && SelectedExam is not null);
         BulkArchiveCommand = new AsyncRelayCommand(
@@ -939,6 +951,9 @@ public sealed class SessionManagementViewModel : ProductPageBase
         EndCommand = new AsyncRelayCommand(EndAsync, () => !IsBusy && (SelectedSession?.Status is SessionStatus.InProgress or SessionStatus.Paused or SessionStatus.Collecting));
         CancelCommand = new AsyncRelayCommand(CancelAsync, () => !IsBusy && SelectedSession?.Status == SessionStatus.Draft);
         SaveSettingsCommand = new AsyncRelayCommand(SaveSettingsAsync, () => !IsBusy && SelectedSession?.Status is SessionStatus.Draft or SessionStatus.Waiting);
+        RetryProjectionCommand = new AsyncRelayCommand(
+            RetryProjectionAsync,
+            () => !IsBusy && projectionSessionId.HasValue && CanRetryProjection);
     }
 
     public ObservableCollection<ExamSummaryDto> Exams { get; } = new();
@@ -962,7 +977,28 @@ public sealed class SessionManagementViewModel : ProductPageBase
     public string Capacity { get => capacity; set => Set(ref capacity, value); }
     public bool AutoApprove { get => autoApprove; set => Set(ref autoApprove, value); }
     public IReadOnlyList<SessionAccessMode> AccessModes { get; } = Enum.GetValues<SessionAccessMode>();
-    public SessionAccessMode AccessMode { get => accessMode; set => Set(ref accessMode, value); }
+    public SessionAccessMode AccessMode
+    {
+        get => accessMode;
+        set
+        {
+            if (!Set(ref accessMode, value))
+                return;
+            if (value == SessionAccessMode.LanOnly)
+                ApplyProjection(new(
+                    Guid.Empty,
+                    false,
+                    true,
+                    SyncStatus.LocalOnly,
+                    "LAN_ONLY",
+                    "Phiên LAN không cần PublicCloud projection.",
+                    0));
+        }
+    }
+    public string ProjectionStatus => projectionStatus;
+    public string ProjectionTone => projectionTone;
+    public bool CanShareRoomCode => canShareRoomCode;
+    public bool CanRetryProjection => canRetryProjection;
     public int SelectedArchiveCount => Sessions.Count(row => row.IsChecked);
     public bool AllVisibleChecked => allVisibleChecked;
     public ICommand RefreshCommand { get; }
@@ -979,6 +1015,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
     public ICommand EndCommand { get; }
     public ICommand CancelCommand { get; }
     public ICommand SaveSettingsCommand { get; }
+    public ICommand RetryProjectionCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
@@ -1002,7 +1039,10 @@ public sealed class SessionManagementViewModel : ProductPageBase
             : Sessions.FirstOrDefault();
     }
 
-    private Task CreateAsync() => RunAsync("Đang tạo và mở kỳ thi", "Kỳ thi đã mở và đang chờ học sinh", async ct =>
+    private Task CreateAsync() => RunAsync(
+        "Đang tạo và mở kỳ thi",
+        () => createResult,
+        async ct =>
     {
         if (SelectedExam is null) return;
         if (!int.TryParse(Capacity, out var cap) || cap <= 0) throw new InvalidOperationException("Sức chứa phải lớn hơn 0.");
@@ -1021,7 +1061,86 @@ public sealed class SessionManagementViewModel : ProductPageBase
             ct));
         RoomCode = detail.Summary.RoomCode;
         await RefreshSessionsCoreAsync(SelectedExam.Id, detail.Summary.Id, ct);
+        projectionSessionId = detail.Summary.Id;
+        if (detail.Summary.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            createResult = "Phòng đã được lưu cục bộ; đang kiểm tra PublicCloud.";
+            await AwaitProjectionAsync(detail.Summary.Id, ct);
+            createResult = ProjectionStatus;
+        }
+        else
+        {
+            ApplyProjection(new(
+                detail.Summary.Id,
+                false,
+                true,
+                SyncStatus.LocalOnly,
+                "LAN_ONLY",
+                "Phiên LAN đã sẵn sàng trong mạng cục bộ.",
+                0));
+            createResult = "Kỳ thi LAN đã mở và đang chờ học sinh";
+        }
     });
+
+    private async Task RetryProjectionAsync()
+    {
+        if (!projectionSessionId.HasValue)
+            return;
+        await RunAsync(
+            "Đang yêu cầu đồng bộ lại PublicCloud",
+            () => ProjectionStatus,
+            async ct =>
+            {
+                var state = ApiGuard.Require(await api.PostAsync<object, CloudProjectionReadinessView>(
+                    $"api/v1/sessions/{projectionSessionId}/cloud-projection/retry",
+                    new { },
+                    ct));
+                ApplyProjection(state);
+                await AwaitProjectionAsync(projectionSessionId.Value, ct);
+            });
+    }
+
+    private async Task AwaitProjectionAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < projectionPollAttempts; attempt++)
+        {
+            var readiness = ApiGuard.Require(await api.GetAsync<CloudProjectionReadinessView>(
+                $"api/v1/sessions/{sessionId}/cloud-projection",
+                cancellationToken));
+            ApplyProjection(readiness);
+            if (readiness.Ready || readiness.Status is SyncStatus.Failed or SyncStatus.Conflict)
+                return;
+            if (attempt + 1 < projectionPollAttempts)
+                await projectionDelay(TimeSpan.FromMilliseconds(500), cancellationToken);
+        }
+        ApplyProjection(new(
+            sessionId,
+            true,
+            false,
+            SyncStatus.Pending,
+            "PUBLICCLOUD_PROJECTION_TIMEOUT",
+            "Đang đồng bộ PublicCloud; chưa được xác nhận sẵn sàng để chia sẻ mã phòng.",
+            0));
+    }
+
+    private void ApplyProjection(CloudProjectionReadinessView readiness)
+    {
+        projectionStatus = readiness.Message;
+        projectionTone = readiness.Ready
+            ? "success"
+            : readiness.Status is SyncStatus.Failed or SyncStatus.Conflict
+                ? "danger"
+                : "warning";
+        canShareRoomCode = !readiness.Required || readiness.Ready;
+        canRetryProjection = readiness.Required && !readiness.Ready
+            && (readiness.Status is SyncStatus.Failed or SyncStatus.Conflict
+                || readiness.Code == "PUBLICCLOUD_PROJECTION_TIMEOUT");
+        Raise(nameof(ProjectionStatus));
+        Raise(nameof(ProjectionTone));
+        Raise(nameof(CanShareRoomCode));
+        Raise(nameof(CanRetryProjection));
+        RaiseCommands();
+    }
 
     private Task TransitionAsync(string action, string success) => RunAsync("Đang cập nhật trạng thái phòng", success, async ct =>
     {
@@ -1160,11 +1279,20 @@ public sealed class SessionManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, BulkArchiveCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, BulkArchiveCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand, RetryProjectionCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
         (ToggleArchiveSelectionCommand as RelayCommand<SelectableSessionRow>)?.RaiseCanExecuteChanged();
         (ToggleAllVisibleArchiveSelectionCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 }
+
+public sealed record CloudProjectionReadinessView(
+    Guid SessionId,
+    bool Required,
+    bool Ready,
+    SyncStatus Status,
+    string Code,
+    string Message,
+    int RetryCount);
 
 public sealed class LobbyViewModel : ProductPageBase
 {
@@ -1866,7 +1994,7 @@ internal sealed class DeploymentSettingsConsoleViewModel : ProductPageBase
     private string serverPort = "5048";
     private bool useHttps;
     private bool discoveryEnabled = true;
-    private string discoveryPort = "5050";
+    private string discoveryPort = DiscoveryProtocol.DefaultPort.ToString();
     private string storageRoot = @"C:\ProgramData\ExamTransfer";
     private string chunkSize = "4194304";
     private string maxUploads = "8";
@@ -2070,7 +2198,7 @@ internal sealed class DeploymentSettingsConsoleViewModel : ProductPageBase
                 ServerPort = settings.ServerPort.ToString();
                 UseHttps = settings.UseHttps;
                 DiscoveryEnabled = settings.DiscoveryEnabled;
-                DiscoveryPort = settings.DiscoveryPort.ToString();
+                DiscoveryPort = DiscoveryProtocol.DefaultPort.ToString();
                 StorageRoot = settings.StorageRootPath;
                 ChunkSize = settings.ChunkSizeBytes.ToString();
                 MaxUploads = settings.MaxConcurrentUploads.ToString();
@@ -2105,7 +2233,6 @@ internal sealed class DeploymentSettingsConsoleViewModel : ProductPageBase
         CancellationToken ct)
     {
         if (!int.TryParse(ServerPort, out var server)
-            || !int.TryParse(DiscoveryPort, out var discovery)
             || !int.TryParse(ChunkSize, out var chunk)
             || !int.TryParse(MaxUploads, out var uploads))
         {
@@ -2117,7 +2244,7 @@ internal sealed class DeploymentSettingsConsoleViewModel : ProductPageBase
             ServerPort: server,
             UseHttps: UseHttps,
             DiscoveryEnabled: DiscoveryEnabled,
-            DiscoveryPort: discovery,
+            DiscoveryPort: DiscoveryProtocol.DefaultPort,
             StorageRootPath: StorageRoot,
             MinFreeBytes: 5L * 1024 * 1024 * 1024,
             ChunkSizeBytes: chunk,
@@ -2284,18 +2411,44 @@ public sealed class StudentWaitingViewModel : ProductPageBase
     private readonly IBackendClient api;
     private readonly StudentSessionState state;
     private readonly AppAuthSessionState authState;
+    private readonly IStudentRealtimeService realtime;
+    private readonly IStudentExamFlowCoordinator flow;
+    private readonly Func<TimeSpan, CancellationToken, Task> delay;
+    private readonly TimeSpan pollInterval;
+    private readonly int maximumPollCycles;
+    private readonly SemaphoreSlim resolveGate = new(1, 1);
+    private readonly object eventSync = new();
+    private readonly CancellationTokenSource lifecycle = new();
+    private CancellationTokenSource? eventDebounce;
+    private Task? pollingTask;
+    private bool subscribed;
+    private bool active;
+    private long lastResolvedRevision = -1;
+    private string? lastNavigationRoute;
     private ParticipantDto? participant;
     private SessionDetailDto? session;
 
     public StudentWaitingViewModel(
         IBackendClient api,
         StudentSessionState state,
-        AppAuthSessionState authState)
+        AppAuthSessionState authState,
+        IStudentRealtimeService? realtime = null,
+        IStudentExamFlowCoordinator? flow = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        TimeSpan? pollInterval = null,
+        int maximumPollCycles = 120)
     {
         this.api = api;
         this.state = state;
         this.authState = authState;
-        RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy && state.HasSession);
+        this.realtime = realtime ?? AppServices.StudentRealtime;
+        this.flow = flow ?? AppServices.StudentExamFlow;
+        this.delay = delay ?? Task.Delay;
+        this.pollInterval = pollInterval ?? TimeSpan.FromSeconds(2.5);
+        this.maximumPollCycles = Math.Max(1, maximumPollCycles);
+        RefreshCommand = new AsyncRelayCommand(
+            () => RefreshAndResolveAsync("manual", DisposeToken),
+            () => !IsBusy && state.HasSession);
         LeaveCommand = new RelayCommand(Leave);
     }
 
@@ -2393,52 +2546,109 @@ public sealed class StudentWaitingViewModel : ProductPageBase
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
+        active = true;
+        SubscribeRealtime();
         if (!state.HasSession)
         {
             Status = "Chưa có phiên tham gia. Hãy kết nối phòng trước.";
             StatusTone = "warning";
             return;
         }
-        await RunAsync("Đang kiểm tra trạng thái duyệt", "Trạng thái phòng chờ đã được cập nhật", async token =>
+        await RefreshAndResolveAsync("initial", ct);
+    }
+
+    private async Task<StudentExamFlowResolution?> RefreshAndResolveAsync(
+        string source,
+        CancellationToken cancellationToken)
+    {
+        if (!active || IsDisposed || !state.HasSession)
+            return null;
+        await resolveGate.WaitAsync(cancellationToken);
+        try
         {
-            if (state.AccessMode == SessionAccessMode.PublicCloud)
+            if (!active || IsDisposed || !state.HasSession)
+                return null;
+            IsBusy = true;
+            Status = source switch
             {
-                var timeline = await AppServices.PublicCloud.GetStudentTimelineAsync(state.SessionId!.Value, token);
-                state.ExamId = timeline.ExamId;
-                state.ExamTitle = timeline.ExamTitle ?? state.ExamTitle;
-                state.Subject = timeline.Subject ?? state.Subject;
-                state.DurationMinutes = timeline.DurationMinutes;
-                state.AdmissionMode = Enum.TryParse<SessionAdmissionMode>(timeline.AdmissionMode, true, out var admission)
-                    ? admission
-                    : state.AdmissionMode;
-                state.SessionStatus = Enum.TryParse<SessionStatus>(timeline.SessionStatus, true, out var sessionStatus)
-                    ? sessionStatus
-                    : state.SessionStatus;
-                var publicStatus = Enum.TryParse<ParticipantStatus>(timeline.ParticipantStatus, true, out var participantStatus)
-                    ? participantStatus
-                    : ParticipantStatus.PendingApproval;
-                var participantId = state.ParticipantId
-                    ?? throw new InvalidOperationException("PublicCloud participant state is missing.");
-                Participant = new ParticipantDto(participantId, state.SessionId!.Value,
-                    state.StudentCode, state.DisplayName, Environment.MachineName + "-" + Environment.UserName,
-                    Environment.MachineName, null, "1.0.0", publicStatus, DateTimeOffset.UtcNow,
-                    DownloadStatus.NotStarted, SubmissionStatus.NotStarted, 0, null, ConnectionState.Online);
-                Raise(nameof(RoomCodeHint));
-                Raise(nameof(SessionTitleDisplay));
-                return;
+                "poll" => "Đang kiểm tra dự phòng vì realtime có thể bị gián đoạn",
+                "realtime" => "Đã nhận cập nhật realtime; đang xác minh trạng thái",
+                _ => "Đang kiểm tra trạng thái duyệt"
+            };
+            StatusTone = source == "poll" ? "warning" : "primary";
+            var resolution = await flow.ResolveAsync(
+                StudentExamEntryPoint.CurrentExam,
+                false,
+                cancellationToken);
+            if (!active || IsDisposed)
+            {
+                if (resolution.State is
+                    StudentExamFlowState.RejectedOrExpired or
+                    StudentExamFlowState.SessionFinished)
+                    await realtime.StopAsync(CancellationToken.None);
+                return resolution;
             }
-            api.SetParticipantToken(state.AccessToken);
-            Session = ApiGuard.Require(await api.GetSessionAsync(state.SessionId!.Value, token));
-            Participant = ApiGuard.Require(await api.GetAsync<ParticipantDto>($"api/v1/sessions/{state.SessionId}/participants/{state.ParticipantId}", token));
-            state.ExamId = Session.Summary.ExamId;
-        });
+
+            SyncDisplayFromState();
+            var waiting = resolution.State is
+                StudentExamFlowState.PendingApproval or
+                StudentExamFlowState.ApprovedWaiting;
+            if (waiting)
+            {
+                Status = source == "poll"
+                    ? $"Polling dự phòng: {resolution.Message}"
+                    : resolution.Message;
+                StatusTone = source == "poll" ? "warning" : "info";
+                EnsurePolling();
+            }
+            else
+            {
+                active = false;
+                lifecycle.Cancel();
+                if (resolution.RequiresStartConfirmation
+                    && (lastNavigationRoute != resolution.RouteKey
+                        || lastResolvedRevision != state.Revision))
+                    flow.NavigateResolved(StudentExamEntryPoint.CurrentExam, resolution);
+                lastNavigationRoute = resolution.RouteKey;
+                if (resolution.State is
+                    StudentExamFlowState.RejectedOrExpired or
+                    StudentExamFlowState.SessionFinished)
+                    await realtime.StopAsync(CancellationToken.None);
+            }
+            lastResolvedRevision = Math.Max(lastResolvedRevision, state.Revision);
+            return resolution;
+        }
+        catch (OperationCanceledException) when (
+            cancellationToken.IsCancellationRequested
+            || lifecycle.IsCancellationRequested
+            || IsDisposed)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                ReportFailure(ex);
+                Status = $"Lỗi mạng khi cập nhật phòng chờ. {Status}";
+            }
+            throw;
+        }
+        finally
+        {
+            if (!IsDisposed)
+                IsBusy = false;
+            resolveGate.Release();
+        }
     }
 
     private void Leave()
     {
         if (AppServices.Dialogs.Confirm("Rời phòng", "Rời phòng chờ và xóa thông tin phiên hiện tại?"))
         {
-            AppServices.StudentRealtime.StopAsync().SafeFireAndForget("StudentRealtime.Leave");
+            active = false;
+            lifecycle.Cancel();
+            realtime.StopAsync().SafeFireAndForget("StudentRealtime.Leave");
             state.Reset();
             api.SetParticipantToken(null);
             Participant = null;
@@ -2447,6 +2657,160 @@ public sealed class StudentWaitingViewModel : ProductPageBase
             Status = "Đã rời phòng chờ";
             StatusTone = "info";
         }
+    }
+
+    private void SubscribeRealtime()
+    {
+        if (subscribed)
+            return;
+        subscribed = true;
+        realtime.NotificationReceived += OnRealtimeNotification;
+        realtime.EventReceived += OnRealtimeEvent;
+    }
+
+    private void OnRealtimeNotification(
+        object? sender,
+        StudentRealtimeNotification notification)
+    {
+        if (!active
+            || IsDisposed
+            || notification.SessionId != state.SessionId
+            || (notification.ParticipantId.HasValue
+                && notification.ParticipantId != state.ParticipantId)
+            || !IsProgressionEvent(notification.EventName)
+            || (notification.Revision > 0
+                && notification.Revision <= lastResolvedRevision))
+            return;
+        QueueRealtimeResolve();
+    }
+
+    private void OnRealtimeEvent(object? sender, string eventName)
+    {
+        if (!active || IsDisposed || !IsProgressionEvent(eventName))
+            return;
+        QueueRealtimeResolve();
+    }
+
+    private static bool IsProgressionEvent(string eventName) =>
+        eventName is
+            RealtimeEvents.ParticipantApproved or
+            "ParticipantRejected" or
+            RealtimeEvents.SessionStateChanged or
+            "SessionStarted" or
+            "SessionCollecting" or
+            "SessionFinished" or
+            "SessionCancelled" or
+            "Reconnected";
+
+    private void QueueRealtimeResolve()
+    {
+        CancellationTokenSource current;
+        lock (eventSync)
+        {
+            eventDebounce?.Cancel();
+            eventDebounce?.Dispose();
+            current = CancellationTokenSource.CreateLinkedTokenSource(
+                DisposeToken,
+                lifecycle.Token);
+            eventDebounce = current;
+        }
+        DebounceAndResolveAsync(current).SafeFireAndForget(
+            "StudentWaitingViewModel.RealtimeResolve");
+    }
+
+    private async Task DebounceAndResolveAsync(CancellationTokenSource current)
+    {
+        try
+        {
+            await delay(TimeSpan.FromMilliseconds(120), current.Token);
+            await RefreshAndResolveAsync("realtime", current.Token);
+        }
+        catch (OperationCanceledException) when (current.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void EnsurePolling()
+    {
+        if (pollingTask is { IsCompleted: false } || lifecycle.IsCancellationRequested)
+            return;
+        pollingTask = PollAsync();
+        pollingTask.SafeFireAndForget("StudentWaitingViewModel.Poll");
+    }
+
+    private async Task PollAsync()
+    {
+        var consecutiveFailures = 0;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            DisposeToken,
+            lifecycle.Token);
+        for (var cycle = 0;
+             cycle < maximumPollCycles
+             && active
+             && !linked.IsCancellationRequested;
+             cycle++)
+        {
+            try
+            {
+                await delay(pollInterval, linked.Token);
+                var resolution = await RefreshAndResolveAsync("poll", linked.Token);
+                consecutiveFailures = 0;
+                if (resolution is null
+                    || resolution.State is not (
+                        StudentExamFlowState.PendingApproval or
+                        StudentExamFlowState.ApprovedWaiting))
+                    return;
+            }
+            catch (OperationCanceledException) when (linked.IsCancellationRequested)
+            {
+                return;
+            }
+            catch
+            {
+                consecutiveFailures++;
+                if (consecutiveFailures >= 3)
+                {
+                    if (!IsDisposed)
+                    {
+                        Status = "Polling phòng chờ đã dừng sau 3 lỗi mạng liên tiếp. Hãy kiểm tra mạng hoặc bấm Làm mới.";
+                        StatusTone = "danger";
+                    }
+                    return;
+                }
+                await delay(
+                    TimeSpan.FromSeconds(Math.Pow(2, consecutiveFailures)),
+                    linked.Token);
+            }
+        }
+        if (active && !IsDisposed)
+        {
+            Status = "Polling dự phòng đã đạt giới hạn. Realtime vẫn hoạt động; bấm Làm mới để kiểm tra ngay.";
+            StatusTone = "warning";
+        }
+    }
+
+    private void SyncDisplayFromState()
+    {
+        if (!state.SessionId.HasValue || !state.ParticipantId.HasValue)
+            return;
+        Participant = new ParticipantDto(
+            state.ParticipantId.Value,
+            state.SessionId.Value,
+            state.StudentCode,
+            state.DisplayName,
+            Environment.MachineName + "-" + Environment.UserName,
+            Environment.MachineName,
+            null,
+            "1.0.0",
+            state.ParticipantStatus ?? ParticipantStatus.PendingApproval,
+            DateTimeOffset.UtcNow,
+            DownloadStatus.NotStarted,
+            state.SubmissionStatus,
+            0,
+            null,
+            realtime.IsConnected ? ConnectionState.Online : ConnectionState.Reconnecting);
+        Raise(nameof(RoomCodeHint));
+        Raise(nameof(SessionTitleDisplay));
     }
 
     private void RaiseConnectionDetails()
@@ -2466,6 +2830,24 @@ public sealed class StudentWaitingViewModel : ProductPageBase
         values.First(value => !string.IsNullOrWhiteSpace(value))!;
 
     protected override void RaiseCommands() => (RefreshCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+
+    public override void Dispose()
+    {
+        if (IsDisposed)
+            return;
+        active = false;
+        realtime.NotificationReceived -= OnRealtimeNotification;
+        realtime.EventReceived -= OnRealtimeEvent;
+        lock (eventSync)
+        {
+            eventDebounce?.Cancel();
+            eventDebounce?.Dispose();
+            eventDebounce = null;
+        }
+        lifecycle.Cancel();
+        lifecycle.Dispose();
+        base.Dispose();
+    }
 }
 
 public sealed class StudentDownloadViewModel : ProductPageBase

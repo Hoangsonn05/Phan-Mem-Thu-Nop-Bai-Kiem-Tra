@@ -1,6 +1,7 @@
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
+using System.Text.Json;
 
 namespace ExamTransfer.Desktop.Infrastructure;
 
@@ -63,7 +64,31 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
                      .Where(value => !string.IsNullOrWhiteSpace(value)
                          && value != RealtimeEvents.TimeExtended))
         {
-            hub.On<object>(eventName!, _ => EventReceived?.Invoke(this, eventName!));
+            hub.On<JsonElement>(eventName!, envelope =>
+            {
+                var sessionId = envelope.TryGetProperty("sessionId", out var sessionElement)
+                    && sessionElement.TryGetGuid(out var parsedSessionId)
+                    ? parsedSessionId
+                    : Guid.Empty;
+                var revision = envelope.TryGetProperty("sequence", out var sequenceElement)
+                    && sequenceElement.TryGetInt64(out var parsedRevision)
+                    ? parsedRevision
+                    : 0;
+                Guid? participantId = null;
+                if (envelope.TryGetProperty("payload", out var payload)
+                    && payload.TryGetProperty("participantId", out var participantElement)
+                    && participantElement.TryGetGuid(out var parsedParticipantId))
+                    participantId = parsedParticipantId;
+                NotificationReceived?.Invoke(
+                    this,
+                    new(
+                        sessionId,
+                        eventName!,
+                        revision,
+                        null,
+                        participantId));
+                EventReceived?.Invoke(this, eventName!);
+            });
         }
 
         hub.Reconnecting += _ =>

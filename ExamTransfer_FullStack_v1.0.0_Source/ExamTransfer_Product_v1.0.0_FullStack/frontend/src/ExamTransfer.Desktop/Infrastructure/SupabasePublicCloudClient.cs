@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ExamTransfer.Desktop.Services;
@@ -9,13 +10,152 @@ using ExamTransfer.Shared.Contracts;
 
 namespace ExamTransfer.Desktop.Infrastructure;
 
-public sealed class SupabasePublicCloudClient
+public sealed record PublicCloudRuntimeOptions(
+    Uri? ProjectUri,
+    string? PublishableKey,
+    string? ErrorCode,
+    string Source)
+{
+    public bool Configured => ErrorCode is null
+        && ProjectUri is not null
+        && !string.IsNullOrWhiteSpace(PublishableKey);
+}
+
+public interface IPublicCloudRuntimeOptionsProvider
+{
+    PublicCloudRuntimeOptions Get();
+}
+
+public sealed class PublicCloudRuntimeOptionsProvider(
+    string? configPath = null,
+    Func<string, string?>? environment = null) : IPublicCloudRuntimeOptionsProvider
+{
+    public const string ConfigFileName = "publiccloud.runtime.json";
+    private readonly string path = configPath
+        ?? Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+    private readonly Func<string, string?> getEnvironment =
+        environment ?? Environment.GetEnvironmentVariable;
+
+    public PublicCloudRuntimeOptions Get()
+    {
+        var environmentUrl = getEnvironment("EXAMTRANSFER_SUPABASE_URL");
+        var environmentKey = getEnvironment("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY");
+        if (!string.IsNullOrWhiteSpace(environmentUrl)
+            || !string.IsNullOrWhiteSpace(environmentKey))
+            return Validate(environmentUrl, environmentKey, "Environment", allowLoopbackHttp: true);
+
+        if (!File.Exists(path))
+            return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", "Missing");
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+            var root = document.RootElement;
+            var url = root.TryGetProperty("supabaseUrl", out var urlElement)
+                ? urlElement.GetString()
+                : null;
+            var key = root.TryGetProperty("publishableKey", out var keyElement)
+                ? keyElement.GetString()
+                : null;
+            return Validate(url, key, "InstalledFile", allowLoopbackHttp: false);
+        }
+        catch (JsonException)
+        {
+            return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", "InvalidFile");
+        }
+        catch (IOException)
+        {
+            return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", "UnreadableFile");
+        }
+    }
+
+    public static PublicCloudRuntimeOptions Validate(
+        string? url,
+        string? key,
+        string source,
+        bool allowLoopbackHttp = false,
+        bool allowExplicitTestKey = false)
+    {
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(key))
+            return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", source);
+        if (!Uri.TryCreate(url.Trim().TrimEnd('/'), UriKind.Absolute, out var projectUri)
+            || (projectUri.Scheme != Uri.UriSchemeHttps
+                && !(allowLoopbackHttp
+                    && projectUri.Scheme == Uri.UriSchemeHttp
+                    && projectUri.IsLoopback)))
+            return new(null, null, "PUBLICCLOUD_INVALID_URL", source);
+
+        var normalizedKey = key.Trim();
+        if (!IsPublishableKey(normalizedKey, allowExplicitTestKey))
+            return new(projectUri, null, "PUBLICCLOUD_INVALID_PUBLISHABLE_KEY", source);
+        return new(projectUri, normalizedKey, null, source);
+    }
+
+    private static bool IsPublishableKey(string key, bool allowExplicitTestKey)
+    {
+        if (key.StartsWith("sb_secret_", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("service_role", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (key.StartsWith("sb_publishable_", StringComparison.Ordinal))
+            return key.Length > "sb_publishable_".Length;
+        if (TryReadJwtRole(key, out var role))
+            return string.Equals(role, "anon", StringComparison.Ordinal);
+        return allowExplicitTestKey && key.Length >= 8;
+    }
+
+    private static bool TryReadJwtRole(string value, out string? role)
+    {
+        role = null;
+        var segments = value.Split('.');
+        if (segments.Length != 3)
+            return false;
+        try
+        {
+            var payload = segments[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + ((4 - payload.Length % 4) % 4), '=');
+            using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
+            role = document.RootElement.TryGetProperty("role", out var roleElement)
+                ? roleElement.GetString()
+                : null;
+            return !string.IsNullOrWhiteSpace(role);
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException)
+        {
+            return false;
+        }
+    }
+}
+
+public sealed class FixedPublicCloudRuntimeOptionsProvider(
+    PublicCloudRuntimeOptions options) : IPublicCloudRuntimeOptionsProvider
+{
+    public PublicCloudRuntimeOptions Get() => options;
+}
+
+public interface ISupabaseAccessTokenProvider
+{
+    Task<string> GetValidAccessTokenAsync(
+        bool forceRefresh,
+        CancellationToken cancellationToken);
+}
+
+public sealed class PublicCloudApiException(
+    string code,
+    string message,
+    HttpStatusCode statusCode)
+    : HttpRequestException(message, null, statusCode)
+{
+    public string Code { get; } = code;
+}
+
+public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly HttpClient http;
     private readonly IServerClock serverClock;
-    private readonly string? url;
-    private readonly string? key;
+    private readonly IPublicCloudRuntimeOptionsProvider optionsProvider;
+    private readonly Func<TimeSpan, CancellationToken, Task> delay;
+    private readonly SemaphoreSlim refreshGate = new(1, 1);
+    private CancellationTokenSource authLifetime = new();
     private string? accessToken;
     private string? refreshToken;
     private DateTimeOffset expiresAtUtc;
@@ -24,17 +164,30 @@ public sealed class SupabasePublicCloudClient
         HttpClient? http = null,
         IServerClock? serverClock = null,
         string? supabaseUrl = null,
-        string? publishableKey = null)
+        string? publishableKey = null,
+        IPublicCloudRuntimeOptionsProvider? optionsProvider = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         this.http = http ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         this.serverClock = serverClock ?? new ServerClock();
-        url = (supabaseUrl ?? Environment.GetEnvironmentVariable("EXAMTRANSFER_SUPABASE_URL"))?.TrimEnd('/');
-        key = publishableKey ?? Environment.GetEnvironmentVariable("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY");
+        this.optionsProvider = optionsProvider
+            ?? (supabaseUrl is not null || publishableKey is not null
+                ? new FixedPublicCloudRuntimeOptionsProvider(
+                    PublicCloudRuntimeOptionsProvider.Validate(
+                        supabaseUrl,
+                        publishableKey,
+                        "Explicit",
+                        allowLoopbackHttp: true,
+                        allowExplicitTestKey: true))
+                : new PublicCloudRuntimeOptionsProvider());
+        this.delay = delay ?? Task.Delay;
     }
 
-    public bool Configured => Uri.TryCreate(url, UriKind.Absolute, out _) && !string.IsNullOrWhiteSpace(key);
+    public PublicCloudRuntimeOptions RuntimeOptions => optionsProvider.Get();
+    public bool Configured => RuntimeOptions.Configured;
     public bool Authenticated => !string.IsNullOrWhiteSpace(accessToken);
     public string? AccessToken => accessToken;
+    public string? ConfigurationErrorCode => RuntimeOptions.ErrorCode;
 
     public async Task LoginAsync(string account, string password, CancellationToken cancellationToken)
     {
@@ -47,10 +200,17 @@ public sealed class SupabasePublicCloudClient
         using var response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, "Supabase Auth", cancellationToken);
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        accessToken = document.RootElement.GetProperty("access_token").GetString();
-        refreshToken = document.RootElement.TryGetProperty("refresh_token", out var refresh) ? refresh.GetString() : null;
-        var seconds = document.RootElement.TryGetProperty("expires_in", out var expiry) ? expiry.GetInt32() : 3600;
-        expiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(seconds);
+        await refreshGate.WaitAsync(cancellationToken);
+        try
+        {
+            authLifetime.Cancel();
+            authLifetime = new();
+            ApplyAuthResponse(document.RootElement);
+        }
+        finally
+        {
+            refreshGate.Release();
+        }
     }
 
     public async Task<PublicEnrollmentState> RequestEnrollmentAsync(string enrollmentCode, string studentCode, CancellationToken cancellationToken)
@@ -75,16 +235,38 @@ public sealed class SupabasePublicCloudClient
         string deviceId,
         string machineName,
         string appVersion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? projectionDelayed = null)
     {
-        var result = await RpcAsync<OpenPublicJoinRpcResult>("join_open_public_session_by_room_code", new
+        await EnsureSchemaCompatibleAsync(cancellationToken);
+        OpenPublicJoinRpcResult result;
+        for (var attempt = 0; ; attempt++)
         {
-            p_room_code = roomCode,
-            p_device_id = deviceId,
-            p_machine_name = machineName,
-            p_app_version = appVersion,
-            p_capability_json = new { platform = Environment.OSVersion.Platform.ToString() }
-        }, cancellationToken);
+            try
+            {
+                result = await RpcAsync<OpenPublicJoinRpcResult>(
+                    "join_open_public_session_by_room_code",
+                    new
+                    {
+                        p_room_code = roomCode,
+                        p_device_id = deviceId,
+                        p_machine_name = machineName,
+                        p_app_version = appVersion,
+                        p_capability_json = new { platform = Environment.OSVersion.Platform.ToString() }
+                    },
+                    cancellationToken);
+                break;
+            }
+            catch (PublicCloudApiException ex) when (
+                ex.Code == "OPEN_PUBLIC_SESSION_NOT_FOUND"
+                && attempt < 3)
+            {
+                projectionDelayed?.Invoke();
+                await delay(
+                    TimeSpan.FromMilliseconds(300 * (attempt + 1)),
+                    cancellationToken);
+            }
+        }
         if (!Enum.TryParse<ParticipantStatus>(result.ParticipantStatus, true, out var participantStatus)
             || !Enum.TryParse<SessionStatus>(result.SessionStatus, true, out var sessionStatus)
             || !Enum.TryParse<ExamDeliveryType>(result.DeliveryType, true, out var deliveryType)
@@ -424,34 +606,121 @@ public sealed class SupabasePublicCloudClient
             ?? throw new InvalidDataException($"RPC {name} returned an empty response.");
     }
 
-    private async Task EnsureFreshSessionAsync(CancellationToken cancellationToken)
+    public async Task EnsureSchemaCompatibleAsync(CancellationToken cancellationToken)
     {
-        if (expiresAtUtc > DateTimeOffset.UtcNow.AddMinutes(2)) return;
-        if (string.IsNullOrWhiteSpace(refreshToken))
-            throw new InvalidOperationException("Phiên Supabase đã hết hạn; hãy đăng nhập lại.");
-        using var request = ProjectRequest(HttpMethod.Post, "/auth/v1/token?grant_type=refresh_token", false);
-        request.Content = JsonContent.Create(new { refresh_token = refreshToken });
-        using var response = await SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, "Supabase refresh", cancellationToken);
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        accessToken = document.RootElement.GetProperty("access_token").GetString();
-        refreshToken = document.RootElement.TryGetProperty("refresh_token", out var refresh) ? refresh.GetString() : refreshToken;
-        expiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(document.RootElement.TryGetProperty("expires_in", out var expiry) ? expiry.GetInt32() : 3600);
+        var capabilities = await RpcAsync<CloudCapabilities>(
+            "get_examtransfer_cloud_capabilities",
+            new { },
+            cancellationToken);
+        if (capabilities.SchemaVersion < 22)
+            throw new PublicCloudApiException(
+                "PUBLICCLOUD_SCHEMA_INCOMPATIBLE",
+                "PublicCloud schema is incompatible with this ExamTransfer build.",
+                HttpStatusCode.Conflict);
+    }
+
+    public async Task<string> GetValidAccessTokenAsync(
+        bool forceRefresh,
+        CancellationToken cancellationToken)
+    {
+        var tokenObservedBeforeGate = accessToken;
+        var lifetime = authLifetime;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            lifetime.Token);
+        await refreshGate.WaitAsync(linked.Token);
+        try
+        {
+            if (forceRefresh
+                && !string.Equals(
+                    tokenObservedBeforeGate,
+                    accessToken,
+                    StringComparison.Ordinal)
+                && expiresAtUtc > DateTimeOffset.UtcNow.AddMinutes(2)
+                && !string.IsNullOrWhiteSpace(accessToken))
+                return accessToken;
+            if (!forceRefresh
+                && expiresAtUtc > DateTimeOffset.UtcNow.AddMinutes(2)
+                && !string.IsNullOrWhiteSpace(accessToken))
+                return accessToken;
+            if (string.IsNullOrWhiteSpace(refreshToken))
+                throw new PublicCloudApiException(
+                    "PUBLICCLOUD_AUTH_EXPIRED",
+                    "Phiên PublicCloud đã hết hạn; hãy đăng nhập lại.",
+                    HttpStatusCode.Unauthorized);
+
+            var tokenBeforeRefresh = refreshToken;
+            using var request = ProjectRequest(
+                HttpMethod.Post,
+                "/auth/v1/token?grant_type=refresh_token",
+                false);
+            request.Content = JsonContent.Create(new { refresh_token = tokenBeforeRefresh });
+            using var response = await SendAsync(request, linked.Token);
+            await EnsureSuccessAsync(response, "Supabase refresh", linked.Token);
+            using var document = JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync(linked.Token));
+            linked.Token.ThrowIfCancellationRequested();
+            ApplyAuthResponse(document.RootElement);
+            return accessToken
+                ?? throw new PublicCloudApiException(
+                    "PUBLICCLOUD_AUTH_INVALID",
+                    "Supabase refresh did not return an access token.",
+                    HttpStatusCode.Unauthorized);
+        }
+        finally
+        {
+            refreshGate.Release();
+        }
+    }
+
+    public void Logout()
+    {
+        authLifetime.Cancel();
+        authLifetime = new();
+        accessToken = null;
+        refreshToken = null;
+        expiresAtUtc = default;
+    }
+
+    private Task EnsureFreshSessionAsync(CancellationToken cancellationToken) =>
+        GetValidAccessTokenAsync(false, cancellationToken);
+
+    private void ApplyAuthResponse(JsonElement root)
+    {
+        var nextAccessToken = root.GetProperty("access_token").GetString();
+        var nextRefreshToken = root.TryGetProperty("refresh_token", out var refresh)
+            ? refresh.GetString()
+            : refreshToken;
+        if (string.IsNullOrWhiteSpace(nextAccessToken))
+            throw new InvalidDataException("Supabase authentication returned an empty access token.");
+        accessToken = nextAccessToken;
+        refreshToken = nextRefreshToken;
+        expiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(
+            root.TryGetProperty("expires_in", out var expiry)
+                ? expiry.GetInt32()
+                : 3600);
     }
 
     private HttpRequestMessage ProjectRequest(HttpMethod method, string path, bool userToken = true)
     {
         EnsureConfigured();
-        var request = new HttpRequestMessage(method, url + path);
-        request.Headers.TryAddWithoutValidation("apikey", key);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userToken ? accessToken : key);
+        var options = RuntimeOptions;
+        var request = new HttpRequestMessage(method, new Uri(options.ProjectUri!, path));
+        request.Headers.TryAddWithoutValidation("apikey", options.PublishableKey);
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            userToken ? accessToken : options.PublishableKey);
         return request;
     }
 
     private void EnsureConfigured()
     {
-        if (!Configured) throw new InvalidOperationException(
-            "PublicCloud chưa cấu hình EXAMTRANSFER_SUPABASE_URL và EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY.");
+        var options = RuntimeOptions;
+        if (!options.Configured)
+            throw new PublicCloudApiException(
+                options.ErrorCode ?? "PUBLICCLOUD_NOT_CONFIGURED",
+                "PublicCloud runtime configuration is missing or invalid.",
+                HttpStatusCode.ServiceUnavailable);
     }
 
     private async Task<HttpResponseMessage> SendAsync(
@@ -473,7 +742,44 @@ public sealed class SupabasePublicCloudClient
     {
         if (response.IsSuccessStatusCode) return;
         var detail = await response.Content.ReadAsStringAsync(cancellationToken);
-        throw new HttpRequestException($"{operation} failed ({(int)response.StatusCode}): {detail}", null, response.StatusCode);
+        var code = ExtractErrorCode(detail, response.StatusCode);
+        throw new PublicCloudApiException(
+            code,
+            $"{operation} failed ({(int)response.StatusCode}; code={code}).",
+            response.StatusCode);
+    }
+
+    private static string ExtractErrorCode(string detail, HttpStatusCode statusCode)
+    {
+        foreach (var known in new[]
+                 {
+                     "OPEN_PUBLIC_SESSION_NOT_FOUND",
+                     "AUTHENTICATION_REQUIRED",
+                     "PUBLIC_SESSION_CAPACITY_REACHED",
+                     "PUBLIC_SESSION_NOT_JOINABLE",
+                     "PUBLICCLOUD_SCHEMA_INCOMPATIBLE"
+                 })
+        {
+            if (detail.Contains(known, StringComparison.Ordinal))
+                return known;
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(detail);
+            foreach (var name in new[] { "code", "message" })
+            {
+                if (document.RootElement.TryGetProperty(name, out var value)
+                    && value.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(value.GetString()))
+                    return value.GetString()!.Length <= 80
+                        ? value.GetString()!
+                        : $"PUBLICCLOUD_HTTP_{(int)statusCode}";
+            }
+        }
+        catch (JsonException)
+        {
+        }
+        return $"PUBLICCLOUD_HTTP_{(int)statusCode}";
     }
 
     private sealed record OpenPublicJoinRpcResult(
@@ -492,6 +798,7 @@ public sealed class SupabasePublicCloudClient
         DateTimeOffset? PlannedStartUtc,
         int? Capacity,
         int CurrentParticipantCount);
+    private sealed record CloudCapabilities(int SchemaVersion);
     private sealed record ParticipantStatusRow(string Status);
     private sealed record EnrollmentRow(Guid Id, string Status);
     private sealed record SubmissionFilePlanRow(Guid Id,

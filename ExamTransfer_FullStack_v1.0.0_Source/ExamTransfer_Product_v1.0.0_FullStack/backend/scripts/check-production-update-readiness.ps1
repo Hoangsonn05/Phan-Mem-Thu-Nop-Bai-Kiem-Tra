@@ -386,7 +386,7 @@ try {
                 "Server__PreferredIp=$preferredIp",
                 'Discovery__Enabled=true',
                 'Discovery__Protocol=UdpBroadcast',
-                'Discovery__Port=5050',
+                'Discovery__Port=40550',
                 'Discovery__RequestMagic=EXAMTRANSFER_DISCOVER_V1',
                 "LanAccess__AllowedCidrs__0=$allowedCidr",
                 'LanAccess__TrustDockerDesktopNat=false',

@@ -28,11 +28,17 @@ public sealed class OpenSessionDiscoveryTests
         var teacher = new User { Username = "teacher", DisplayName = "Giáo viên", Role = UserRole.Teacher };
         var exam = new Exam { Class = classroom, Title = "Kiểm tra", Subject = "Tin", DurationMinutes = 45, Status = ExamStatus.Published, CreatedBy = teacher.Id };
         db.AddRange(classroom, teacher, exam);
+        var unpublishedExam = new Exam { Title = "Nháp", Subject = "Tin", DurationMinutes = 45, Status = ExamStatus.Draft };
+        db.Add(unpublishedExam);
         db.ExamSessionsSet.AddRange(
             new ExamSession { Exam = exam, ClassId = null, AdmissionMode = SessionAdmissionMode.OpenRequest, RoomCode = "OPEN1", Status = SessionStatus.Waiting, AcceptingParticipants = true, AccessMode = SessionAccessMode.LanOnly },
             new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "DRAFT1", Status = SessionStatus.Draft, AcceptingParticipants = true, AccessMode = SessionAccessMode.LanOnly },
             new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "CLOSED1", Status = SessionStatus.Waiting, AcceptingParticipants = false, AccessMode = SessionAccessMode.LanOnly },
-            new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "PUBLIC1", Status = SessionStatus.Waiting, AcceptingParticipants = true, AccessMode = SessionAccessMode.PublicCloud });
+            new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "PUBLIC1", Status = SessionStatus.Waiting, AcceptingParticipants = true, AccessMode = SessionAccessMode.PublicCloud },
+            new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "STARTED1", Status = SessionStatus.InProgress, AcceptingParticipants = true, AccessMode = SessionAccessMode.LanOnly },
+            new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "FINISH1", Status = SessionStatus.Finished, AcceptingParticipants = true, AccessMode = SessionAccessMode.LanOnly },
+            new ExamSession { Exam = exam, ClassId = classroom.Id, RoomCode = "ARCHIVE1", Status = SessionStatus.Archived, AcceptingParticipants = true, AccessMode = SessionAccessMode.LanOnly },
+            new ExamSession { Exam = unpublishedExam, ClassId = null, AdmissionMode = SessionAdmissionMode.OpenRequest, RoomCode = "UNPUBLISHED1", Status = SessionStatus.Waiting, AcceptingParticipants = true, AccessMode = SessionAccessMode.LanOnly });
         await db.SaveChangesAsync();
 
         var options = new ExamTransferOptions();
@@ -43,7 +49,7 @@ public sealed class OpenSessionDiscoveryTests
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };
-        controller.HttpContext.Connection.RemoteIpAddress = IPAddress.Parse("192.168.10.3");
+        controller.HttpContext.Connection.RemoteIpAddress = IPAddress.Parse(options.Server.PreferredIp);
         controller.HttpContext.TraceIdentifier = "discovery-test";
 
         var action = await controller.OpenSessions(default);

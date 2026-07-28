@@ -1,0 +1,210 @@
+TASK: ET-FLP-H01-INDEPENDENT-ROOT-CAUSE-AUDIT
+MODE: AUDIT-ONLY
+GIT HEAD: 219af954acc93dbeea11207673d5f5743c2ee5ab
+BRANCH: master
+PROJECT ROOT: ExamTransfer_FullStack_v1.0.0_Source/ExamTransfer_Product_v1.0.0_FullStack
+SOURCE MODIFIED BY THIS AUDIT: NO
+
+SCOPED SOURCE MAP
+=================
+
+Failing test and fixture
+- backend/tests/ExamTransfer.Infrastructure.Tests/SixFindingsV133BackendTests.cs
+  - PublicCreate_WakesWorkerAndBecomesExplicitlyShareReady: lines 33-103
+  - CreateSessionService: lines 152-166
+  - WaitUntilAsync overloads: lines 195-207
+  - SuccessfulPushCloud / PushCalls: lines 229-248
+- backend/tests/ExamTransfer.Infrastructure.Tests/PublicCloudHardeningTests.cs
+  - PublicCloudTestHarness.CreateDatabaseAsync: lines 777-785
+  - TestDatabase isolation/disposal: lines 858-867
+
+Create, transaction, outbox, readiness
+- backend/src/ExamTransfer.Infrastructure/Services/SessionService.cs
+  - CreateAndOpenAsync: lines 79-107
+  - GetProjectionReadinessAsync: lines 109-173
+  - RetryProjectionAsync: lines 175-209
+  - InTransactionAsync: lines 838-852
+  - CreateCoreAsync: lines 854-934
+- backend/src/ExamTransfer.Infrastructure/Services/AuditAndOutboxServices.cs
+  - AuditService.WriteAsync: lines 19-77
+  - OutboxService.EnqueueAsync: lines 87-153
+  - CloudSyncSignal: lines 156-185
+- backend/src/ExamTransfer.Infrastructure/Persistence/AppDbContext.cs
+  - SyncQueueItem table registration: line 131
+  - RowVersion concurrency token: lines 206-212
+  - SaveChanges timestamp/RowVersion mutation: lines 215-239
+
+Worker and host topology
+- backend/src/ExamTransfer.LocalServer/Workers/CloudSyncWorker.cs
+  - ExecuteAsync wait and scope: lines 19-38
+  - eligible batch selection: lines 40-57
+  - per-item processing: lines 59-142
+  - ownership skip: lines 61-77
+  - Syncing/lease transition: lines 79-89
+  - PushAsync: lines 91-109
+  - failure/retry: lines 115-139
+- backend/src/ExamTransfer.Application/CloudOwnership.cs
+  - exam_sessions and audit_logs are LocalOwned: lines 58 and 63
+  - MayPushToCloud: lines 106-113
+- backend/src/ExamTransfer.LocalServer/Program.cs
+  - process single-instance acquisition: line 16
+  - one CloudSyncWorker hosted-service registration: line 92
+- backend/src/ExamTransfer.LocalServer/LocalServerSingleInstance.cs
+  - named mutex acquisition/rejection of second process: lines 5-22
+
+FAILING TEST STEP TABLE
+=======================
+
+Step | Exact file:line | Action | Expected state | Actual state | Timing dependency | Shared mutable state | Potential race
+1 | SixFindingsV133BackendTests.cs:35-38 | Create unique SQLite DB, signal, fake cloud | Empty isolated fixture | Unique GUID temp DB; local signal/fake | None | None outside method | No
+2 | SixFindingsV133BackendTests.cs:53-56 | CreateAndOpen PublicCloud session | Transaction commits session and outbox | Session Waiting; 3 pending queue rows | DB/transaction only | One scoped DbContext | No observed duplicate
+3 | SixFindingsV133BackendTests.cs:58-62 | Read readiness before worker | Ready=false, Pending | Ready=false, Pending | None | Same scoped context | No
+4 | SixFindingsV133BackendTests.cs:64-74 | Build provider and start one worker | Worker consumes existing signal | One worker starts | Worker scheduling | Local signal/cloud | Scheduling affects transient counter observation
+5 | SixFindingsV133BackendTests.cs:77 | Poll PushCalls == 1 | Exact transient value is observed | Sometimes observed; sometimes already 3 | Strong: 10 ms polling vs rapid sequential batch | PushCalls field | Yes, observation race
+6 | SixFindingsV133BackendTests.cs:78-84 | Poll target session queue item Synced | Session projection completes | Completes in every monitored run | Eventual worker completion | SQLite queue | No failure observed
+7 | SixFindingsV133BackendTests.cs:86-90 | Stop/dispose worker | Clean stop | Clean stop | Depends on prior assertion path | Worker instance | No duplicate start
+8 | SixFindingsV133BackendTests.cs:92-102 | Read business readiness | Ready=true, PUBLICCLOUD_PROJECTION_READY | True whenever reached; persisted session row was Synced in all 10 monitored runs | None after persistence | Fresh DbContext | No
+
+EXACT PRODUCTION FLOW
+=====================
+
+1. Create PublicCloud session
+   File/class/method: SessionService.cs / SessionService / CreateAndOpenAsync, lines 79-107.
+   Thread/task: caller test task.
+   Input: PublicCloud + OpenRequest request for one published exam.
+   Output: local ExamSession in Waiting state.
+
+2. Begin transaction
+   File/method: SessionService.cs / InTransactionAsync, line 840.
+   Boundary: explicit SQLite transaction wraps CreateCore, both audit writes, and session outbox enqueue.
+   Failure: exception rolls back at lines 847-850.
+
+3. Create and persist local session
+   File/method: SessionService.cs / CreateCoreAsync, lines 911-933.
+   Output: one ExamSession, initially Draft.
+
+4. Enqueue first audit
+   Call site: SessionService.cs:84.
+   Action: SessionCreated.
+   AuditService.cs equivalent file: AuditAndOutboxServices.cs:32-76.
+   Output: one AuditLog plus one audit_logs SyncQueueItem.
+
+5. Transition session and enqueue second audit
+   Transition/save: SessionService.cs:85-87.
+   Audit call: SessionService.cs:88-95.
+   Action: SessionStateChanged.
+   Output: second AuditLog plus second audit_logs SyncQueueItem.
+
+6. Enqueue session projection
+   Call site: SessionService.cs:96-101.
+   Outbox behavior: AuditAndOutboxServices.cs:99-151.
+   Output: exactly one exam_sessions/upsert queue row for the logical session.
+   Idempotency/coalescing: pending/failed rows for the same entity/type/operation are updated instead of duplicated.
+
+7. Signal and commit
+   Pre-commit Pulse: OutboxService at AuditAndOutboxServices.cs:152.
+   Commit: SessionService.cs:844.
+   Post-commit Pulse: SessionService.cs:104.
+   Test fixture timing: worker starts only later at test line 74; bounded capacity 1 coalesces both Pulse calls into one effective wake.
+   Live topology: post-commit Pulse prevents the pre-commit signal from becoming a lost wake for this flow.
+
+8. Worker wake and batch
+   Wait: CloudSyncWorker.cs:26-29.
+   Query/batch: CloudSyncWorker.cs:40-57.
+   Configured maximum: 10.
+   Actual batch: 3 rows in each monitored run.
+
+9. Claim/process each item
+   Per-item Syncing + lease + LastAttemptAtUtc: CloudSyncWorker.cs:79-89.
+   Push: CloudSyncWorker.cs:93-96.
+   Success state: CloudSyncWorker.cs:97-108 and final save at line 141.
+   Processing is sequential in one foreach and one worker task.
+   Retry behavior: only exceptions increment RetryCount at lines 115-127; observed RetryCount was 0.
+
+10. Compute ShareReady
+    File/method: SessionService.cs / GetProjectionReadinessAsync, lines 109-173.
+    Contract: query only exam_sessions rows matching the session ID; latest row status Synced means Ready=true and code PUBLICCLOUD_PROJECTION_READY.
+    Audit rows do not participate.
+    Persistence: Ready is computed dynamically; the underlying SyncQueueItem status is persisted.
+
+ANSWERS TO THE 15 TEST QUESTIONS
+================================
+
+1. PushCalls declaration:
+   SixFindingsV133BackendTests.cs:231 in private SuccessfulPushCloud.
+
+2. Type:
+   Public Int32 field.
+
+3. Thread safety:
+   Yes for the exercised access: Interlocked.Increment at line 246 and Volatile.Read at line 77.
+
+4. Increment owner:
+   SuccessfulPushCloud.PushAsync increments exactly once at method entry.
+
+5. Semantics:
+   One increment per attempted ICloudAdapter.PushAsync call, hence per eligible outbox item attempt.
+   It is not per wake, batch, entity table, or successful result.
+   A retry would increment it again.
+
+6. Business meaning of PushCalls == 1:
+   None is encoded. It appears intended as evidence that the wake occurred, but it is an aggregate transport-attempt counter.
+
+7. Does the test need exactly one total push?
+   No. The business requirement is one logical exam_sessions projection becoming Synced/ShareReady.
+
+8. Does it poll a generic counter?
+   Yes, before polling the persisted target entity state.
+
+9. Can polling miss 1?
+   Yes. The worker processes all 3 completed fake pushes rapidly; 10 ms polling sometimes sees 1 and sometimes sees final 3.
+
+10. Does create enqueue audit and session rows?
+    Yes: two audit_logs rows plus one exam_sessions row.
+
+11. Can the fixture retain rows from a previous test?
+    No evidence. CreateDatabaseAsync uses a new GUID directory and DB; TestDatabase disposes and deletes it.
+
+12. Can other tests run in parallel?
+    The repository has no explicit global xUnit parallelization override, but this test has no shared fixture state. Exact filtered runs match one test only.
+
+13. Is host/worker reused?
+    No. The method constructs a fresh provider, signal, fake and worker.
+
+14. Can this fixture start the worker twice?
+    No. It calls StartAsync once at line 74 and StopAsync once in finally.
+
+15. Can create emit two wake signals?
+    Yes. OutboxService pulses once for the session enqueue before commit, and SessionService pulses once after commit. In this fixture they coalesce to one buffered signal.
+
+ENQUEUE, WAKE, CLAIM, SHARE-READY FINDINGS
+==========================================
+
+Enqueue
+- Total queue rows from CreateAndOpen: 3.
+- audit_logs: 2 distinct logical audit records/actions.
+- exam_sessions: 1 logical projection.
+- Duplicate exam_sessions: NO in source and NO in 10 monitored DBs.
+- Correlation: both audits share the session ID but, without HttpContext/Activity in this fixture, received distinct generated trace IDs. exam_sessions queue rows have no correlation/request-ID column.
+
+Wake
+- Pulse call count in create flow: 2.
+- Effective wake in this fixture: 1 due bounded channel capacity 1 and worker start after create.
+- Signals are before and after commit; the after-commit pulse protects this flow from a lost wake.
+- No second worker instance is created.
+
+Claim/process
+- Configured batch maximum: 10; actual rows: 3.
+- Actual per-item claim transitions: 3.
+- No dedicated claim RPC; this worker marks each tracked row Syncing with a lease and saves before PushAsync.
+- Production host registers one CloudSyncWorker and enforces one LocalServer process with a named mutex.
+- RowVersion is an EF concurrency token, so an accidental second context cannot silently save the same stale claim.
+- Observed retries: 0; observed duplicate attempts: 0.
+
+ShareReady
+- Depends only on the matching exam_sessions outbox item reaching Synced.
+- Does not depend on PushCalls or aggregate audit completion.
+- Does not require all rows sharing a request/correlation ID.
+- Audit failure does not directly enter the readiness query.
+- Computed dynamically from persisted outbox state.
+

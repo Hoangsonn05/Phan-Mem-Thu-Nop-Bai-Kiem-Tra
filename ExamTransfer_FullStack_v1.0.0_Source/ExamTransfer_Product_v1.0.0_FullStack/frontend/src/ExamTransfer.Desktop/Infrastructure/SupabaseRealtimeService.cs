@@ -9,35 +9,44 @@ namespace ExamTransfer.Desktop.Infrastructure;
 public sealed class SupabaseRealtimeService : IAsyncDisposable
 {
     private static readonly int[] RetrySeconds = [1, 2, 5, 10, 30];
-    private readonly string? projectUrl = Environment.GetEnvironmentVariable("EXAMTRANSFER_SUPABASE_URL")?.TrimEnd('/');
-    private readonly string? publishableKey = Environment.GetEnvironmentVariable("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY");
+    private const int MaximumReconnectAttempts = 8;
+    private readonly IPublicCloudRuntimeOptionsProvider optionsProvider;
     private readonly SemaphoreSlim sendGate = new(1, 1);
     private CancellationTokenSource? stopping;
     private ClientWebSocket? socket;
     private Task? loop;
     private Guid sessionId;
     private string deviceId = string.Empty;
-    private string token = string.Empty;
+    private ISupabaseAccessTokenProvider? accessTokenProvider;
     private Func<CancellationToken, Task>? refreshSnapshot;
     private long reference;
 
     public bool IsConnected => socket?.State == WebSocketState.Open;
+    public bool IsRunning => loop is { IsCompleted: false };
+    public Guid? ActiveSessionId => IsRunning ? sessionId : null;
     public event EventHandler<string>? EventReceived;
     public event EventHandler<StudentRealtimeNotification>? NotificationReceived;
+
+    public SupabaseRealtimeService(
+        IPublicCloudRuntimeOptionsProvider? optionsProvider = null)
+    {
+        this.optionsProvider = optionsProvider ?? new PublicCloudRuntimeOptionsProvider();
+    }
 
     public Task StartAsync(
         Guid session,
         string device,
-        string accessToken,
+        ISupabaseAccessTokenProvider tokenProvider,
         Func<CancellationToken, Task> snapshotRefresh,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         Stop();
         sessionId = session;
         deviceId = device;
-        token = accessToken;
+        accessTokenProvider = tokenProvider;
         refreshSnapshot = snapshotRefresh;
-        stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        stopping = new CancellationTokenSource();
         loop = RunAsync(stopping.Token);
         return Task.CompletedTask;
     }
@@ -58,16 +67,28 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
     {
         var retry = 0;
         var connectedBefore = false;
+        var forceRefresh = false;
+        var authRefreshAttempted = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
+                var options = optionsProvider.Get();
+                if (!options.Configured)
+                    throw new PublicCloudApiException(
+                        options.ErrorCode ?? "PUBLICCLOUD_NOT_CONFIGURED",
+                        "PublicCloud Realtime configuration is missing or invalid.",
+                        System.Net.HttpStatusCode.ServiceUnavailable);
+                var token = await ResolveAccessTokenForConnectionAsync(
+                    forceRefresh,
+                    cancellationToken);
+                forceRefresh = false;
                 socket?.Dispose();
                 socket = new ClientWebSocket();
-                var httpUrl = new Uri(projectUrl ?? throw new InvalidOperationException("Supabase URL is missing."));
+                var httpUrl = options.ProjectUri!;
                 var scheme = httpUrl.Scheme == "https" ? "wss" : "ws";
                 var endpoint = new Uri(
-                    $"{scheme}://{httpUrl.Authority}/realtime/v1/websocket?apikey={Uri.EscapeDataString(publishableKey ?? string.Empty)}&vsn=1.0.0");
+                    $"{scheme}://{httpUrl.Authority}/realtime/v1/websocket?apikey={Uri.EscapeDataString(options.PublishableKey!)}&vsn=1.0.0");
                 await socket.ConnectAsync(endpoint, cancellationToken);
                 foreach (var topic in new[]
                 {
@@ -95,19 +116,50 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                     EventReceived?.Invoke(this, "Reconnected");
                 connectedBefore = true;
                 await ReceiveUntilDisconnectedAsync(cancellationToken);
+                if (!cancellationToken.IsCancellationRequested)
+                    throw new WebSocketException("Supabase Realtime connection closed.");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
             }
+            catch (SupabaseRealtimeAuthException ex)
+            {
+                if (ex.Expired && !authRefreshAttempted)
+                {
+                    authRefreshAttempted = true;
+                    forceRefresh = true;
+                    continue;
+                }
+                EventReceived?.Invoke(this, "AuthenticationExpired");
+                break;
+            }
+            catch (PublicCloudApiException ex) when (
+                ex.Code is "PUBLICCLOUD_AUTH_EXPIRED" or "PUBLICCLOUD_AUTH_INVALID")
+            {
+                EventReceived?.Invoke(this, "AuthenticationExpired");
+                break;
+            }
             catch
             {
                 EventReceived?.Invoke(this, "Reconnecting");
+                if (retry >= MaximumReconnectAttempts)
+                {
+                    EventReceived?.Invoke(this, "Disconnected");
+                    break;
+                }
                 var delay = RetrySeconds[Math.Min(retry++, RetrySeconds.Length - 1)];
                 await Task.Delay(TimeSpan.FromSeconds(delay), cancellationToken);
             }
         }
     }
+
+    public Task<string> ResolveAccessTokenForConnectionAsync(
+        bool forceRefresh,
+        CancellationToken cancellationToken) =>
+        (accessTokenProvider
+            ?? throw new InvalidOperationException("Supabase access-token provider is missing."))
+        .GetValidAccessTokenAsync(forceRefresh, cancellationToken);
 
     private async Task ReceiveUntilDisconnectedAsync(CancellationToken cancellationToken)
     {
@@ -130,9 +182,12 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                 while (!result.EndOfMessage);
 
                 var json = Encoding.UTF8.GetString(message.GetBuffer(), 0, checked((int)message.Length));
-                if (TryParseTimeExtended(json, sessionId, out var notification, out var eventName))
+                if (TryParseAuthFailure(json, out var expired))
+                    throw new SupabaseRealtimeAuthException(expired);
+                _ = TryParseTimeExtended(json, sessionId, out var notification, out var eventName);
+                if (notification is not null)
                     NotificationReceived?.Invoke(this, notification!);
-                else if (eventName is not null)
+                if (eventName is not null)
                     EventReceived?.Invoke(this, eventName);
             }
         }
@@ -186,8 +241,8 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
             }
 
             if (!string.Equals(outerEvent, "broadcast", StringComparison.Ordinal)
-                || !string.Equals(
-                    topic,
+                || topic is null
+                || !topic.StartsWith(
                     $"realtime:exam-session:{expectedSessionId}",
                     StringComparison.Ordinal))
                 return false;
@@ -207,7 +262,22 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                     && outerPayload.TryGetProperty("payload", out var gradePayload)
                     && TryGuid(gradePayload, "attemptId", out var returnedAttemptId))
                     eventName = $"{RealtimeEvents.QuizGradeReturned}:{returnedAttemptId:N}";
-                return false;
+                var genericRevision = 0L;
+                Guid? targetParticipantId = null;
+                if (outerPayload.TryGetProperty("payload", out var genericPayload))
+                {
+                    if (TryInt64(genericPayload, "revision", out var parsedRevision))
+                        genericRevision = parsedRevision;
+                    if (TryGuid(genericPayload, "participantId", out var parsedParticipantId))
+                        targetParticipantId = parsedParticipantId;
+                }
+                notification = new(
+                    expectedSessionId,
+                    eventName ?? string.Empty,
+                    genericRevision,
+                    null,
+                    targetParticipantId);
+                return true;
             }
 
             if (!outerPayload.TryGetProperty("payload", out var payload)
@@ -305,6 +375,8 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
         socket?.Dispose();
         socket = null;
         loop = null;
+        accessTokenProvider = null;
+        refreshSnapshot = null;
     }
 
     public ValueTask DisposeAsync()
@@ -312,5 +384,24 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
         Stop();
         sendGate.Dispose();
         return ValueTask.CompletedTask;
+    }
+
+    private static bool TryParseAuthFailure(string json, out bool expired)
+    {
+        expired = false;
+        if (!json.Contains("Token has expired", StringComparison.OrdinalIgnoreCase)
+            && !json.Contains("InvalidJWTExpiration", StringComparison.OrdinalIgnoreCase)
+            && !json.Contains("MalformedJWT", StringComparison.OrdinalIgnoreCase)
+            && !json.Contains("JwtSignatureError", StringComparison.OrdinalIgnoreCase)
+            && !json.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase))
+            return false;
+        expired = json.Contains("expired", StringComparison.OrdinalIgnoreCase)
+            || json.Contains("InvalidJWTExpiration", StringComparison.OrdinalIgnoreCase);
+        return true;
+    }
+
+    private sealed class SupabaseRealtimeAuthException(bool expired) : Exception
+    {
+        public bool Expired { get; } = expired;
     }
 }

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text;
 using ExamTransfer.Desktop.Core;
 using ExamTransfer.Shared.Contracts;
 
@@ -10,6 +11,8 @@ public sealed class AppAuthSessionState : ObservableObject
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private CurrentAccountDto? currentAccount;
     private string? accountAccessToken;
+    private string? transientAccount;
+    private byte[]? protectedTransientPassword;
 
     public CurrentAccountDto? CurrentAccount
     {
@@ -90,10 +93,72 @@ public sealed class AppAuthSessionState : ObservableObject
         Save(accessToken);
     }
 
+    public void SetTransientCredentials(string account, string password)
+    {
+        ClearTransientCredentials();
+        if (string.IsNullOrWhiteSpace(account) || string.IsNullOrEmpty(password))
+            return;
+
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        try
+        {
+            transientAccount = account.Trim();
+            protectedTransientPassword = ProtectedData.Protect(
+                passwordBytes,
+                null,
+                DataProtectionScope.CurrentUser);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(passwordBytes);
+        }
+    }
+
+    public bool TryGetTransientCredentials(out string account, out string password)
+    {
+        account = string.Empty;
+        password = string.Empty;
+        if (string.IsNullOrWhiteSpace(transientAccount)
+            || protectedTransientPassword is null)
+            return false;
+
+        byte[]? clearBytes = null;
+        try
+        {
+            clearBytes = ProtectedData.Unprotect(
+                protectedTransientPassword,
+                null,
+                DataProtectionScope.CurrentUser);
+            account = transientAccount;
+            password = Encoding.UTF8.GetString(clearBytes);
+            return password.Length > 0;
+        }
+        catch (CryptographicException ex)
+        {
+            FrontendLogger.Log(ex, "AppAuthSessionState.TransientCredentials");
+            ClearTransientCredentials();
+            return false;
+        }
+        finally
+        {
+            if (clearBytes is not null)
+                CryptographicOperations.ZeroMemory(clearBytes);
+        }
+    }
+
+    public void ClearTransientCredentials()
+    {
+        transientAccount = null;
+        if (protectedTransientPassword is not null)
+            CryptographicOperations.ZeroMemory(protectedTransientPassword);
+        protectedTransientPassword = null;
+    }
+
     public void Clear()
     {
         CurrentAccount = null;
         AccountAccessToken = null;
+        ClearTransientCredentials();
 
         try
         {

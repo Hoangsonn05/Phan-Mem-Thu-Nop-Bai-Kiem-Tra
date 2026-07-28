@@ -14,6 +14,11 @@ public sealed record RuntimeHealthComponent(string Status, string Code, string D
 public sealed record RuntimeHealthReport(
     string Status,
     DateTimeOffset ServerNowUtc,
+    string BuildId,
+    string SemanticVersion,
+    string Protocol,
+    int DiscoveryPort,
+    string ServerId,
     string LocalSchemaVersion,
     bool RunningInContainer,
     RuntimeHealthComponent BackendRuntime,
@@ -85,6 +90,11 @@ public sealed class RuntimeHealthReporter(
         return new(
             status,
             DateTimeOffset.UtcNow,
+            ReleaseIdentity.BuildId,
+            ReleaseIdentity.SemanticVersion,
+            DiscoveryProtocol.ProtocolVersion,
+            options.Value.Discovery.Port,
+            Controllers.DiscoveryController.MachineId(),
             ContractInfo.SchemaVersion,
             LanNetworkConfiguration.RunningInContainer,
             Component("Healthy", "BACKEND_RUNTIME_READY", "Backend runtime is responding."),

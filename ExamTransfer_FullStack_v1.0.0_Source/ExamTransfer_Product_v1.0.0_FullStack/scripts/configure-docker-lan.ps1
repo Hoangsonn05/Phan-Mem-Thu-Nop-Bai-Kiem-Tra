@@ -216,9 +216,9 @@ Write-Host "Configured LanAccess__AllowedCidrs__0=$effectiveCidr" -ForegroundCol
 Write-Host "Environment file: $EnvironmentFile (secret values were not printed)" -ForegroundColor Yellow
 
 $tcpOwner = Get-NetTCPConnection -LocalPort 5048 -State Listen -ErrorAction SilentlyContinue
-$udpOwner = Get-NetUDPEndpoint -LocalPort 5050 -ErrorAction SilentlyContinue
+$udpOwner = Get-NetUDPEndpoint -LocalPort 40550 -ErrorAction SilentlyContinue
 Write-Host "TCP 5048: $(if ($tcpOwner) {'LISTENING/IN USE'} else {'AVAILABLE'})"
-Write-Host "UDP 5050: $(if ($udpOwner) {'BOUND/IN USE'} else {'AVAILABLE'})"
+Write-Host "UDP 40550: $(if ($udpOwner) {'BOUND/IN USE'} else {'AVAILABLE'})"
 
 try {
     $health = Invoke-RestMethod -Uri 'http://127.0.0.1:5048/health' -TimeoutSec 3

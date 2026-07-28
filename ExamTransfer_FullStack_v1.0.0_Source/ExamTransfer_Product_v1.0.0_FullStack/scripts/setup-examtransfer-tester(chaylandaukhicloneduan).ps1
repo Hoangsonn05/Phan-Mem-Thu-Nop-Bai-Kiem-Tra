@@ -270,11 +270,11 @@ if ($Mode -eq 'FullStack') {
 
 if ($ConfigureFirewall) {
     if (-not (Test-IsAdministrator)) {
-        Add-Result 'Windows Firewall' 'MANUAL' 'Rerun PowerShell as Administrator to open TCP 5048 and UDP 5050.'
+        Add-Result 'Windows Firewall' 'MANUAL' 'Rerun PowerShell as Administrator to open TCP 5048 and UDP 40550.'
     } else {
         foreach ($rule in @(
             @{ Name='ExamTransfer Backend TCP 5048'; Protocol='TCP'; Port=5048 },
-            @{ Name='ExamTransfer Discovery UDP 5050'; Protocol='UDP'; Port=5050 }
+            @{ Name='ExamTransfer Discovery UDP 40550'; Protocol='UDP'; Port=40550 }
         )) {
             $existing = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
             if ($null -eq $existing) {

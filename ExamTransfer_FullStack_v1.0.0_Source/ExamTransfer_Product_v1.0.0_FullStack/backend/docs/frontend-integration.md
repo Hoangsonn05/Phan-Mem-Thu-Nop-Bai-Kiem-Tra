@@ -4,7 +4,7 @@
 
 - REST base URL: `http://{teacher-ip}:5048/api/v1`
 - SignalR hub: `http://{teacher-ip}:5048/hubs/exam`
-- UDP discovery port: `5050`
+- UDP discovery port: `40550`
 
 ## Authentication
 

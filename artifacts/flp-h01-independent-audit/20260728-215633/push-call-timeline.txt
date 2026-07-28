@@ -1,0 +1,115 @@
+TASK: ET-FLP-H01-INDEPENDENT-ROOT-CAUSE-AUDIT
+EVIDENCE TYPE: read-only live polling of the unique SQLite test database while the unmodified test ran
+TEST RESULT FOR THIS CAPTURE: PASS
+PROCESS DURATION: 3.534 s
+
+METHOD
+======
+
+- The test fake does not retain request history; it only has an Int32 counter.
+- No source/test logging was added.
+- A read-only SQLite observer captured sync_queue rows and status transitions during the test.
+- PushCalls is derived exactly from source semantics plus persisted transitions:
+  - SuccessfulPushCloud.PushAsync increments once at entry (test lines 241-247).
+  - CloudSyncWorker sets LastAttemptAtUtc and persists Syncing before each PushAsync (worker lines 79-96).
+  - The fake returns success; the worker then persists Synced/CompletedAtUtc (worker lines 97-108, 141).
+- Therefore each distinct row with one LastAttemptAtUtc and one successful completion corresponds to exactly one PushCalls increment in this fixture.
+
+STATUS LEGEND
+=============
+
+1 = Pending
+2 = Syncing
+3 = Synced
+
+CAPTURED BATCH
+==============
+
+Logical session ID:
+639c53ad-a1b8-47a1-b28c-da0c1802aa66
+
+Row 1
+- Outbox item ID: 5700011E-82E4-453A-A6D7-00EBDD79B96D
+- Entity/table: audit_logs
+- Entity ID: 7299ff21-11dc-4686-9d5b-e6d8061b67b1
+- Operation: upsert
+- Action: SessionCreated
+- Session ID: 639c53ad-a1b8-47a1-b28c-da0c1802aa66
+- Trace/request ID: 43f186b85829452b9841bb271c1eed34
+- Created: 2026-07-28 14:55:24.6429928+00:00
+
+Row 2
+- Outbox item ID: 0BB1A8F2-9AC0-4EB5-90E3-470C138628DC
+- Entity/table: audit_logs
+- Entity ID: 454e8030-dff6-4fb9-af6b-77b5cc27fafd
+- Operation: upsert
+- Action: SessionStateChanged
+- Session ID: 639c53ad-a1b8-47a1-b28c-da0c1802aa66
+- Trace/request ID: b82f3a4f3dc240609b2808ed02932af8
+- Created: 2026-07-28 14:55:24.6947712+00:00
+
+Row 3
+- Outbox item ID: B3829E00-9E82-4A4A-8E9A-932413B0DFCC
+- Entity/table: exam_sessions
+- Entity ID: 639c53ad-a1b8-47a1-b28c-da0c1802aa66
+- Operation: upsert
+- Correlation/request ID: not stored on SyncQueueItem/session payload
+- Logical correlation: EntityId equals the session ID used by both audits
+- Created: 2026-07-28 14:55:24.7111881+00:00
+
+PUSH CALL TIMELINE
+==================
+
+Call 1
+- Order: first eligible item in CreatedAtUtc order
+- Entity/table: audit_logs
+- Action: SessionCreated
+- Outbox item ID: 5700011E-82E4-453A-A6D7-00EBDD79B96D
+- Attempt number: 1 (RetryCount 0)
+- LastAttemptAtUtc / PushAsync entry interval start: 2026-07-28 14:55:24.9522058+00:00
+- Result: success, Synced
+- CompletedAtUtc: 2026-07-28 14:55:24.9710074+00:00
+- Worker task: single CloudSyncWorker.ExecuteAsync foreach
+- Exact managed thread ID: not recorded by existing fixture
+
+Call 2
+- Order: second eligible item
+- Entity/table: audit_logs
+- Action: SessionStateChanged
+- Outbox item ID: 0BB1A8F2-9AC0-4EB5-90E3-470C138628DC
+- Attempt number: 1 (RetryCount 0)
+- LastAttemptAtUtc / PushAsync entry interval start: 2026-07-28 14:55:25.0445288+00:00
+- Result: success, Synced
+- CompletedAtUtc: 2026-07-28 14:55:25.0480042+00:00
+- Worker task: same single CloudSyncWorker.ExecuteAsync foreach
+- Exact managed thread ID: not recorded by existing fixture
+
+Call 3
+- Order: third eligible item
+- Entity/table: exam_sessions
+- Entity ID: 639c53ad-a1b8-47a1-b28c-da0c1802aa66
+- Outbox item ID: B3829E00-9E82-4A4A-8E9A-932413B0DFCC
+- Attempt number: 1 (RetryCount 0)
+- LastAttemptAtUtc / PushAsync entry interval start: 2026-07-28 14:55:25.0512762+00:00
+- Result: success, Synced
+- CompletedAtUtc: 2026-07-28 14:55:25.0543429+00:00
+- Worker task: same single CloudSyncWorker.ExecuteAsync foreach
+- Exact managed thread ID: not recorded by existing fixture
+
+Additional calls
+- None.
+- Final PushCalls: 3.
+- Retry calls: 0.
+- Duplicate exam_sessions calls: 0.
+- Worker duplicate execution: not observed.
+
+COUNTER TRANSITION INTERPRETATION
+=================================
+
+The logical increments are:
+0 -> 1 after Call 1 (SessionCreated audit)
+1 -> 2 after Call 2 (SessionStateChanged audit)
+2 -> 3 after Call 3 (exam_sessions projection)
+
+The polling assertion samples every 10 ms. It may observe the transient value 1, or it may sample only after the counter has reached 3. A failed run is not evidence that the session projection failed: all 10 monitored runs ended with the exam_sessions row Synced and Ready=true by the readiness contract.
+

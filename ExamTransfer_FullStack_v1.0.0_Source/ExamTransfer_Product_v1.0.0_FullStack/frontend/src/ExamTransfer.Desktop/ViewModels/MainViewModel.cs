@@ -252,6 +252,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         accountHeartbeatCts = null;
         authState.Clear();
         AppServices.StudentRealtime.StopAsync().SafeFireAndForget("StudentRealtime.Logout");
+        AppServices.PublicCloud.Logout();
         AppServices.StudentState.Reset();
         api.SetAccountToken(null);
         api.SetParticipantToken(null);
@@ -524,11 +525,16 @@ public static class AppServices
     public static StudentSessionState StudentState { get; } = new();
     public static IServerClock ServerClock { get; } = new ServerClock();
     public static ICountdownTickerFactory CountdownTickers { get; } = new DispatcherCountdownTickerFactory();
+    public static ExamTransfer.Desktop.Infrastructure.IPublicCloudRuntimeOptionsProvider PublicCloudOptions { get; } =
+        new ExamTransfer.Desktop.Infrastructure.PublicCloudRuntimeOptionsProvider();
     public static ExamTransfer.Desktop.Infrastructure.SupabasePublicCloudClient PublicCloud { get; } =
-        new(serverClock: ServerClock);
-    public static ExamTransfer.Desktop.Infrastructure.SupabaseRealtimeService PublicRealtime { get; } = new();
+        new(serverClock: ServerClock, optionsProvider: PublicCloudOptions);
+    public static ExamTransfer.Desktop.Infrastructure.SupabaseRealtimeService PublicRealtime { get; } =
+        new(PublicCloudOptions);
     public static ILanDiscoveryService LanDiscovery { get; } =
         new ExamTransfer.Desktop.Infrastructure.LanDiscoveryService();
+    public static ExamTransfer.Desktop.Infrastructure.LocalServerLifecycleService LocalServerLifecycle { get; } =
+        new();
 
     public static IBackendClient Backend { get; } =
         new ExamTransfer.Desktop.Infrastructure.BackendClient(BaseUrl);
@@ -537,7 +543,11 @@ public static class AppServices
     public static IStudentHeartbeatService StudentHeartbeat { get; } =
         new ExamTransfer.Desktop.Infrastructure.StudentHeartbeatService(Backend, StudentState, ServerClock);
     public static IStudentRealtimeService StudentRealtime { get; } =
-        new ExamTransfer.Desktop.Infrastructure.StudentRealtimeService(Backend, StudentState, PublicRealtime);
+        new ExamTransfer.Desktop.Infrastructure.StudentRealtimeService(
+            Backend,
+            StudentState,
+            PublicRealtime,
+            PublicCloud);
     public static ISubmissionRecoveryService SubmissionRecovery { get; } =
         new ExamTransfer.Desktop.Infrastructure.SubmissionRecoveryService(AuthState, StudentState, LanDiscovery);
 }

@@ -31,8 +31,28 @@ public interface IBackendClient
 
 public interface ILanDiscoveryService
 {
+    Task<LanDiscoverySnapshot> DiscoverSnapshotAsync(
+        TimeSpan timeout,
+        string? roomCode = null,
+        CancellationToken ct = default);
     Task<IReadOnlyList<DiscoveryServerDto>> DiscoverAsync(TimeSpan timeout, CancellationToken ct = default);
     Task<IReadOnlyList<OpenSessionDiscoveryDto>> DiscoverOpenSessionsAsync(TimeSpan timeout, CancellationToken ct = default);
+    Task<OpenSessionDiscoveryDto?> DiscoverByRoomCodeAsync(
+        string roomCode,
+        TimeSpan timeout,
+        CancellationToken cancellationToken);
+}
+
+public sealed record LanDiscoverySnapshot(
+    IReadOnlyList<DiscoveryServerDto> Servers,
+    IReadOnlyList<OpenSessionDiscoveryDto> Rooms,
+    string RequestId,
+    int ResponseCount,
+    IReadOnlyList<string>? RejectionCodes = null);
+
+public sealed class LanDiscoveryException(string code, string message) : Exception(message)
+{
+    public string Code { get; } = code;
 }
 
 public enum StudentConnectionState { Stopped, Connecting, Online, Reconnecting, Offline, AuthenticationExpired }
@@ -49,6 +69,8 @@ public interface IStudentHeartbeatService : IDisposable
 public interface IStudentRealtimeService : IDisposable
 {
     bool IsConnected { get; }
+    bool IsRunning => IsConnected;
+    Guid? ActiveSessionId => null;
     event EventHandler<string>? EventReceived;
     event EventHandler<StudentRealtimeNotification>? NotificationReceived;
     Task StartAsync(CancellationToken ct = default);
@@ -59,7 +81,8 @@ public sealed record StudentRealtimeNotification(
     Guid SessionId,
     string EventName,
     long Revision,
-    TimeExtendedEvent? TimeExtended);
+    TimeExtendedEvent? TimeExtended,
+    Guid? ParticipantId = null);
 
 public interface ISubmissionRecoveryService : IDisposable
 {

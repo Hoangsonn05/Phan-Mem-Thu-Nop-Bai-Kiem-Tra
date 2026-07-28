@@ -11,6 +11,7 @@ namespace ExamTransfer.LocalServer.Workers;
 public sealed class CloudSyncWorker(
     IServiceScopeFactory scopeFactory,
     IOptions<ExamTransferOptions> options,
+    ICloudSyncSignal cloudSyncSignal,
     ILogger<CloudSyncWorker> logger) : BackgroundService
 {
     private readonly CloudOptions cloudOptions = options.Value.Cloud;
@@ -22,7 +23,7 @@ public sealed class CloudSyncWorker(
         {
             try
             {
-                await Task.Delay(
+                _ = await cloudSyncSignal.WaitAsync(
                     TimeSpan.FromSeconds(
                         Math.Max(2, cloudOptions.WorkerIntervalSeconds)),
                     stoppingToken);
@@ -37,11 +38,14 @@ public sealed class CloudSyncWorker(
                     continue;
 
                 var now = DateTimeOffset.UtcNow;
-                var items = await db.SyncQueueSet
+                var queueCandidates = await db.SyncQueueSet
                     .Where(x =>
                         (x.Status == SyncStatus.Pending
-                            || x.Status == SyncStatus.Failed)
-                        && (x.NextRetryAtUtc == null
+                            || x.Status == SyncStatus.Failed))
+                    .ToListAsync(stoppingToken);
+                var items = queueCandidates
+                    .Where(x =>
+                        (x.NextRetryAtUtc == null
                             || x.NextRetryAtUtc <= now)
                         && (x.LeaseUntilUtc == null
                             || x.LeaseUntilUtc < now))
@@ -50,7 +54,7 @@ public sealed class CloudSyncWorker(
                         cloudOptions.WorkerBatchSize,
                         1,
                         100))
-                    .ToListAsync(stoppingToken);
+                    .ToList();
 
                 foreach (var item in items)
                 {

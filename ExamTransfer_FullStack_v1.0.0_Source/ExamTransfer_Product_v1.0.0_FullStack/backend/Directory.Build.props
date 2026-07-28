@@ -10,5 +10,15 @@
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <InvariantGlobalization>false</InvariantGlobalization>
     <Deterministic>true</Deterministic>
+    <ExamTransferSemanticVersion Condition="'$(ExamTransferSemanticVersion)' == ''">$(Version)</ExamTransferSemanticVersion>
+    <ExamTransferBuildId Condition="'$(ExamTransferBuildId)' == ''">$(ExamTransferSemanticVersion)+development</ExamTransferBuildId>
+    <ExamTransferGitCommit Condition="'$(ExamTransferGitCommit)' == ''">unknown</ExamTransferGitCommit>
+    <ExamTransferWorkingTreeDirty Condition="'$(ExamTransferWorkingTreeDirty)' == ''">true</ExamTransferWorkingTreeDirty>
   </PropertyGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="ExamTransferSemanticVersion" Value="$(ExamTransferSemanticVersion)" />
+    <AssemblyMetadata Include="ExamTransferBuildId" Value="$(ExamTransferBuildId)" />
+    <AssemblyMetadata Include="ExamTransferGitCommit" Value="$(ExamTransferGitCommit)" />
+    <AssemblyMetadata Include="ExamTransferWorkingTreeDirty" Value="$(ExamTransferWorkingTreeDirty)" />
+  </ItemGroup>
 </Project>

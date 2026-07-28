@@ -261,6 +261,12 @@ public sealed class SessionFirstOpenFrontendTests
         IReadOnlyList<DiscoveryServerDto> servers,
         IReadOnlyList<OpenSessionDiscoveryDto> rooms) : ILanDiscoveryService
     {
+        public Task<LanDiscoverySnapshot> DiscoverSnapshotAsync(
+            TimeSpan timeout,
+            string? roomCode = null,
+            CancellationToken ct = default) =>
+            Task.FromResult(new LanDiscoverySnapshot(servers, rooms, "test-request", servers.Count));
+
         public Task<IReadOnlyList<DiscoveryServerDto>> DiscoverAsync(
             TimeSpan timeout,
             CancellationToken ct = default) =>
@@ -270,5 +276,12 @@ public sealed class SessionFirstOpenFrontendTests
             TimeSpan timeout,
             CancellationToken ct = default) =>
             Task.FromResult(rooms);
+
+        public Task<OpenSessionDiscoveryDto?> DiscoverByRoomCodeAsync(
+            string roomCode,
+            TimeSpan timeout,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<OpenSessionDiscoveryDto?>(
+                rooms.SingleOrDefault(x => x.RoomCode.Equals(roomCode, StringComparison.OrdinalIgnoreCase)));
     }
 }

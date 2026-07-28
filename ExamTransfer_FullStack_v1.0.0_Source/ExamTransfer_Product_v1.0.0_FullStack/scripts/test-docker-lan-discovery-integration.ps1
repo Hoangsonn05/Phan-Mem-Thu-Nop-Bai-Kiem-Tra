@@ -22,7 +22,7 @@ function Get-EnvironmentValue([string]$Path, [string]$Name) {
 function Assert-DockerNatFirewall {
     $required = @(
         @{ Name = 'ExamTransfer Docker Backend TCP 5048'; Protocol = 'TCP'; Port = '5048' },
-        @{ Name = 'ExamTransfer Docker Discovery UDP 5050'; Protocol = 'UDP'; Port = '5050' }
+        @{ Name = 'ExamTransfer Docker Discovery UDP 40550'; Protocol = 'UDP'; Port = '40550' }
     )
     foreach ($expected in $required) {
         $rule = Get-NetFirewallRule -DisplayName $expected.Name -ErrorAction Stop
@@ -104,7 +104,6 @@ $testKey = [Convert]::ToBase64String($keyBytes)
     'Discovery__Enabled=true',
     'Discovery__Protocol=UdpBroadcast',
     "Discovery__Port=$HostUdpPort",
-    'Discovery__RequestMagic=EXAMTRANSFER_DISCOVER_V1',
     "LanAccess__AllowedCidrs__0=$allowedCidr",
     'Storage__RootPath=/data/ExamTransfer',
     'Storage__MinFreeBytes=1',

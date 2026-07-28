@@ -20,6 +20,14 @@ public sealed class SessionsController(ISessionService service) : ApiControllerB
     public async Task<ActionResult<ApiResponse<SessionDetailDto>>> CreateAndOpen(CreateSessionRequest request, CancellationToken ct) =>
         Data(await service.CreateAndOpenAsync(request, Environment.MachineName, ct));
 
+    [HttpGet("{id:guid}/cloud-projection")][Authorize(Policy = "TeacherOrAdmin")]
+    public async Task<ActionResult<ApiResponse<CloudProjectionReadiness>>> CloudProjection(Guid id, CancellationToken ct) =>
+        Data(await service.GetProjectionReadinessAsync(id, ct));
+
+    [HttpPost("{id:guid}/cloud-projection/retry")][Authorize(Policy = "TeacherOrAdmin")]
+    public async Task<ActionResult<ApiResponse<CloudProjectionReadiness>>> RetryCloudProjection(Guid id, CancellationToken ct) =>
+        Data(await service.RetryProjectionAsync(id, ct));
+
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<ApiResponse<SessionDetailDto>>> Get(Guid id, CancellationToken ct)
     {

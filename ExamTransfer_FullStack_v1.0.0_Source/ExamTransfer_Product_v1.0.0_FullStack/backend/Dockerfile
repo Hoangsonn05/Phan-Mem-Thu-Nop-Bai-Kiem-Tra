@@ -43,7 +43,7 @@ ENV DOTNET_RUNNING_IN_CONTAINER=true \
     DOTNET_EnableDiagnostics=0
 
 EXPOSE 5048/tcp
-EXPOSE 5050/udp
+EXPOSE 40550/udp
 
 USER app
 
