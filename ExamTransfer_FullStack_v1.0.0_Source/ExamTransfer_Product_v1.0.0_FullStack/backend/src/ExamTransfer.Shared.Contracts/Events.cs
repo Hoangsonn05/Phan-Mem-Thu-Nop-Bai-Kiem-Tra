@@ -22,6 +22,7 @@ public static class RealtimeEvents
     public const string ViolationDetected = nameof(ViolationDetected);
     public const string ControlPolicyChanged = nameof(ControlPolicyChanged);
     public const string GradeReturned = nameof(GradeReturned);
+    public const string QuizGradeReturned = nameof(QuizGradeReturned);
     public const string ExportProgressChanged = nameof(ExportProgressChanged);
     public const string CloudSyncStatusChanged = nameof(CloudSyncStatusChanged);
     public const string BackupProgressChanged = nameof(BackupProgressChanged);
@@ -49,4 +50,10 @@ public sealed record TeacherMessageEvent(Guid MessageId, string Content, Guid? T
 public sealed record ForceSubmitEvent(DateTimeOffset DeadlineUtc, string Reason);
 public sealed record ControlPolicyChangedEvent(int Version, PolicyApplyStatus ApplyStatus);
 public sealed record GradeReturnedEvent(Guid SubmissionId, decimal? Score, decimal MaxScore);
+public sealed record QuizGradeReturnedEvent(
+    Guid AttemptId,
+    Guid SessionId,
+    decimal Score,
+    decimal MaxScore,
+    DateTimeOffset ReturnedAtUtc);
 public sealed record ExportProgressEvent(Guid JobId, double Progress, ExportStatus Status);

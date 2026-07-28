@@ -1,8 +1,8 @@
 begin;
 select plan(23);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1), 21,
-  'ET-01 PublicCloud timeline remains available at schema version 21');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1), 22,
+  'ET-01 PublicCloud timeline remains available at schema version 22');
 select has_function('public','get_public_student_timeline',array['uuid'],
   'authoritative student timeline RPC exists');
 select ok(not has_function_privilege('anon','public.get_public_student_timeline(uuid)','EXECUTE'),

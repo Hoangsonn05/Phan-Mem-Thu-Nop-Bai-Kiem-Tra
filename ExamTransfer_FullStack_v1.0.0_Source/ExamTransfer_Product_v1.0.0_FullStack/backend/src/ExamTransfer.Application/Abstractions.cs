@@ -426,6 +426,59 @@ public interface IGradeService
     Task<byte[]> ExportGradebookCsvAsync(Guid? sessionId, CancellationToken cancellationToken);
 }
 
+public interface IQuizGradingService
+{
+    Task<PagedResult<GradingWorkItemDto>> GetWorkItemsAsync(
+        GradingStatus? status,
+        int page,
+        int pageSize,
+        Guid actorId,
+        string? organizationId,
+        CancellationToken cancellationToken);
+    Task<QuizGradeDetailDto> GetAsync(
+        Guid attemptId,
+        Guid actorId,
+        string? organizationId,
+        CancellationToken cancellationToken);
+    Task<QuizGradeDetailDto> SaveAsync(
+        Guid attemptId,
+        SaveQuizGradeRequest request,
+        Guid actorId,
+        string? organizationId,
+        CancellationToken cancellationToken);
+    Task<QuizGradeDetailDto> ReturnAsync(
+        Guid attemptId,
+        ReturnQuizGradeRequest request,
+        Guid actorId,
+        string? organizationId,
+        CancellationToken cancellationToken);
+    Task<QuizGradeDetailDto> ReopenAsync(
+        Guid attemptId,
+        ReopenQuizGradeRequest request,
+        Guid actorId,
+        string? organizationId,
+        CancellationToken cancellationToken);
+    Task<StudentQuizReviewDto> GetStudentReviewAsync(
+        Guid attemptId,
+        Guid participantId,
+        CancellationToken cancellationToken);
+}
+
+public interface ISubmissionPreviewService
+{
+    Task<SubmissionPreviewManifestDto> GetManifestAsync(
+        Guid submissionId,
+        Guid fileId,
+        string? organizationId,
+        CancellationToken cancellationToken);
+    Task<SubmissionPreviewDto> GetPreviewAsync(
+        Guid submissionId,
+        Guid fileId,
+        string? entryKey,
+        string? organizationId,
+        CancellationToken cancellationToken);
+}
+
 public interface IControlService
 {
     Task<ControlPolicyDto?> GetPolicyAsync(Guid sessionId, CancellationToken cancellationToken);

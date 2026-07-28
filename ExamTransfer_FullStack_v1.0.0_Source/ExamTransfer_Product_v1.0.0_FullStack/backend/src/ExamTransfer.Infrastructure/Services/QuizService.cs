@@ -278,13 +278,18 @@ public sealed class QuizService(
             throw new ApiException(ErrorCodes.Forbidden, "Thiết bị chưa áp dụng xong chính sách giám sát chuẩn.", 403);
         var questions = session.Exam.QuizQuestions.Where(x => x.Version == session.ExamVersionSnapshot).OrderBy(x => x.Order).Select(ToQuestionDto).ToList();
         if (questions.Count == 0) throw new ApiException(ErrorCodes.InvalidStateTransition, "Đề chưa có câu hỏi trắc nghiệm.", 409);
+        if (questions.Sum(x => x.Points) != 10.00m)
+            throw new ApiException(
+                ErrorCodes.InvalidStateTransition,
+                "Đề trắc nghiệm chưa được chuẩn hóa về thang điểm 10.00; hãy nhập lại hoặc nhân bản đề trước khi mở lượt làm bài.",
+                409);
         var deadline = session.StartedAtUtc!.Value.AddMinutes(session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
         if (DateTimeOffset.UtcNow > deadline) throw new ApiException(ErrorCodes.DeadlinePassed, "Đã hết thời gian làm bài.", 409);
         var attempt = new QuizAttempt
         {
             SessionId = sessionId, ParticipantId = participantId, ExamVersion = session.ExamVersionSnapshot,
             StartedAtUtc = DateTimeOffset.UtcNow, DeadlineUtc = deadline,
-            MaxScore = questions.Sum(x => x.Points), SnapshotJson = JsonSerializer.Serialize(questions, Json),
+            MaxScore = 10.00m, SnapshotJson = JsonSerializer.Serialize(questions, Json),
             ResultPolicySnapshot = session.QuizResultPolicySnapshot
         };
         db.QuizAttemptsSet.Add(attempt);
@@ -357,8 +362,12 @@ public sealed class QuizService(
             if (expected.SequenceEqual(actual)) score += question.Points;
         }
         attempt.Score = score;
+        attempt.AutoScore = score;
+        attempt.MaxScore = 10.00m;
         attempt.Status = QuizAttemptStatus.Finalized;
         attempt.FinalizedAtUtc = DateTimeOffset.UtcNow;
+        attempt.GradingStatus = GradingStatus.Graded;
+        attempt.GradedAtUtc = attempt.FinalizedAtUtc;
         attempt.FinalizeIdempotencyKey = request.IdempotencyKey.Trim();
         await db.SaveChangesAsync(cancellationToken);
         await outbox.EnqueueAsync("quiz_attempts", attempt.Id.ToString(), "upsert", AttemptCloud(attempt), cancellationToken: cancellationToken);
@@ -372,7 +381,8 @@ public sealed class QuizService(
     private static QuizAttemptDto ToStudentDto(QuizAttempt attempt)
     {
         var scoreVisible = attempt.Status == QuizAttemptStatus.Finalized
-            && attempt.ResultPolicySnapshot == QuizResultPolicy.ShowAfterSubmission;
+            && (attempt.ResultPolicySnapshot == QuizResultPolicy.ShowAfterSubmission
+                || attempt.ReturnedAtUtc.HasValue);
         return new(
             attempt.Id, attempt.SessionId, attempt.ParticipantId, attempt.Status, attempt.ExamVersion,
             attempt.StartedAtUtc, attempt.DeadlineUtc, attempt.FinalizedAtUtc,
@@ -426,7 +436,7 @@ public sealed class QuizService(
     private static QuizQuestionDto ToQuestionDto(QuizQuestion x) => new(x.Id, x.Text, x.Order, x.Points, x.Multiple, x.Choices.OrderBy(c => c.Order).Select(c => new QuizChoiceDto(c.Id, c.Text, c.Order)).ToList());
     private static object QuestionCloud(QuizQuestion x) => new { id = x.Id, exam_id = x.ExamId, version = x.Version, sort_order = x.Order, question_text = x.Text, points = x.Points, multiple = x.Multiple, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
     private static object ChoiceCloud(QuizChoice x) => new { id = x.Id, question_id = x.QuestionId, sort_order = x.Order, choice_text = x.Text, is_correct = x.IsCorrect, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
-    private static object AttemptCloud(QuizAttempt x) => new { id = x.Id, session_id = x.SessionId, participant_id = x.ParticipantId, exam_version = x.ExamVersion, result_policy = x.ResultPolicySnapshot.ToString(), status = x.Status.ToString(), started_at = x.StartedAtUtc, deadline_at = x.DeadlineUtc, finalized_at = x.FinalizedAtUtc, score = x.Score, max_score = x.MaxScore, snapshot_json = x.SnapshotJson, finalize_idempotency_key = x.FinalizeIdempotencyKey, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
+    private static object AttemptCloud(QuizAttempt x) => new { id = x.Id, session_id = x.SessionId, participant_id = x.ParticipantId, exam_version = x.ExamVersion, result_policy = x.ResultPolicySnapshot.ToString(), status = x.Status.ToString(), started_at = x.StartedAtUtc, deadline_at = x.DeadlineUtc, finalized_at = x.FinalizedAtUtc, auto_score = x.AutoScore, score = x.Score, max_score = x.MaxScore, grading_status = x.GradingStatus.ToString(), general_comment = x.GeneralComment, grader_id = x.GraderId, graded_at = x.GradedAtUtc, returned_at = x.ReturnedAtUtc, snapshot_json = x.SnapshotJson, finalize_idempotency_key = x.FinalizeIdempotencyKey, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
     private static object AnswerCloud(QuizAnswer x) => new { id = x.Id, attempt_id = x.AttemptId, question_id = x.QuestionId, choice_ids = x.ChoiceIdsJson, revision = x.Revision, client_updated_at = x.ClientUpdatedAtUtc, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
     private static object SourceCloud(QuizImportSource x) => new
     {
@@ -567,9 +577,14 @@ public sealed class QuizService(
     private static void Validate(QuizImportDocument document)
     {
         if (document.Questions.Count is < 1 or > 500) throw new ApiException(ErrorCodes.ValidationFailed, "Đề phải có từ 1 đến 500 câu hỏi.");
+        if (document.Questions.Sum(x => x.Points) != 10.00m)
+            throw new ApiException(ErrorCodes.ValidationFailed, "Tổng điểm trắc nghiệm phải chính xác bằng 10.00.");
         foreach (var q in document.Questions)
         {
-            if (string.IsNullOrWhiteSpace(q.Text) || q.Text.Length > 5000 || q.Points <= 0 || q.Points > 100)
+            if (string.IsNullOrWhiteSpace(q.Text)
+                || q.Text.Length > 5000
+                || q.Points <= 0
+                || decimal.Round(q.Points, 2, MidpointRounding.ToEven) != q.Points)
                 throw new ApiException(ErrorCodes.ValidationFailed, "Nội dung hoặc điểm câu hỏi không hợp lệ.");
             if (q.Choices.Count is < 2 or > 10 || q.Choices.Any(string.IsNullOrWhiteSpace))
                 throw new ApiException(ErrorCodes.ValidationFailed, "Mỗi câu phải có từ 2 đến 10 lựa chọn.");

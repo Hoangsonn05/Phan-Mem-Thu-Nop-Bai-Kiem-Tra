@@ -145,7 +145,7 @@ public sealed class GradeService(AppDbContext db, IStoragePaths paths, IChunkSto
 
     private static void Validate(SaveGradeRequest r)
     {
-        if (r.MaxScore <= 0 || r.Score < 0 || r.Score > r.MaxScore) throw new ApiException(ErrorCodes.ValidationFailed, "Điểm phải nằm trong khoảng 0 đến điểm tối đa.");
+        if (r.MaxScore != 10.00m || r.Score < 0 || r.Score > 10.00m) throw new ApiException(ErrorCodes.ValidationFailed, "Điểm phải nằm trong khoảng 0 đến 10 và điểm tối đa bắt buộc là 10.");
         if (r.RubricScores.Any(x => x.Score < 0 || x.Score > x.MaxScore)) throw new ApiException(ErrorCodes.ValidationFailed, "Điểm rubric không hợp lệ.");
         if (r.RubricScores.Count > 0 && r.RubricScores.Sum(x => x.MaxScore) > r.MaxScore) throw new ApiException(ErrorCodes.ValidationFailed, "Tổng điểm tối đa rubric vượt điểm tối đa.");
     }

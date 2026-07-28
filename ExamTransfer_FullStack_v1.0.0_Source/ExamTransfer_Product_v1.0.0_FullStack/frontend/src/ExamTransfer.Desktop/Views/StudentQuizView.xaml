@@ -38,11 +38,53 @@
                         Command="{Binding ExitQuizCommand}"
                         Style="{StaticResource SecondaryButton}"
                         Margin="8,0,0,0"/>
+                <Button Content="Xem bài trắc nghiệm đã làm"
+                        Command="{Binding ReviewCommand}"
+                        Style="{StaticResource SecondaryButton}"
+                        Margin="8,0,0,0"/>
             </StackPanel>
         </Grid>
         
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-            <ItemsControl ItemsSource="{Binding Questions}" Margin="0,0,16,0">
+            <StackPanel Margin="0,0,16,0">
+            <ItemsControl ItemsSource="{Binding Review.Questions}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,20" Padding="24">
+                            <StackPanel>
+                                <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource InfoBrush}">
+                                    <Run Text="Câu "/><Run Text="{Binding Order}"/>
+                                    <Run Text=" · "/><Run Text="{Binding EarnedPoints}"/>
+                                    <Run Text="/"/><Run Text="{Binding Points}"/><Run Text=" điểm"/>
+                                </TextBlock>
+                                <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontWeight="SemiBold"
+                                           FontSize="18" Margin="0,10,0,14"/>
+                                <ItemsControl ItemsSource="{Binding Choices}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border CornerRadius="8" Background="{DynamicResource SurfaceSubtleBrush}"
+                                                    Margin="0,0,0,8" Padding="12">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <CheckBox Content="{Binding Text}" IsChecked="{Binding Selected}"
+                                                              IsEnabled="False"/>
+                                                    <TextBlock Grid.Column="1" Margin="12,0,0,0"
+                                                               FontWeight="SemiBold"
+                                                               Text="{Binding Correct, StringFormat=Đáp án đúng: {0}}"/>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <ItemsControl ItemsSource="{Binding Questions}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <Border Style="{StaticResource Card}" Margin="0,0,0,20" Padding="24">
@@ -73,6 +115,7 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
+            </StackPanel>
         </ScrollViewer>
         
         <Border Grid.Row="4" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
@@ -82,6 +125,8 @@
                 <TextBlock Text="{Binding Result}" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center"/>
                 <TextBlock Text=" · " Foreground="{DynamicResource TextMutedBrush}" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding Status}" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding ReviewSummary}" FontWeight="SemiBold" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding ReviewComment}" Margin="12,0,0,0" TextWrapping="Wrap" VerticalAlignment="Center"/>
             </StackPanel>
         </Border>
     </Grid>

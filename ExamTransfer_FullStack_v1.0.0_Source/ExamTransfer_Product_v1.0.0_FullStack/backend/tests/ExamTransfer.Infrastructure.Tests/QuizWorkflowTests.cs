@@ -58,8 +58,8 @@ public sealed class QuizWorkflowTests
             new(preview.PreviewToken, false, exam.RowVersion),
             default);
         Assert.Equal(2, imported.QuestionCount);
-        Assert.Equal(2m, preview.MaxScore);
-        Assert.Equal(2m, imported.MaxScore);
+        Assert.Equal(10m, preview.MaxScore);
+        Assert.Equal(10m, imported.MaxScore);
 
         exam.Status = ExamStatus.Published;
         var session = new ExamSession
@@ -107,8 +107,8 @@ public sealed class QuizWorkflowTests
 
         var finalized = await service.FinalizeAsync(attempt.Id, participant.Id, new("final-1", DateTimeOffset.UtcNow), default);
         var repeated = await service.FinalizeAsync(attempt.Id, participant.Id, new("final-1", DateTimeOffset.UtcNow), default);
-        Assert.Equal(2m, finalized.Score);
-        Assert.Equal(2m, finalized.MaxScore);
+        Assert.Equal(10m, finalized.Score);
+        Assert.Equal(10m, finalized.MaxScore);
         Assert.Equal(finalized.Score, repeated.Score);
         Assert.Equal(QuizAttemptStatus.Finalized, finalized.Status);
         await Assert.ThrowsAsync<ApiException>(() => service.SyncAnswersAsync(attempt.Id, participant.Id, new([]), default));
@@ -180,9 +180,9 @@ public sealed class QuizWorkflowTests
         Assert.False(hiddenFinalized.ScoreVisible);
         Assert.Null(hiddenFinalized.Score);
         Assert.DoesNotContain("isCorrect", JsonSerializer.Serialize(hiddenFinalized), StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(1m, (await db.QuizAttemptsSet.SingleAsync(x => x.Id == hiddenAttempt.Id)).Score);
+        Assert.Equal(5m, (await db.QuizAttemptsSet.SingleAsync(x => x.Id == hiddenAttempt.Id)).Score);
         var teacherAttempt = Assert.Single(await service.ListAttemptsForSessionAsync(hiddenSession.Id, default));
-        Assert.Equal(1m, teacherAttempt.Score);
+        Assert.Equal(5m, teacherAttempt.Score);
     }
 
     private static byte[] Docx(params string[] lines)

@@ -390,7 +390,8 @@ public sealed class PublicCloudPullWorker(
                 var incomingStatus = EnumValue<QuizAttemptStatus>(row, "status");
                 var entity = await db.QuizAttemptsSet.FindAsync([id], cancellationToken);
                 if (entity is not null && entity.CloudVersion >= record.CloudVersion) return entity.Id;
-                if (entity?.Status == QuizAttemptStatus.Finalized)
+                if (entity?.Status == QuizAttemptStatus.Finalized
+                    && incomingStatus != QuizAttemptStatus.Finalized)
                     return entity.Id;
                 entity ??= new QuizAttempt { Id = id };
                 if (db.Entry(entity).State == EntityState.Detached) db.QuizAttemptsSet.Add(entity);
@@ -401,8 +402,19 @@ public sealed class PublicCloudPullWorker(
                 entity.StartedAtUtc = DateValue(row, "started_at", record.UpdatedAtUtc);
                 entity.DeadlineUtc = DateValue(row, "deadline_at", record.UpdatedAtUtc);
                 entity.FinalizedAtUtc = NullableDate(row, "finalized_at");
+                entity.AutoScore = NullableDecimal(row, "auto_score");
                 entity.Score = NullableDecimal(row, "score");
                 entity.MaxScore = DecimalValue(row, "max_score");
+                entity.GradingStatus = EnumValue(
+                    row,
+                    "grading_status",
+                    incomingStatus == QuizAttemptStatus.Finalized
+                        ? GradingStatus.Graded
+                        : GradingStatus.InProgress);
+                entity.GeneralComment = NullableString(row, "general_comment");
+                entity.GraderId = NullableGuid(row, "grader_id");
+                entity.GradedAtUtc = NullableDate(row, "graded_at");
+                entity.ReturnedAtUtc = NullableDate(row, "returned_at");
                 entity.ResultPolicySnapshot = EnumValue(
                     row,
                     "result_policy",

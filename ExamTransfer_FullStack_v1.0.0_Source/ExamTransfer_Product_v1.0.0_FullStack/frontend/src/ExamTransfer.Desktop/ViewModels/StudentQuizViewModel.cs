@@ -20,10 +20,12 @@ public sealed class StudentQuizViewModel : ProductPageBase
     private readonly SemaphoreSlim syncGate = new(1, 1);
     private readonly Dictionary<Guid, QuizAnswerDto> localAnswers = [];
     private QuizAttemptDto? attempt;
+    private StudentQuizReviewDto? review;
     private TimeSpan? remaining;
     private bool applying;
     private int expiredSnapshotRefreshRequested;
     private int realtimeSnapshotRefreshRequested;
+    private int gradeReturnedNotificationShown;
 
     public StudentQuizViewModel(IBackendClient api, StudentSessionState session)
         : this(
@@ -54,6 +56,9 @@ public sealed class StudentQuizViewModel : ProductPageBase
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy && session.HasSession);
         SyncCommand = new AsyncRelayCommand(() => SyncAsync(DisposeToken, true), () => !IsBusy && CanEditAnswers);
         FinalizeCommand = new AsyncRelayCommand(FinalizeAsync, () => !IsBusy && Attempt is not null && Attempt.Status == QuizAttemptStatus.InProgress);
+        ReviewCommand = new AsyncRelayCommand(
+            () => ReviewAsync(DisposeToken),
+            () => !IsBusy && Attempt?.Status == QuizAttemptStatus.Finalized);
         ExitQuizCommand = new RelayCommand(
             () => this.flowCoordinator.ReturnToCurrentExam(),
             () => Attempt?.Status == QuizAttemptStatus.Finalized);
@@ -64,6 +69,18 @@ public sealed class StudentQuizViewModel : ProductPageBase
     }
 
     public ObservableCollection<QuizQuestionState> Questions { get; } = new();
+    public StudentQuizReviewDto? Review
+    {
+        get => review;
+        private set
+        {
+            if (Set(ref review, value))
+            {
+                Raise(nameof(ReviewSummary));
+                Raise(nameof(ReviewComment));
+            }
+        }
+    }
     public QuizAttemptDto? Attempt
     {
         get => attempt;
@@ -86,6 +103,14 @@ public sealed class StudentQuizViewModel : ProductPageBase
             : "Đã nộp bài thành công"
         : "Đáp án được lưu cục bộ và tự đồng bộ khi có mạng";
     public int AnsweredCount => Questions.Count(x => x.Choices.Any(choice => choice.IsSelected));
+    public string ReviewSummary => Review is null
+        ? string.Empty
+        : Review.ScoreVisible && Review.Score.HasValue
+            ? $"Điểm đã công bố: {Review.Score:0.##}/{Review.MaxScore:0.##}"
+            : "Bài làm chỉ đọc · điểm chưa được công bố";
+    public string ReviewComment => string.IsNullOrWhiteSpace(Review?.GeneralComment)
+        ? string.Empty
+        : $"Nhận xét: {Review.GeneralComment}";
     public int UnansweredCount => Math.Max(0, Questions.Count - AnsweredCount);
     public string ProgressText => $"Đã trả lời {AnsweredCount}/{Questions.Count} câu";
     public string TimeLeft => ServerCountdown.Format(remaining);
@@ -96,6 +121,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
     public ICommand RefreshCommand { get; }
     public ICommand SyncCommand { get; }
     public ICommand FinalizeCommand { get; }
+    public ICommand ReviewCommand { get; }
     public ICommand ExitQuizCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
@@ -127,12 +153,14 @@ public sealed class StudentQuizViewModel : ProductPageBase
             var loadedAttempt = session.CurrentAttempt
                 ?? throw new InvalidDataException("Coordinator chưa cung cấp snapshot lượt làm bài an toàn.");
             Attempt = loadedAttempt;
+            Review = null;
             localAnswers.Clear();
             foreach (var answer in Attempt.Answers) localAnswers[answer.QuestionId] = answer;
             foreach (var answer in await QuizLocalStore.LoadAsync(Attempt.Id, token))
                 if (!localAnswers.TryGetValue(answer.QuestionId, out var current) || answer.Revision > current.Revision) localAnswers[answer.QuestionId] = answer;
             ApplyQuestions();
             if (Attempt.Status == QuizAttemptStatus.InProgress) await SyncAsync(token, false);
+            else await LoadReviewCoreAsync(token);
             UpdateCountdown();
             Interlocked.Exchange(
                 ref expiredSnapshotRefreshRequested,
@@ -225,8 +253,30 @@ public sealed class StudentQuizViewModel : ProductPageBase
             : ApiGuard.Require(await api.PostAsync<FinalizeQuizAttemptRequest, QuizAttemptDto>(
                 $"api/v1/student/quiz/attempts/{Attempt.Id}/finalize", new(idempotencyKey, RequiredServerNowUtc()), ct));
         session.CurrentAttempt = Attempt;
+        await LoadReviewCoreAsync(ct);
         Raise(nameof(Result));
     });
+
+    private Task ReviewAsync(CancellationToken _) =>
+        RunAsync(
+            "Đang tải bài trắc nghiệm đã làm",
+            "Đã tải bài làm ở chế độ chỉ đọc",
+            LoadReviewCoreAsync);
+
+    private async Task LoadReviewCoreAsync(CancellationToken ct)
+    {
+        if (Attempt?.Status != QuizAttemptStatus.Finalized)
+            return;
+        Review = session.AccessMode == SessionAccessMode.PublicCloud
+            ? await AppServices.PublicCloud.GetQuizAttemptReviewAsync(Attempt.Id, ct)
+            : ApiGuard.Require(await api.GetAsync<StudentQuizReviewDto>(
+                $"api/v1/student/quiz/attempts/{Attempt.Id}/review",
+                ct));
+        Questions.Clear();
+        Raise(nameof(AnsweredCount));
+        Raise(nameof(UnansweredCount));
+        Raise(nameof(ProgressText));
+    }
 
     private DateTimeOffset RequiredServerNowUtc()
     {
@@ -267,6 +317,45 @@ public sealed class StudentQuizViewModel : ProductPageBase
 
         if (eventName is RealtimeEvents.TimeExtended or "Reconnected")
             RequestSnapshotResync();
+        else if (IsCurrentGradeReturnedEvent(eventName))
+            RequestGradeReviewRefresh();
+    }
+
+    private bool IsCurrentGradeReturnedEvent(string eventName)
+    {
+        if (Attempt is null)
+            return false;
+        if (string.Equals(
+                eventName,
+                RealtimeEvents.QuizGradeReturned,
+                StringComparison.Ordinal))
+            return true;
+        return string.Equals(
+            eventName,
+            $"{RealtimeEvents.QuizGradeReturned}:{Attempt.Id:N}",
+            StringComparison.Ordinal);
+    }
+
+    private void RequestGradeReviewRefresh()
+    {
+        if (Interlocked.Exchange(ref gradeReturnedNotificationShown, 1) != 0)
+            return;
+        System.Windows.Application.Current.Dispatcher.InvokeAsync(async () =>
+        {
+            try
+            {
+                await LoadReviewCoreAsync(DisposeToken);
+                if (Review?.ScoreVisible == true && Review.Score.HasValue)
+                    AppServices.Toasts.Show(
+                        $"Giáo viên đã công bố điểm trắc nghiệm: {Review.Score:0.##}/10",
+                        "success");
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Exchange(ref gradeReturnedNotificationShown, 0);
+                ReportFailure(ex);
+            }
+        });
     }
 
     private void OnRealtimeNotification(object? sender, StudentRealtimeNotification notification)
@@ -361,7 +450,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, SyncCommand, FinalizeCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, SyncCommand, FinalizeCommand, ReviewCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
         (ExitQuizCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 

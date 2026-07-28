@@ -295,6 +295,63 @@ public sealed class SupabasePublicCloudClient
         return ToQuizAttempt(snapshot);
     }
 
+    public async Task<StudentQuizReviewDto> GetQuizAttemptReviewAsync(
+        Guid attemptId,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = await RpcAsync<PublicQuizReviewSnapshot>(
+            "get_public_quiz_attempt_review",
+            new { p_attempt_id = attemptId },
+            cancellationToken);
+        if (snapshot.AttemptId != attemptId)
+            throw new InvalidDataException("PublicCloud quiz review does not match the requested attempt.");
+
+        var answers = snapshot.Answers.ToDictionary(
+            answer => answer.QuestionId,
+            answer => answer.ChoiceIds.ToHashSet());
+        var questions = snapshot.Questions
+            .OrderBy(question => question.SortOrder)
+            .Select(question =>
+            {
+                answers.TryGetValue(question.Id, out var selected);
+                selected ??= [];
+                var choices = question.Choices
+                    .OrderBy(choice => choice.SortOrder)
+                    .Select(choice => new QuizChoiceReviewDto(
+                        choice.Id,
+                        choice.ChoiceText,
+                        choice.SortOrder,
+                        selected.Contains(choice.Id),
+                        snapshot.CorrectAnswersVisible ? choice.Correct : null))
+                    .ToList();
+                decimal? earnedPoints = null;
+                if (snapshot.CorrectAnswersVisible)
+                {
+                    var correct = choices
+                        .Where(choice => choice.Correct == true)
+                        .Select(choice => choice.Id)
+                        .ToHashSet();
+                    earnedPoints = selected.SetEquals(correct) ? question.Points : 0m;
+                }
+                return new QuizQuestionReviewDto(
+                    question.Id,
+                    question.QuestionText,
+                    question.SortOrder,
+                    question.Points,
+                    earnedPoints,
+                    choices);
+            })
+            .ToList();
+        return new(
+            snapshot.AttemptId,
+            snapshot.ScoreVisible ? snapshot.Score : null,
+            snapshot.MaxScore,
+            snapshot.ScoreVisible,
+            snapshot.CorrectAnswersVisible,
+            snapshot.CorrectAnswersVisible ? snapshot.GeneralComment : null,
+            questions);
+    }
+
     private static QuizAttemptDto ToQuizAttempt(PublicQuizAttemptSnapshot row) =>
         new(row.Id, row.SessionId, row.ParticipantId,
             Enum.Parse<QuizAttemptStatus>(row.Status, true), row.ExamVersion,
@@ -475,6 +532,27 @@ public sealed class SupabasePublicCloudClient
         decimal? Score,
         decimal MaxScore,
         IReadOnlyList<QuizSnapshotQuestion> Questions,
+        IReadOnlyList<PublicQuizAnswerSnapshot> Answers);
+    private sealed record PublicQuizReviewChoice(
+        Guid Id,
+        int SortOrder,
+        string ChoiceText,
+        bool? Correct);
+    private sealed record PublicQuizReviewQuestion(
+        Guid Id,
+        int SortOrder,
+        string QuestionText,
+        decimal Points,
+        bool Multiple,
+        IReadOnlyList<PublicQuizReviewChoice> Choices);
+    private sealed record PublicQuizReviewSnapshot(
+        Guid AttemptId,
+        decimal? Score,
+        decimal MaxScore,
+        bool ScoreVisible,
+        bool CorrectAnswersVisible,
+        string? GeneralComment,
+        IReadOnlyList<PublicQuizReviewQuestion> Questions,
         IReadOnlyList<PublicQuizAnswerSnapshot> Answers);
 }
 

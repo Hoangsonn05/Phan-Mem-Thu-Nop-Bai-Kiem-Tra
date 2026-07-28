@@ -29,6 +29,10 @@
                 <Button Content="Làm mới"
                         Command="{Binding RefreshCommand}"
                         Style="{StaticResource SecondaryButton}" />
+                <Button Content="Bài mới"
+                        Command="{Binding NewExamCommand}"
+                        Style="{StaticResource SecondaryButton}"
+                        Margin="8,0,0,0" />
                 <Button Content="Lưu thay đổi"
                         Command="{Binding SaveCommand}"
                         Style="{StaticResource SecondaryButton}"

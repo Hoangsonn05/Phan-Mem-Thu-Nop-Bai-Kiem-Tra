@@ -142,8 +142,14 @@ public sealed class QuizAttempt : EntityBase
     public DateTimeOffset StartedAtUtc { get; set; }
     public DateTimeOffset DeadlineUtc { get; set; }
     public DateTimeOffset? FinalizedAtUtc { get; set; }
+    public decimal? AutoScore { get; set; }
     public decimal? Score { get; set; }
     public decimal MaxScore { get; set; }
+    public GradingStatus GradingStatus { get; set; } = GradingStatus.InProgress;
+    public string? GeneralComment { get; set; }
+    public Guid? GraderId { get; set; }
+    public DateTimeOffset? GradedAtUtc { get; set; }
+    public DateTimeOffset? ReturnedAtUtc { get; set; }
     public QuizResultPolicy ResultPolicySnapshot { get; set; } = QuizResultPolicy.Hidden;
     public string SnapshotJson { get; set; } = "{}";
     public string? FinalizeIdempotencyKey { get; set; }

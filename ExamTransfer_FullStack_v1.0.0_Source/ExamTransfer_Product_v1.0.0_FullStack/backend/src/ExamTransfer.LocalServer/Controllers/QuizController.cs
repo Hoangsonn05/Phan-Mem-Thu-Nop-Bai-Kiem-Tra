@@ -40,8 +40,12 @@ public sealed class TeacherQuizMonitoringController(IQuizService quiz) : ApiCont
 
 [Route("api/v1/student/quiz")]
 [Authorize(Policy = "StudentWithParticipant")]
-public sealed class StudentQuizController(IQuizService quiz) : ApiControllerBase
+public sealed class StudentQuizController(IQuizService quiz, IQuizGradingService quizGrades) : ApiControllerBase
 {
+    [HttpGet("attempts/{attemptId:guid}/review")]
+    public async Task<ActionResult<ApiResponse<StudentQuizReviewDto>>> Review(Guid attemptId, CancellationToken ct) =>
+        Data(await quizGrades.GetStudentReviewAsync(attemptId, RequiredGuidClaim("participant_id"), ct));
+
     [HttpGet("sessions/{sessionId:guid}/attempt")]
     public async Task<ActionResult<ApiResponse<QuizAttemptLookupDto>>> Get(Guid sessionId, CancellationToken ct)
     {

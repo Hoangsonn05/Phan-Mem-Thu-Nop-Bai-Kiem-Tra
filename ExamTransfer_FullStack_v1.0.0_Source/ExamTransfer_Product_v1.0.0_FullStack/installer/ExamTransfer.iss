@@ -77,5 +77,5 @@ begin
     MsgBox('Máy giáo viên phải đặt mạng Windows ở chế độ Private để học sinh trong cùng mạng có thể tìm thấy phòng.', mbInformation, MB_OK);
 end;
 
-; Không thêm [UninstallDelete] cho C:\ProgramData\ExamTransfer hoặc
-; %LocalAppData%\ExamTransfer. Dữ liệu phải được giữ khi cập nhật/gỡ cài đặt.
+// Không thêm [UninstallDelete] cho C:\ProgramData\ExamTransfer hoặc
+// %LocalAppData%\ExamTransfer. Dữ liệu phải được giữ khi cập nhật/gỡ cài đặt.

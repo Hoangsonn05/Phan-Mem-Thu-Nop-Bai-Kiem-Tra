@@ -191,14 +191,25 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                     $"realtime:exam-session:{expectedSessionId}",
                     StringComparison.Ordinal))
                 return false;
-            if (!outerPayload.TryGetProperty("event", out var innerEventElement)
-                || !string.Equals(
-                    innerEventElement.GetString(),
-                    RealtimeEvents.TimeExtended,
-                    StringComparison.Ordinal))
+            if (!outerPayload.TryGetProperty("event", out var innerEventElement))
                 return false;
 
-            eventName = RealtimeEvents.TimeExtended;
+            eventName = innerEventElement.GetString();
+            if (!string.Equals(
+                    eventName,
+                    RealtimeEvents.TimeExtended,
+                    StringComparison.Ordinal))
+            {
+                if (string.Equals(
+                        eventName,
+                        RealtimeEvents.QuizGradeReturned,
+                        StringComparison.Ordinal)
+                    && outerPayload.TryGetProperty("payload", out var gradePayload)
+                    && TryGuid(gradePayload, "attemptId", out var returnedAttemptId))
+                    eventName = $"{RealtimeEvents.QuizGradeReturned}:{returnedAttemptId:N}";
+                return false;
+            }
+
             if (!outerPayload.TryGetProperty("payload", out var payload)
                 || !TryGuid(payload, "participantId", out var participantId)
                 || !TryDate(payload, "serverNowUtc", out var serverNowUtc)

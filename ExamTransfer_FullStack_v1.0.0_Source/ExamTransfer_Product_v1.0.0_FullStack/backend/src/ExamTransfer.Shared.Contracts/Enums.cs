@@ -17,6 +17,7 @@ public enum SubmissionStatus { NotStarted, Preparing, Uploading, Verifying, Subm
 public enum TransferStatus { Queued, Running, Paused, Retrying, Completed, Failed, Cancelled }
 public enum SyncStatus { LocalOnly, Pending, Syncing, Synced, Conflict, Failed }
 public enum GradingStatus { NotGraded, InProgress, Graded, Returned }
+public enum GradingWorkItemType { FileSubmission, QuizAttempt }
 public enum ConnectionState { Offline, Connecting, Online, Reconnecting, Degraded }
 public enum PolicyApplyStatus { NotRequested, Applying, Applied, Unsupported, Failed }
 public enum ViolationSeverity { Info, Warning, Critical }

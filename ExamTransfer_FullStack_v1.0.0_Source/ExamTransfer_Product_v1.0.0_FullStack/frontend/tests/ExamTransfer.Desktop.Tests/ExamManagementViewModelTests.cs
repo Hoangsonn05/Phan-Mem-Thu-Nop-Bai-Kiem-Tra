@@ -109,6 +109,11 @@ public sealed class ExamManagementViewModelTests
         };
         using var viewModel = new ExamManagementViewModel(api);
         await viewModel.InitializeAsync(CancellationToken.None);
+        Assert.True(viewModel.IsCreatingNew);
+        Assert.Null(viewModel.SelectedExam);
+        viewModel.SelectedExam = viewModel.Exams.Single();
+        await viewModel.LoadSelectedExamAsync();
+        Assert.True(viewModel.IsEditingExisting);
 
         viewModel.Title = "Legacy updated";
         viewModel.SaveCommand.Execute(null);
@@ -117,6 +122,12 @@ public sealed class ExamManagementViewModelTests
             TimeSpan.FromSeconds(2)));
         Assert.Equal(classId, Assert.IsType<UpdateExamRequest>(api.PutRequests[0]).ClassId);
 
+        viewModel.NewExamCommand.Execute(null);
+        Assert.True(viewModel.IsCreatingNew);
+        Assert.Null(viewModel.SelectedExam);
+        Assert.False(viewModel.SaveCommand.CanExecute(null));
+        viewModel.Title = "New classless exam";
+        viewModel.Subject = "Math";
         viewModel.CreateCommand.Execute(null);
         Assert.True(SpinWait.SpinUntil(
             () => api.PostPaths.Contains("api/v1/exams"),
@@ -124,6 +135,29 @@ public sealed class ExamManagementViewModelTests
         var create = Assert.IsType<CreateExamRequest>(
             api.PostRequests.First(request => request is CreateExamRequest));
         Assert.Null(create.ClassId);
+    }
+
+    [Fact]
+    public async Task RefreshInCreateMode_DoesNotSelectFirstExamOrOverwriteDraft()
+    {
+        var first = MakeExamSummary(Guid.NewGuid(), "Existing");
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [first]
+        };
+        using var viewModel = new ExamManagementViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+        viewModel.Title = "Unsaved draft";
+        viewModel.Subject = "Physics";
+
+        viewModel.RefreshCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(() => !viewModel.IsBusy, TimeSpan.FromSeconds(2)));
+
+        Assert.True(viewModel.IsCreatingNew);
+        Assert.Null(viewModel.SelectedExam);
+        Assert.Equal("Unsaved draft", viewModel.Title);
+        Assert.Equal("Physics", viewModel.Subject);
+        Assert.False(viewModel.ImportQuizCommand.CanExecute(null));
     }
 
     [Fact]

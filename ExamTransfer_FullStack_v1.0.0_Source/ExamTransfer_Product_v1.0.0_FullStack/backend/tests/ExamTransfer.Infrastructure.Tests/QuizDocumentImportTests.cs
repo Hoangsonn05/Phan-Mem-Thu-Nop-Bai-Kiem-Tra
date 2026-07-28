@@ -41,6 +41,7 @@ public sealed class QuizDocumentImportTests
 
         Assert.Empty(preview.Errors);
         Assert.Equal(2, preview.QuestionCount);
+        Assert.Equal(10.00m, preview.MaxScore);
         Assert.False(preview.WillReplaceExisting);
         Assert.Empty(await fixture.Db.QuizQuestionsSet.ToListAsync());
         Assert.Empty(await fixture.Db.QuizImportSourcesSet.ToListAsync());
@@ -219,7 +220,6 @@ public sealed class QuizDocumentImportTests
 
     [Theory]
     [InlineData("ANSWER_MISSING", "1. Thiếu đáp án?", "A. Một", "B. Hai")]
-    [InlineData("ANSWER_TEXT_MISMATCH", "1. Sai nội dung?", "A. Một", "B. Hai", "Đáp án đúng: A. Không khớp")]
     [InlineData("DUPLICATE_CHOICE", "1. Trùng lựa chọn?", "A. Một", "A. Hai", "B. Ba", "Đáp án đúng: B")]
     [InlineData("ANSWER_UNKNOWN_CHOICE", "1. Nhãn không tồn tại?", "A. Một", "B. Hai", "Đáp án đúng: C")]
     public async Task DocxPreview_ReportsStructuredValidationErrors(string expectedCode, params string[] lines)
@@ -237,6 +237,90 @@ public sealed class QuizDocumentImportTests
     }
 
     [Fact]
+    public async Task AnswerTextMismatch_IsAWarningAndPreviewRemainsCommittable()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var preview = await fixture.Service.PreviewImportAsync(
+            fixture.Exam.Id,
+            Guid.NewGuid(),
+            new("warning.docx", Convert.ToBase64String(Docx(
+                "1. Sai nội dung?",
+                "A. Một",
+                "B. Hai",
+                "Đáp án đúng: A. Không khớp"))),
+            default);
+
+        Assert.Empty(preview.Errors);
+        Assert.Contains(preview.Warnings, x => x.Code == "ANSWER_TEXT_DIFFERENT");
+        Assert.False(string.IsNullOrWhiteSpace(preview.PreviewToken));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(49)]
+    [InlineData(50)]
+    [InlineData(500)]
+    public void ScoreAllocator_AlwaysProducesExactlyTenWithTwoDecimalPlaces(int questionCount)
+    {
+        var points = QuizScoreAllocator.Allocate(questionCount);
+
+        Assert.Equal(questionCount, points.Count);
+        Assert.Equal(10.00m, points.Sum());
+        Assert.All(points, value => Assert.Equal(value, decimal.Round(value, 2)));
+        Assert.True(points.Max() - points.Min() <= 0.01m);
+    }
+
+    [Fact]
+    public void RealUserDocx_ParsesAllFiftyQuestionsAndPreservesKnownAnswers()
+    {
+        var path = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "Downloads",
+            "trắc nghiệm phần 1 - có đáp án.docx");
+        Assert.True(File.Exists(path), $"Thiếu fixture DOCX thật: {path}");
+
+        var parsed = QuizDocumentParser.Parse(Path.GetFileName(path), File.ReadAllBytes(path));
+
+        Assert.Empty(parsed.Errors);
+        Assert.Equal(50, parsed.Document.Questions.Count);
+        Assert.Equal(10.00m, parsed.Document.Questions.Sum(x => x.Points));
+        Assert.Equal([0], parsed.Document.Questions[0].CorrectChoiceIndexes);
+        Assert.Equal([3], parsed.Document.Questions[2].CorrectChoiceIndexes);
+        Assert.Equal([2], parsed.Document.Questions[49].CorrectChoiceIndexes);
+        var question38 = parsed.Document.Questions[37];
+        Assert.Contains(
+            question38.Choices,
+            choice => choice.Contains("Không có đáp án đúng", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(question38.Choices.Count - 1, Assert.Single(question38.CorrectChoiceIndexes));
+        Assert.Contains(parsed.Warnings, x => x.Code == "SYNTHETIC_NONE_OPTION_ADDED");
+    }
+
+    [Fact]
+    public void VisualAnswerSignals_AreRecognizedAndExplicitAnswerWinsConflicts()
+    {
+        var parsed = QuizDocumentParser.Parse(
+            "styled.docx",
+            StyledDocx(
+                ("1. Câu dùng dấu trực quan?", ""),
+                ("A. Sai", ""),
+                ("[x] B. Đúng", ""),
+                ("2. Câu dùng chữ đậm?", ""),
+                ("A. Sai", ""),
+                ("B. Đúng", "bold"),
+                ("3. Câu xung đột?", ""),
+                ("A. Đúng theo dòng đáp án", ""),
+                ("B. Sai nhưng tô sáng", "highlight"),
+                ("Đáp án đúng: A", "")));
+
+        Assert.Empty(parsed.Errors);
+        Assert.Equal([1], parsed.Document.Questions[0].CorrectChoiceIndexes);
+        Assert.Equal([1], parsed.Document.Questions[1].CorrectChoiceIndexes);
+        Assert.Equal([0], parsed.Document.Questions[2].CorrectChoiceIndexes);
+        Assert.Contains(parsed.Warnings, x => x.Code == "ANSWER_SIGNAL_CONFLICT");
+    }
+
+    [Fact]
     public async Task PdfWithoutTextLayer_IsRejectedWithoutOcrFallback()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -251,6 +335,23 @@ public sealed class QuizDocumentImportTests
         Assert.Contains("không có lớp văn bản", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void PdfTextLayer_UsesTheSameExplicitAnswerGrammarAndScoreNormalization()
+    {
+        var parsed = QuizDocumentParser.Parse(
+            "text-layer.pdf",
+            TextPdf(
+                "Question 1: Which option is correct?",
+                "A. No",
+                "B. Yes",
+                "Answer: B"));
+
+        Assert.Empty(parsed.Errors);
+        var question = Assert.Single(parsed.Document.Questions);
+        Assert.Equal([1], question.CorrectChoiceIndexes);
+        Assert.Equal(10.00m, question.Points);
+    }
+
     private static byte[] Docx(params string[] lines)
     {
         using var output = new MemoryStream();
@@ -263,6 +364,33 @@ public sealed class QuizDocumentImportTests
                 "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>");
             foreach (var line in lines)
                 writer.Write($"<w:p><w:r><w:t>{System.Security.SecurityElement.Escape(line)}</w:t></w:r></w:p>");
+            writer.Write("</w:body></w:document>");
+        }
+        return output.ToArray();
+    }
+
+    private static byte[] StyledDocx(params (string Text, string Style)[] lines)
+    {
+        using var output = new MemoryStream();
+        using (var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var entry = archive.CreateEntry("word/document.xml");
+            using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false));
+            writer.Write(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>");
+            foreach (var line in lines)
+            {
+                var properties = line.Style switch
+                {
+                    "bold" => "<w:rPr><w:b/></w:rPr>",
+                    "highlight" => "<w:rPr><w:highlight w:val=\"yellow\"/></w:rPr>",
+                    "shading" => "<w:rPr><w:shd w:fill=\"FFFF00\"/></w:rPr>",
+                    _ => ""
+                };
+                writer.Write(
+                    $"<w:p><w:r>{properties}<w:t>{System.Security.SecurityElement.Escape(line.Text)}</w:t></w:r></w:p>");
+            }
             writer.Write("</w:body></w:document>");
         }
         return output.ToArray();
@@ -289,6 +417,41 @@ public sealed class QuizDocumentImportTests
         foreach (var offset in offsets.Skip(1))
             builder.Append(offset.ToString("D10")).Append(" 00000 n \n");
         builder.Append("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n")
+            .Append(xref).Append("\n%%EOF\n");
+        return Encoding.ASCII.GetBytes(builder.ToString());
+    }
+
+    private static byte[] TextPdf(params string[] lines)
+    {
+        var content = new StringBuilder("BT\n/F1 10 Tf\n20 170 Td\n");
+        foreach (var line in lines)
+        {
+            content.Append('(')
+                .Append(line.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)"))
+                .Append(") Tj\n0 -15 Td\n");
+        }
+        content.Append("ET");
+        var stream = content.ToString();
+        var objects = new[]
+        {
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 220] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+            $"<< /Length {Encoding.ASCII.GetByteCount(stream)} >>\nstream\n{stream}\nendstream",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+        };
+        var builder = new StringBuilder("%PDF-1.4\n");
+        var offsets = new List<int> { 0 };
+        for (var index = 0; index < objects.Length; index++)
+        {
+            offsets.Add(Encoding.ASCII.GetByteCount(builder.ToString()));
+            builder.Append(index + 1).Append(" 0 obj\n").Append(objects[index]).Append("\nendobj\n");
+        }
+        var xref = Encoding.ASCII.GetByteCount(builder.ToString());
+        builder.Append("xref\n0 6\n0000000000 65535 f \n");
+        foreach (var offset in offsets.Skip(1))
+            builder.Append(offset.ToString("D10")).Append(" 00000 n \n");
+        builder.Append("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n")
             .Append(xref).Append("\n%%EOF\n");
         return Encoding.ASCII.GetBytes(builder.ToString());
     }

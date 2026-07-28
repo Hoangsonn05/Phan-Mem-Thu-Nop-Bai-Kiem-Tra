@@ -123,7 +123,7 @@ select is((
   select score
   from public.get_teacher_quiz_attempts('13000000-0000-0000-0000-000000000001')
   where id=(select value from tap_values where key='quiz_attempt')),
-  1::numeric,
+  10::numeric,
   'teacher retains access to server score through the staff-only projection');
 
 select * from finish();

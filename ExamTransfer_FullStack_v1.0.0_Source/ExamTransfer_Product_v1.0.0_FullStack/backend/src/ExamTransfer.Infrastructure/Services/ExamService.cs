@@ -259,9 +259,17 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
     {
         var source = await db.ExamsSet.AsNoTracking().Include(x => x.Files).Include(x => x.QuizImportSources).Include(x => x.QuizQuestions).ThenInclude(x => x.Choices).FirstOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
         var clone = new Exam { ClassId = source.ClassId, Title = source.Title + " - Bản sao", Subject = source.Subject, Description = source.Description, DurationMinutes = source.DurationMinutes, DeliveryType = source.DeliveryType, QuizResultPolicy = source.QuizResultPolicy, SupervisionMode = source.SupervisionMode, FileRuleJson = source.FileRuleJson, Status = ExamStatus.Draft, Version = 1 };
-        foreach (var sourceQuestion in source.QuizQuestions.Where(x => x.Version == source.Version).OrderBy(x => x.Order))
+        var sourceQuestions = source.QuizQuestions
+            .Where(x => x.Version == source.Version)
+            .OrderBy(x => x.Order)
+            .ToList();
+        var normalizedPoints = sourceQuestions.Count == 0
+            ? []
+            : QuizScoreAllocator.Allocate(sourceQuestions.Count);
+        for (var questionIndex = 0; questionIndex < sourceQuestions.Count; questionIndex++)
         {
-            var question = new QuizQuestion { Version = 1, Order = sourceQuestion.Order, Text = sourceQuestion.Text, Points = sourceQuestion.Points, Multiple = sourceQuestion.Multiple };
+            var sourceQuestion = sourceQuestions[questionIndex];
+            var question = new QuizQuestion { Version = 1, Order = sourceQuestion.Order, Text = sourceQuestion.Text, Points = normalizedPoints[questionIndex], Multiple = sourceQuestion.Multiple };
             foreach (var choice in sourceQuestion.Choices.OrderBy(x => x.Order)) question.Choices.Add(new QuizChoice { Order = choice.Order, Text = choice.Text, IsCorrect = choice.IsCorrect });
             clone.QuizQuestions.Add(question);
         }

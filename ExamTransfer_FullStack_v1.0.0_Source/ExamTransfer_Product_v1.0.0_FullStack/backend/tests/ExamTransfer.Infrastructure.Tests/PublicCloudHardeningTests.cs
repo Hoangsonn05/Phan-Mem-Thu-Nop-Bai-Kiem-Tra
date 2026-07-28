@@ -51,7 +51,7 @@ public sealed class FinalCloudSourceCompatibilityTests
     }
 
     [Fact]
-    public void QuizSourcePayloadAndObjectPath_AreStableLocalOwnedAndRequireSchema21()
+    public void QuizSourcePayloadAndObjectPath_AreStableLocalOwnedAndRequireSchema22()
     {
         var root = Path.Combine(
             Path.GetTempPath(),
@@ -123,7 +123,7 @@ public sealed class FinalCloudSourceCompatibilityTests
                 $"/quiz-sources/{sourceId}/source.bin",
                 firstPath,
                 StringComparison.Ordinal);
-            Assert.Equal(21, CloudSchemaCompatibility.RequiredVersion);
+            Assert.Equal(22, CloudSchemaCompatibility.RequiredVersion);
         }
         finally
         {
@@ -133,15 +133,16 @@ public sealed class FinalCloudSourceCompatibilityTests
     }
 
     [Fact]
-    public void OpenRequestSupervisionCapability_RequiresSchema21AndBothRpcs()
+    public void OpenRequestSupervisionCapability_RequiresSchema22AndBothRpcs()
     {
-        Assert.Equal(21, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(22, CloudSchemaCompatibility.RequiredVersion);
         Assert.Contains("report_public_violation", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("ack_public_device_command", CloudSchemaCompatibility.CriticalRpcs);
 
         var script = PublicCloudTestHarness.ReadRepositoryFile(
             "backend/scripts/test-cloud-schema-version.ps1");
-        Assert.Contains("schemaVersion -ne 21", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("schemaVersion -ne 22", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'get_public_quiz_attempt_review'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'report_public_violation'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'ack_public_device_command'", script, StringComparison.OrdinalIgnoreCase);
     }

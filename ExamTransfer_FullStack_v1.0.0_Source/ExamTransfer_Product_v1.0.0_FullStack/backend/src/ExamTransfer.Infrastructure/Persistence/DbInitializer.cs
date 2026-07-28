@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "9";
+    public const string SchemaVersion = "10";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -102,6 +102,20 @@ public static class DbInitializer
             """, cancellationToken);
         await EnsureQuizTablesAsync(db, cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "ResultPolicySnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "quiz_attempts", "AutoScore", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "quiz_attempts", "GradingStatus", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
+        await EnsureColumnAsync(db, "quiz_attempts", "GeneralComment", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "quiz_attempts", "GraderId", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "quiz_attempts", "GradedAtUtc", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "quiz_attempts", "ReturnedAtUtc", "TEXT NULL", cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            UPDATE "quiz_attempts"
+            SET "AutoScore" = "Score",
+                "MaxScore" = '10.0',
+                "GradingStatus" = CASE WHEN "Status" = 1 THEN 2 ELSE 1 END,
+                "GradedAtUtc" = CASE WHEN "Status" = 1 THEN "FinalizedAtUtc" ELSE NULL END
+            WHERE "AutoScore" IS NULL;
+            """, cancellationToken);
         await EnsureQuizImportTablesAsync(db, cancellationToken);
         foreach (var table in new[] { "class_members", "session_participants", "submissions", "submission_files", "violations", "quiz_attempts", "quiz_answers" })
         {

@@ -8,6 +8,38 @@ namespace ExamTransfer.Desktop.Tests;
 public sealed class PublicCloudTimelineTests
 {
     [Fact]
+    public void QuizGradeReturnedBroadcastCarriesAttemptIdentityWithoutCorrectAnswers()
+    {
+        var sessionId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var json = $$"""
+        {
+          "topic":"realtime:exam-session:{{sessionId}}",
+          "event":"broadcast",
+          "payload":{
+            "event":"QuizGradeReturned",
+            "payload":{
+              "attemptId":"{{attemptId}}",
+              "sessionId":"{{sessionId}}",
+              "score":8.5,
+              "maxScore":10,
+              "returnedAtUtc":"2026-07-28T04:00:00Z"
+            }
+          }
+        }
+        """;
+
+        Assert.False(SupabaseRealtimeService.TryParseTimeExtended(
+            json,
+            sessionId,
+            out var notification,
+            out var eventName));
+        Assert.Null(notification);
+        Assert.Equal($"{RealtimeEvents.QuizGradeReturned}:{attemptId:N}", eventName);
+        Assert.DoesNotContain("correct", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void NewerEventWinsOlderSnapshotAndAbsoluteDeadlineIsNotAddedTwice()
     {
         var clock = new ServerClock(new FakeMonotonicTimeSource());
