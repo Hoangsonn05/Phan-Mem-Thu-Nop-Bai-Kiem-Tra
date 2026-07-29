@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.3.5"
+  #define MyAppVersion "1.3.6"
 #endif
 #ifndef MyAppId
   #define MyAppId "{{724D43BD-E4C5-4927-A3CF-8AC292F03D21}"
@@ -75,8 +75,10 @@ Source: "..\scripts\installer-localserver-guard.ps1"; DestDir: "{app}\Support"; 
 Source: "..\scripts\installer-localserver-guard.ps1"; Flags: dontcopy
 
 [InstallDelete]
+#ifndef MyDisableLegacyCleanup
 Type: files; Name: "{app}\install-role.ini"
 Type: files; Name: "{autoprograms}\ExamTransfer Local Server.lnk"
+#endif
 
 [Icons]
 Name: "{autoprograms}\{#MyClientShortcutName}"; Filename: "{app}\Client\{#MyClientExe}"
@@ -189,8 +191,10 @@ begin
       exit;
     end;
 
+#ifndef MyDisableLegacyCleanup
     DeleteFile(ExpandConstant('{app}\install-role.ini'));
     DeleteFile(ExpandConstant('{userstartup}\ExamTransfer Local Server.lnk'));
+#endif
   end;
 end;
 

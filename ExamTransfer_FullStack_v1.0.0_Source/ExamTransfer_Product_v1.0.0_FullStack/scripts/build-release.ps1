@@ -21,6 +21,10 @@ $serverOutput = Join-Path $releaseRoot 'Server'
 $publicCloudConfig = Join-Path $clientOutput 'publiccloud.runtime.json'
 $releaseManifest = Join-Path $releaseRoot 'release-manifest.json'
 $installerOutput = Join-Path $root 'artifacts\installer'
+$publicConfigPackaging = Join-Path $root 'scripts\public-config-packaging.ps1'
+$publicConfigPackagingTests = Join-Path $root 'scripts\test-public-config-packaging.ps1'
+$installerGuardTests = Join-Path $root 'scripts\test-installer-localserver-guard.ps1'
+$installerCleanInstallTest = Join-Path $root 'scripts\test-installer-public-config-clean-install.ps1'
 
 function Require-File([string]$Path) {
     if (-not (Test-Path $Path -PathType Leaf)) {
@@ -41,54 +45,33 @@ function Find-InnoCompiler {
     return $candidates[0]
 }
 
-function Test-PublishableKey([string]$Value) {
-    if ([string]::IsNullOrWhiteSpace($Value) -or
-        $Value -match '(?i)service_role|sb_secret_|placeholder|change[-_ ]?me|example') {
-        return $false
-    }
-    if ($Value.StartsWith('sb_publishable_', [StringComparison]::Ordinal)) {
-        return $Value.Length -gt 31
-    }
-    $segments = $Value.Split('.')
-    if ($segments.Count -ne 3) {
-        return $false
-    }
-    try {
-        $payload = $segments[1].Replace('-', '+').Replace('_', '/')
-        $payload = $payload.PadRight($payload.Length + ((4 - ($payload.Length % 4)) % 4), '=')
-        $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json
-        return [string]$json.role -ceq 'anon'
-    }
-    catch {
-        return $false
-    }
-}
-
 Require-File $frontendProject
 Require-File $backendSolution
 Require-File $backendProject
 Require-File $frontendVerify
 Require-File $installerScript
+Require-File $publicConfigPackaging
+Require-File $publicConfigPackagingTests
+Require-File $installerGuardTests
+Require-File $installerCleanInstallTest
+. $publicConfigPackaging
 
 $publicCloudUrl = [string]$env:EXAMTRANSFER_SUPABASE_URL
 $publicCloudKey = [string]$env:EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY
 $publicCloudOrganizationId = [string]$env:EXAMTRANSFER_ORGANIZATION_ID
-$parsedPublicCloudUrl = $null
-if ([string]::IsNullOrWhiteSpace($publicCloudUrl) -or
-    -not [Uri]::TryCreate($publicCloudUrl.Trim(), [UriKind]::Absolute, [ref]$parsedPublicCloudUrl) -or
-    $parsedPublicCloudUrl.Scheme -cne 'https') {
-    throw 'PUBLICCLOUD_INVALID_URL: official installer build requires EXAMTRANSFER_SUPABASE_URL with HTTPS.'
-}
-if (-not (Test-PublishableKey $publicCloudKey.Trim())) {
-    throw 'PUBLICCLOUD_INVALID_PUBLISHABLE_KEY: supply a publishable or legacy anon key; secret/service-role/placeholder values are rejected.'
-}
-$parsedOrganizationId = [guid]::Empty
-if ([string]::IsNullOrWhiteSpace($publicCloudOrganizationId) -or
-    -not [guid]::TryParse(
-        $publicCloudOrganizationId.Trim(),
-        [ref]$parsedOrganizationId) -or
-    $parsedOrganizationId -eq [guid]::Empty) {
-    throw 'PUBLICCLOUD_INVALID_ORGANIZATION_ID: official installer build requires EXAMTRANSFER_ORGANIZATION_ID as a non-empty UUID.'
+$expectedPublicCloudConfig = New-PublicCloudConfig `
+    -SupabaseUrl $publicCloudUrl `
+    -PublishableKey $publicCloudKey `
+    -OrganizationId $publicCloudOrganizationId
+
+# These subprocess cases prove every invalid public-config input exits before
+# release work or ISCC. Keep this before dotnet discovery and artifact cleanup.
+& powershell `
+    -NoProfile `
+    -ExecutionPolicy Bypass `
+    -File $publicConfigPackagingTests
+if ($LASTEXITCODE -ne 0) {
+    throw 'Public-config packaging preflight tests failed before release creation.'
 }
 
 $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
@@ -132,16 +115,16 @@ New-Item -ItemType Directory -Path $clientOutput -Force | Out-Null
 New-Item -ItemType Directory -Path $serverOutput -Force | Out-Null
 New-Item -ItemType Directory -Path $installerOutput -Force | Out-Null
 
-Write-Host "\n[1/6] Restore backend..." -ForegroundColor Yellow
+Write-Host "\n[1/8] Restore backend..." -ForegroundColor Yellow
 dotnet restore $backendSolution
 if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
 
 if (-not $SkipTests) {
-    Write-Host "\n[2/6] Test backend Release..." -ForegroundColor Yellow
+    Write-Host "\n[2/8] Test backend Release..." -ForegroundColor Yellow
     dotnet test $backendSolution -c Release --no-restore
     if ($LASTEXITCODE -ne 0) { throw 'Backend tests failed. Release creation stopped.' }
 
-    Write-Host "\n[3/6] Verify frontend..." -ForegroundColor Yellow
+    Write-Host "\n[3/8] Verify frontend..." -ForegroundColor Yellow
     powershell -ExecutionPolicy Bypass -File $frontendVerify -Configuration Release
     if ($LASTEXITCODE -ne 0) { throw 'Frontend verification failed. Release creation stopped.' }
 }
@@ -151,7 +134,7 @@ else {
 
 $assemblyVersion = "$Version.0"
 
-Write-Host "\n[4/6] Publish frontend WPF..." -ForegroundColor Yellow
+Write-Host "\n[4/8] Publish frontend WPF..." -ForegroundColor Yellow
 dotnet publish $frontendProject `
     -c Release `
     -r win-x64 `
@@ -171,19 +154,18 @@ dotnet publish $frontendProject `
     -o $clientOutput
 if ($LASTEXITCODE -ne 0) { throw 'Frontend publish failed.' }
 
-$publicConfigDocument = [ordered]@{
-    supabaseUrl    = $publicCloudUrl.Trim().TrimEnd('/')
-    publishableKey = $publicCloudKey.Trim()
-    organizationId = $parsedOrganizationId.ToString('D')
-}
-[IO.File]::WriteAllText(
-    $publicCloudConfig,
-    ($publicConfigDocument | ConvertTo-Json -Depth 2),
-    (New-Object Text.UTF8Encoding($false)))
+Write-PublicCloudConfig `
+    -Path $publicCloudConfig `
+    -Config $expectedPublicCloudConfig
 Require-File $publicCloudConfig
+$verifiedPublicCloudConfig = Read-PublicCloudConfig -Path $publicCloudConfig
+Assert-PublicCloudConfigEqual `
+    -Expected $expectedPublicCloudConfig `
+    -Actual $verifiedPublicCloudConfig `
+    -Stage 'generated-release-payload'
 $publicCloudConfigHash = (Get-FileHash $publicCloudConfig -Algorithm SHA256).Hash
 
-Write-Host "\n[5/6] Publish Local Server..." -ForegroundColor Yellow
+Write-Host "\n[5/8] Publish Local Server..." -ForegroundColor Yellow
 dotnet publish $backendProject `
     -c Release `
     -r win-x64 `
@@ -233,12 +215,53 @@ Copy-Item -LiteralPath $releaseManifest -Destination (Join-Path $clientOutput 'r
 Copy-Item -LiteralPath $releaseManifest -Destination (Join-Path $serverOutput 'release-manifest.json')
 Require-File $releaseManifest
 
-Write-Host "\n[6/6] Build installer..." -ForegroundColor Yellow
+Write-Host "\n[6/8] Verify installer guard with release public config..." -ForegroundColor Yellow
+& powershell `
+    -NoProfile `
+    -ExecutionPolicy Bypass `
+    -File $installerGuardTests `
+    -ReleaseRoot $releaseRoot
+if ($LASTEXITCODE -ne 0) {
+    throw 'Installer guard tests failed with the generated release public config.'
+}
+
+Write-Host "\n[7/8] Build installer..." -ForegroundColor Yellow
 $iscc = Find-InnoCompiler
 & $iscc "/DMyAppVersion=$Version" $installerScript
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 
 Require-File $installer
+
+$postIsccPublicCloudConfig = Read-PublicCloudConfig -Path $publicCloudConfig
+Assert-PublicCloudConfigEqual `
+    -Expected $expectedPublicCloudConfig `
+    -Actual $postIsccPublicCloudConfig `
+    -Stage 'post-ISCC-release-payload'
+$postIsccPublicCloudConfigHash = (
+    Get-FileHash $publicCloudConfig -Algorithm SHA256).Hash
+if (-not [string]::Equals(
+        $publicCloudConfigHash,
+        $postIsccPublicCloudConfigHash,
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'PUBLICCLOUD_CONFIG_CHANGED_DURING_ISCC: release payload hash changed.'
+}
+
+Write-Host "\n[8/8] Clean-install packaged public config..." -ForegroundColor Yellow
+& powershell `
+    -NoProfile `
+    -ExecutionPolicy Bypass `
+    -File $installerCleanInstallTest `
+    -Version $Version `
+    -ReleaseRoot $releaseRoot
+if ($LASTEXITCODE -ne 0) {
+    throw 'Installer clean-install public-config acceptance failed.'
+}
+
+$finalPublicCloudConfig = Read-PublicCloudConfig -Path $publicCloudConfig
+Assert-PublicCloudConfigEqual `
+    -Expected $expectedPublicCloudConfig `
+    -Actual $finalPublicCloudConfig `
+    -Stage 'post-clean-install-release-payload'
 
 $hash = Get-FileHash $installer -Algorithm SHA256
 "$($hash.Hash)  $([IO.Path]::GetFileName($installer))" | Set-Content -Path $installerHashFile -Encoding ascii

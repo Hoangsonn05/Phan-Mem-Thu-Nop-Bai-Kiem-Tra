@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param()
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$ReleaseRoot
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -7,6 +10,11 @@ Set-StrictMode -Version Latest
 $guard = Join-Path $PSScriptRoot 'installer-localserver-guard.ps1'
 if (-not (Test-Path -LiteralPath $guard -PathType Leaf)) {
     throw "Installer guard was not found: $guard"
+}
+$resolvedReleaseRoot = [IO.Path]::GetFullPath($ReleaseRoot)
+$publicConfigPath = Join-Path $resolvedReleaseRoot 'Client\publiccloud.runtime.json'
+if (-not (Test-Path -LiteralPath $publicConfigPath -PathType Leaf)) {
+    throw "Release payload public config was not found: $publicConfigPath"
 }
 $installerPath = Join-Path (
     Split-Path -Parent $PSScriptRoot) 'installer\ExamTransfer.iss'
@@ -95,14 +103,10 @@ try {
     Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\PING.EXE') -Destination $unrelatedExe
     Set-Content -LiteralPath $userDataMarker -Value 'preserve' -Encoding ascii
 
-    $publicConfigPath = Join-Path $fixtureRoot 'package\Client\publiccloud.runtime.json'
-    $publicOrganizationId = '6d043715-30a0-48a2-8f2f-5aabdd918c32'
-    $publicPublishableKey = 'sb_publishable_12345678901234567890'
-    Write-JsonFile $publicConfigPath ([ordered]@{
-        supabaseUrl = 'https://installed.supabase.co'
-        publishableKey = $publicPublishableKey
-        organizationId = $publicOrganizationId
-    })
+    $releasePublicConfig = Get-Content -LiteralPath $publicConfigPath -Raw | ConvertFrom-Json
+    $publicSupabaseUrl = ([string]$releasePublicConfig.supabaseUrl).TrimEnd('/')
+    $publicOrganizationId = [string]$releasePublicConfig.organizationId
+    $publicPublishableKey = [string]$releasePublicConfig.publishableKey
     $canonicalStorageRoot = '%ProgramData%/ExamTransfer'
 
     foreach ($role in @('Teacher', 'Student')) {
@@ -118,7 +122,7 @@ try {
         $runtime = Get-Content -LiteralPath $runtimeSettingsPath -Raw | ConvertFrom-Json
         Assert-Equal 40550 ([int]$runtime.Discovery.Port) "$role clean discovery port."
         Assert-Equal $canonicalStorageRoot ([string]$runtime.Storage.RootPath) "$role clean storage root."
-        Assert-Equal 'https://installed.supabase.co' ([string]$runtime.Cloud.SupabaseUrl) "$role clean SupabaseUrl."
+        Assert-Equal $publicSupabaseUrl ([string]$runtime.Cloud.SupabaseUrl) "$role clean SupabaseUrl."
         Assert-Equal $publicPublishableKey ([string]$runtime.Cloud.PublishableKey) "$role clean publishable key."
         Assert-Equal $publicOrganizationId ([string]$runtime.Cloud.OrganizationId) "$role clean OrganizationId."
         Assert-Equal 'Production' ([string]$runtime.Cloud.Environment) "$role clean Environment."
@@ -319,14 +323,36 @@ try {
         Join-Path $PSScriptRoot 'build-release.ps1') -Raw
     foreach ($requiredReleaseContract in @(
         'EXAMTRANSFER_ORGANIZATION_ID',
-        'PUBLICCLOUD_INVALID_ORGANIZATION_ID',
-        'organizationId = $parsedOrganizationId.ToString(''D'')')) {
+        'New-PublicCloudConfig',
+        'Read-PublicCloudConfig',
+        'post-ISCC-release-payload',
+        'test-installer-public-config-clean-install.ps1')) {
         Assert-True (
             $buildReleaseSource.IndexOf(
                 $requiredReleaseContract,
                 [StringComparison]::Ordinal) -ge 0
         ) "Release config contract missing: $requiredReleaseContract"
     }
+    $publicConfigPackagingSource = Get-Content -LiteralPath (
+        Join-Path $PSScriptRoot 'public-config-packaging.ps1') -Raw
+    foreach ($requiredValidationContract in @(
+        'PUBLICCLOUD_INVALID_URL',
+        'PUBLICCLOUD_INVALID_PUBLISHABLE_KEY',
+        'PUBLICCLOUD_INVALID_ORGANIZATION_ID',
+        'organizationId = $parsedOrganizationId.ToString(''D'')')) {
+        Assert-True (
+            $publicConfigPackagingSource.IndexOf(
+                $requiredValidationContract,
+                [StringComparison]::Ordinal) -ge 0
+        ) "Public-config validation contract missing: $requiredValidationContract"
+    }
+    $rootBuildSource = Get-Content -LiteralPath (
+        Join-Path (Split-Path -Parent $PSScriptRoot) 'build-release.ps1') -Raw
+    Assert-True (
+        $rootBuildSource.IndexOf(
+            'scripts\build-release.ps1',
+            [StringComparison]::Ordinal) -ge 0
+    ) 'Root release entry point does not delegate to the canonical build script.'
 
     $arguments = @('-t', '127.0.0.1')
     $installedProcess = Start-Process `
@@ -363,7 +389,7 @@ try {
     }
 
     Write-Host 'PASS code=INSTALLER_EXACT_PATH_PROCESS_GUARD unrelated_same_name=preserved user_data=preserved' -ForegroundColor Green
-    Write-Host 'PASS code=RUNTIME_SETTINGS_CLEAN_INSTALL role=unified port=40550 storage=programdata cloud=public-only' -ForegroundColor Green
+    Write-Host 'PASS code=RUNTIME_SETTINGS_CLEAN_INSTALL role=unified port=40550 storage=programdata cloud=release-payload fixture-config=not-used' -ForegroundColor Green
     Write-Host 'PASS code=RUNTIME_SETTINGS_UPGRADE versions=1.3.0,1.3.1,1.3.2 backup=exact cloud=preserved user_data=preserved device=preserved' -ForegroundColor Green
     Write-Host 'PASS code=RUNTIME_SETTINGS_IDEMPOTENT student_legacy=normalized custom_storage=preserved secrets=fail-closed' -ForegroundColor Green
     Write-Host 'PASS code=INSTALLER_STATIC_CONTRACT unified=client+server role_source=authenticated_profile autostart=disabled firewall=TCP5048+UDP40550 legacy_udp=removed' -ForegroundColor Green
