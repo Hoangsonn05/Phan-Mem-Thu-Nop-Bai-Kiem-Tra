@@ -265,6 +265,28 @@ public interface ICloudAdapter
         Guid requestId,
         CancellationToken cancellationToken) =>
         throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<CloudQuizGradeMutationResult> SavePublicQuizGradeAsync(
+        Guid attemptId,
+        decimal? score,
+        string? generalComment,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud quiz grading is not supported by this adapter.");
+    Task<CloudQuizGradeMutationResult> ReturnPublicQuizGradeAsync(
+        Guid attemptId,
+        string? message,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud quiz grading is not supported by this adapter.");
+    Task<CloudQuizGradeMutationResult> ReopenPublicQuizGradeAsync(
+        Guid attemptId,
+        string reason,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud quiz grading is not supported by this adapter.");
     Task<CloudLoginResult> LoginAsync(string email, string password, CancellationToken cancellationToken);
     Task<CloudLoginResult?> RefreshSessionAsync(CancellationToken cancellationToken);
     Task LogoutAsync(CancellationToken cancellationToken);
@@ -325,6 +347,21 @@ public sealed record CloudEnrollmentMutationResult(
     Guid ClassId,
     string Status,
     DateTimeOffset? DecidedAtUtc,
+    long CloudVersion,
+    DateTimeOffset UpdatedAtUtc);
+
+public sealed record CloudQuizGradeMutationResult(
+    Guid AttemptId,
+    Guid SessionId,
+    Guid ParticipantId,
+    decimal? AutoScore,
+    decimal? Score,
+    decimal MaxScore,
+    GradingStatus Status,
+    string? GeneralComment,
+    Guid? GraderId,
+    DateTimeOffset? GradedAtUtc,
+    DateTimeOffset? ReturnedAtUtc,
     long CloudVersion,
     DateTimeOffset UpdatedAtUtc);
 

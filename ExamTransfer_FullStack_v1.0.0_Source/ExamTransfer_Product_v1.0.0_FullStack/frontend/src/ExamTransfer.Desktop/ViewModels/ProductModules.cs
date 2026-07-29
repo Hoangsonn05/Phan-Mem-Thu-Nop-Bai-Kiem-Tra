@@ -1726,7 +1726,11 @@ public sealed class GradingCenterViewModel : ProductPageBase
         {
             QuizGrade = ApiGuard.Require(await api.PutAsync<SaveQuizGradeRequest, QuizGradeDetailDto>(
                 $"api/v1/grading/quiz-attempts/{SelectedWorkItem.Id}",
-                new(parsedScore, Comment, QuizGrade?.RowVersion ?? string.Empty),
+                new(
+                    parsedScore,
+                    Comment,
+                    QuizGrade?.RowVersion ?? string.Empty,
+                    Guid.NewGuid()),
                 ct));
             QuizQuestions.ReplaceWith(QuizGrade.Questions);
             return;
@@ -1742,7 +1746,10 @@ public sealed class GradingCenterViewModel : ProductPageBase
         {
             QuizGrade = ApiGuard.Require(await api.PostAsync<ReturnQuizGradeRequest, QuizGradeDetailDto>(
                 $"api/v1/grading/quiz-attempts/{SelectedWorkItem.Id}/return",
-                new("Kết quả đã được công bố.", QuizGrade?.RowVersion ?? string.Empty),
+                new(
+                    "Kết quả đã được công bố.",
+                    QuizGrade?.RowVersion ?? string.Empty,
+                    Guid.NewGuid()),
                 ct));
             return;
         }
@@ -1756,7 +1763,10 @@ public sealed class GradingCenterViewModel : ProductPageBase
         {
             QuizGrade = ApiGuard.Require(await api.PostAsync<ReopenQuizGradeRequest, QuizGradeDetailDto>(
                 $"api/v1/grading/quiz-attempts/{SelectedWorkItem.Id}/reopen",
-                new("Điều chỉnh theo rà soát của giáo viên.", QuizGrade?.RowVersion ?? string.Empty),
+                new(
+                    "Điều chỉnh theo rà soát của giáo viên.",
+                    QuizGrade?.RowVersion ?? string.Empty,
+                    Guid.NewGuid()),
                 ct));
             return;
         }

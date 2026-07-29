@@ -48,9 +48,19 @@ public sealed record QuizGradeDetailDto(
     string RowVersion,
     IReadOnlyList<QuizQuestionReviewDto> Questions);
 
-public sealed record SaveQuizGradeRequest(decimal? Score, string? GeneralComment, string RowVersion);
-public sealed record ReturnQuizGradeRequest(string? Message, string RowVersion);
-public sealed record ReopenQuizGradeRequest(string Reason, string RowVersion);
+public sealed record SaveQuizGradeRequest(
+    decimal? Score,
+    string? GeneralComment,
+    string RowVersion,
+    Guid MutationRequestId = default);
+public sealed record ReturnQuizGradeRequest(
+    string? Message,
+    string RowVersion,
+    Guid MutationRequestId = default);
+public sealed record ReopenQuizGradeRequest(
+    string Reason,
+    string RowVersion,
+    Guid MutationRequestId = default);
 
 public sealed record StudentQuizReviewDto(
     Guid AttemptId,

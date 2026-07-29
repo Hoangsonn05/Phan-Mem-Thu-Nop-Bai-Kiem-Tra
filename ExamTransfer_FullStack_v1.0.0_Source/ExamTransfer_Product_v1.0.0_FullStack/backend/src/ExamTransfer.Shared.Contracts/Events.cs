@@ -23,6 +23,7 @@ public static class RealtimeEvents
     public const string ControlPolicyChanged = nameof(ControlPolicyChanged);
     public const string GradeReturned = nameof(GradeReturned);
     public const string QuizGradeReturned = nameof(QuizGradeReturned);
+    public const string QuizGradeReopened = nameof(QuizGradeReopened);
     public const string ExportProgressChanged = nameof(ExportProgressChanged);
     public const string CloudSyncStatusChanged = nameof(CloudSyncStatusChanged);
     public const string BackupProgressChanged = nameof(BackupProgressChanged);

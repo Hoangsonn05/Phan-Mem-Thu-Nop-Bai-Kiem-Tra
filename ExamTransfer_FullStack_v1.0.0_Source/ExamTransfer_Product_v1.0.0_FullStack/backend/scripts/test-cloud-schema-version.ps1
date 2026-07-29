@@ -14,6 +14,7 @@ try {
         'upsert_public_device_heartbeat','ack_public_device_command','report_public_violation',
         'start_public_quiz_attempt','save_public_quiz_answers','finalize_public_quiz_attempt',
         'get_public_quiz_attempt','get_public_quiz_attempt_review','get_teacher_quiz_attempts',
+        'save_public_quiz_grade','return_public_quiz_grade','reopen_public_quiz_grade',
         'verify_public_submission_archive','get_public_exam_manifest',
         'get_public_exam_file_download',
         'approve_public_participant','reject_public_participant',
@@ -22,8 +23,8 @@ try {
         'approve_public_enrollment_request','reject_public_enrollment_request',
         'get_public_student_timeline'
     )
-    if ([int]$result.schemaVersion -ne 22) { throw "Expected schema 22; received $($result.schemaVersion)." }
+    if ([int]$result.schemaVersion -ne 23) { throw "Expected schema 23; received $($result.schemaVersion)." }
     foreach ($rpc in $required) { if ($result.criticalRpcs -notcontains $rpc) { throw "Missing RPC $rpc." } }
     foreach ($bucket in @('exam-archives','public-submission-archives')) { if ($result.buckets -notcontains $bucket) { throw "Missing bucket $bucket." } }
-    Write-AcceptanceResult -Passed $true -Code 'CLOUD_SCHEMA_VERSION_OK' -TraceId $traceId -Detail 'live capability RPC reports schema 22, critical RPCs and buckets'
+    Write-AcceptanceResult -Passed $true -Code 'CLOUD_SCHEMA_VERSION_OK' -TraceId $traceId -Detail 'live capability RPC reports schema 23, critical RPCs and buckets'
 } catch { Write-AcceptanceResult -Passed $false -Code 'CLOUD_SCHEMA_VERSION_FAILED' -TraceId $traceId -Detail $_.Exception.Message }

@@ -390,6 +390,59 @@ public sealed class SupabaseCloudAdapter(
             new { p_enrollment_request_id = enrollmentRequestId, p_reason = reason, p_request_id = requestId },
             cancellationToken));
 
+    public async Task<CloudQuizGradeMutationResult> SavePublicQuizGradeAsync(
+        Guid attemptId,
+        decimal? score,
+        string? generalComment,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseQuizGradeMutation(await InvokeTeacherRpcAsync(
+            "save_public_quiz_grade",
+            new
+            {
+                p_attempt_id = attemptId,
+                p_score = score,
+                p_general_comment = generalComment,
+                p_expected_cloud_version = expectedCloudVersion,
+                p_request_id = requestId
+            },
+            cancellationToken));
+
+    public async Task<CloudQuizGradeMutationResult> ReturnPublicQuizGradeAsync(
+        Guid attemptId,
+        string? message,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseQuizGradeMutation(await InvokeTeacherRpcAsync(
+            "return_public_quiz_grade",
+            new
+            {
+                p_attempt_id = attemptId,
+                p_message = message,
+                p_expected_cloud_version = expectedCloudVersion,
+                p_request_id = requestId
+            },
+            cancellationToken));
+
+    public async Task<CloudQuizGradeMutationResult> ReopenPublicQuizGradeAsync(
+        Guid attemptId,
+        string reason,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseQuizGradeMutation(await InvokeTeacherRpcAsync(
+            "reopen_public_quiz_grade",
+            new
+            {
+                p_attempt_id = attemptId,
+                p_reason = reason,
+                p_expected_cloud_version = expectedCloudVersion,
+                p_request_id = requestId
+            },
+            cancellationToken));
+
     private async Task<JsonElement> InvokeTeacherRpcAsync(
         string rpcName,
         object payload,
@@ -426,12 +479,19 @@ public sealed class SupabaseCloudAdapter(
                 ? values.FirstOrDefault()
                 : null;
             traceId ??= Guid.NewGuid().ToString("N");
-            var status = response.StatusCode is HttpStatusCode.Unauthorized
+            var concurrencyConflict = content.Contains(
+                "QUIZ_GRADE_VERSION_CONFLICT",
+                StringComparison.OrdinalIgnoreCase);
+            var status = concurrencyConflict
+                ? 409
+                : response.StatusCode is HttpStatusCode.Unauthorized
                 ? 401
                 : response.StatusCode is HttpStatusCode.Forbidden
                     ? 403
                     : 502;
-            var code = status == 401
+            var code = concurrencyConflict
+                ? ErrorCodes.ConcurrencyConflict
+                : status == 401
                 ? ErrorCodes.Unauthorized
                 : status == 403
                     ? ErrorCodes.Forbidden
@@ -492,6 +552,24 @@ public sealed class SupabaseCloudAdapter(
             result.GetProperty("cloudVersion").GetInt64(),
             result.GetProperty("updatedAt").GetDateTimeOffset());
 
+    private static CloudQuizGradeMutationResult ParseQuizGradeMutation(JsonElement result) =>
+        new(
+            result.GetProperty("attemptId").GetGuid(),
+            result.GetProperty("sessionId").GetGuid(),
+            result.GetProperty("participantId").GetGuid(),
+            OptionalDecimal(result, "autoScore"),
+            OptionalDecimal(result, "score"),
+            result.GetProperty("maxScore").GetDecimal(),
+            Enum.Parse<GradingStatus>(
+                result.GetProperty("gradingStatus").GetString()!,
+                true),
+            OptionalString(result, "generalComment"),
+            OptionalGuid(result, "graderId"),
+            OptionalDate(result, "gradedAt"),
+            OptionalDate(result, "returnedAt"),
+            result.GetProperty("cloudVersion").GetInt64(),
+            result.GetProperty("updatedAt").GetDateTimeOffset());
+
     private static string? OptionalString(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var value)
         && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
@@ -508,6 +586,12 @@ public sealed class SupabaseCloudAdapter(
         element.TryGetProperty(propertyName, out var value)
         && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
         ? value.GetInt64()
+        : null;
+
+    private static decimal? OptionalDecimal(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+        ? value.GetDecimal()
         : null;
 
     private static DateTimeOffset? OptionalDate(JsonElement element, string propertyName) =>

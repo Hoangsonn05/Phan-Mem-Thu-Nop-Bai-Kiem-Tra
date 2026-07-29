@@ -612,7 +612,7 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             "get_examtransfer_cloud_capabilities",
             new { },
             cancellationToken);
-        if (capabilities.SchemaVersion < 22)
+        if (capabilities.SchemaVersion < 23)
             throw new PublicCloudApiException(
                 "PUBLICCLOUD_SCHEMA_INCOMPATIBLE",
                 "PublicCloud schema is incompatible with this ExamTransfer build.",

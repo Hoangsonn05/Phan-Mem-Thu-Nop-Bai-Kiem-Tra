@@ -123,7 +123,7 @@ public sealed class FinalCloudSourceCompatibilityTests
                 $"/quiz-sources/{sourceId}/source.bin",
                 firstPath,
                 StringComparison.Ordinal);
-            Assert.Equal(22, CloudSchemaCompatibility.RequiredVersion);
+            Assert.Equal(23, CloudSchemaCompatibility.RequiredVersion);
         }
         finally
         {
@@ -133,15 +133,21 @@ public sealed class FinalCloudSourceCompatibilityTests
     }
 
     [Fact]
-    public void OpenRequestSupervisionCapability_RequiresSchema22AndBothRpcs()
+    public void PublicCloudCapability_RequiresSchema23AndCriticalRpcs()
     {
-        Assert.Equal(22, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(23, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Contains("save_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
+        Assert.Contains("return_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
+        Assert.Contains("reopen_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("report_public_violation", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("ack_public_device_command", CloudSchemaCompatibility.CriticalRpcs);
 
         var script = PublicCloudTestHarness.ReadRepositoryFile(
             "backend/scripts/test-cloud-schema-version.ps1");
-        Assert.Contains("schemaVersion -ne 22", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("schemaVersion -ne 23", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'save_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'return_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'reopen_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'get_public_quiz_attempt_review'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'report_public_violation'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'ack_public_device_command'", script, StringComparison.OrdinalIgnoreCase);

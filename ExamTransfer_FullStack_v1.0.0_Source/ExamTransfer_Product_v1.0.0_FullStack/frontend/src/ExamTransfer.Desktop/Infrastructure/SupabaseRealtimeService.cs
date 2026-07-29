@@ -184,10 +184,16 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                 var json = Encoding.UTF8.GetString(message.GetBuffer(), 0, checked((int)message.Length));
                 if (TryParseAuthFailure(json, out var expired))
                     throw new SupabaseRealtimeAuthException(expired);
-                _ = TryParseTimeExtended(json, sessionId, out var notification, out var eventName);
+                if (!TryParseBroadcast(
+                        json,
+                        sessionId,
+                        deviceId,
+                        out var notification,
+                        out var eventName))
+                    continue;
                 if (notification is not null)
                     NotificationReceived?.Invoke(this, notification!);
-                if (eventName is not null)
+                else if (eventName is not null)
                     EventReceived?.Invoke(this, eventName);
             }
         }
@@ -206,9 +212,10 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
             await SendFrameAsync("phoenix", "heartbeat", new { }, cancellationToken);
     }
 
-    public static bool TryParseTimeExtended(
+    public static bool TryParseBroadcast(
         string json,
         Guid expectedSessionId,
+        string expectedDeviceId,
         out StudentRealtimeNotification? notification,
         out string? eventName)
     {
@@ -240,45 +247,45 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                 return false;
             }
 
+            var sessionTopic = $"realtime:exam-session:{expectedSessionId}";
+            var deviceTopic = $"{sessionTopic}:device:{expectedDeviceId}";
+            var telemetryTopic = $"{sessionTopic}:telemetry:{expectedDeviceId}";
             if (!string.Equals(outerEvent, "broadcast", StringComparison.Ordinal)
                 || topic is null
-                || !topic.StartsWith(
-                    $"realtime:exam-session:{expectedSessionId}",
-                    StringComparison.Ordinal))
+                || (topic != sessionTopic
+                    && topic != deviceTopic
+                    && topic != telemetryTopic))
                 return false;
-            if (!outerPayload.TryGetProperty("event", out var innerEventElement))
+            if (outerPayload.ValueKind != JsonValueKind.Object
+                || !outerPayload.TryGetProperty("event", out var innerEventElement))
                 return false;
 
             eventName = innerEventElement.GetString();
+            if (eventName is RealtimeEvents.QuizGradeReturned
+                or RealtimeEvents.QuizGradeReopened)
+            {
+                if (topic != deviceTopic
+                    || !outerPayload.TryGetProperty("payload", out var gradePayload)
+                    || !HasExactGradeSignalKeys(gradePayload)
+                    || !gradePayload.TryGetProperty("eventType", out var eventType)
+                    || eventType.GetString() != eventName
+                    || !TryGuid(gradePayload, "attemptId", out var gradeAttemptId)
+                    || !TryGuid(gradePayload, "sessionId", out var gradeSessionId)
+                    || gradeSessionId != expectedSessionId)
+                {
+                    notification = null;
+                    eventName = null;
+                    return false;
+                }
+                eventName = $"{eventName}:{gradeAttemptId:N}";
+                return true;
+            }
+
             if (!string.Equals(
                     eventName,
                     RealtimeEvents.TimeExtended,
                     StringComparison.Ordinal))
-            {
-                if (string.Equals(
-                        eventName,
-                        RealtimeEvents.QuizGradeReturned,
-                        StringComparison.Ordinal)
-                    && outerPayload.TryGetProperty("payload", out var gradePayload)
-                    && TryGuid(gradePayload, "attemptId", out var returnedAttemptId))
-                    eventName = $"{RealtimeEvents.QuizGradeReturned}:{returnedAttemptId:N}";
-                var genericRevision = 0L;
-                Guid? targetParticipantId = null;
-                if (outerPayload.TryGetProperty("payload", out var genericPayload))
-                {
-                    if (TryInt64(genericPayload, "revision", out var parsedRevision))
-                        genericRevision = parsedRevision;
-                    if (TryGuid(genericPayload, "participantId", out var parsedParticipantId))
-                        targetParticipantId = parsedParticipantId;
-                }
-                notification = new(
-                    expectedSessionId,
-                    eventName ?? string.Empty,
-                    genericRevision,
-                    null,
-                    targetParticipantId);
-                return true;
-            }
+                return !string.IsNullOrWhiteSpace(eventName);
 
             if (!outerPayload.TryGetProperty("payload", out var payload)
                 || !TryGuid(payload, "participantId", out var participantId)
@@ -286,7 +293,11 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                 || !TryInt64(payload, "revision", out var revision)
                 || !(TryDate(payload, "effectiveDeadlineUtc", out var deadline)
                      || TryDate(payload, "effectiveDeadline", out deadline)))
-                return false;
+            {
+                notification = null;
+                eventName = RealtimeEvents.TimeExtended;
+                return true;
+            }
 
             _ = TryGuid(payload, "attemptId", out var attemptId);
             _ = TryGuid(payload, "requestId", out var requestId);
@@ -312,8 +323,24 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
         }
         catch (JsonException)
         {
+            notification = null;
+            eventName = null;
             return false;
         }
+    }
+
+    private static bool HasExactGradeSignalKeys(JsonElement payload)
+    {
+        if (payload.ValueKind != JsonValueKind.Object)
+            return false;
+        var count = 0;
+        foreach (var property in payload.EnumerateObject())
+        {
+            count++;
+            if (property.Name is not ("eventType" or "attemptId" or "sessionId"))
+                return false;
+        }
+        return count == 3;
     }
 
     private static bool TryGuid(JsonElement value, string name, out Guid parsed)

@@ -25,7 +25,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
     private bool applying;
     private int expiredSnapshotRefreshRequested;
     private int realtimeSnapshotRefreshRequested;
-    private int gradeReturnedNotificationShown;
+    private string? lastGradeSignal;
 
     public StudentQuizViewModel(IBackendClient api, StudentSessionState session)
         : this(
@@ -317,28 +317,33 @@ public sealed class StudentQuizViewModel : ProductPageBase
 
         if (eventName is RealtimeEvents.TimeExtended or "Reconnected")
             RequestSnapshotResync();
-        else if (IsCurrentGradeReturnedEvent(eventName))
-            RequestGradeReviewRefresh();
+        else if (IsCurrentGradeVisibilityEvent(eventName))
+            RequestGradeReviewRefresh(eventName);
     }
 
-    private bool IsCurrentGradeReturnedEvent(string eventName)
+    private bool IsCurrentGradeVisibilityEvent(string eventName)
     {
         if (Attempt is null)
             return false;
-        if (string.Equals(
-                eventName,
-                RealtimeEvents.QuizGradeReturned,
-                StringComparison.Ordinal))
+        if (eventName is RealtimeEvents.QuizGradeReturned
+            or RealtimeEvents.QuizGradeReopened)
             return true;
         return string.Equals(
-            eventName,
-            $"{RealtimeEvents.QuizGradeReturned}:{Attempt.Id:N}",
-            StringComparison.Ordinal);
+                   eventName,
+                   $"{RealtimeEvents.QuizGradeReturned}:{Attempt.Id:N}",
+                   StringComparison.Ordinal)
+               || string.Equals(
+                   eventName,
+                   $"{RealtimeEvents.QuizGradeReopened}:{Attempt.Id:N}",
+                   StringComparison.Ordinal);
     }
 
-    private void RequestGradeReviewRefresh()
+    private void RequestGradeReviewRefresh(string signal)
     {
-        if (Interlocked.Exchange(ref gradeReturnedNotificationShown, 1) != 0)
+        if (string.Equals(
+                Interlocked.Exchange(ref lastGradeSignal, signal),
+                signal,
+                StringComparison.Ordinal))
             return;
         System.Windows.Application.Current.Dispatcher.InvokeAsync(async () =>
         {
@@ -352,7 +357,10 @@ public sealed class StudentQuizViewModel : ProductPageBase
             }
             catch (Exception ex)
             {
-                Interlocked.Exchange(ref gradeReturnedNotificationShown, 0);
+                _ = Interlocked.CompareExchange(
+                    ref lastGradeSignal,
+                    null,
+                    signal);
                 ReportFailure(ex);
             }
         });

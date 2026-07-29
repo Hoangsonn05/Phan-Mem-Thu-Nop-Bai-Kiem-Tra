@@ -1,7 +1,7 @@
 begin;
 select plan(36);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1), 22,
+select is((select schema_version from public.examtransfer_cloud_meta where id=1), 23,
   'session-first workflow remains compatible at schema version 22');
 select has_column('public','exam_sessions','admission_mode',
   'session admission mode exists');

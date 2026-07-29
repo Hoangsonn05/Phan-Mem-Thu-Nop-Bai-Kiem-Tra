@@ -8,7 +8,40 @@ namespace ExamTransfer.Desktop.Tests;
 public sealed class PublicCloudTimelineTests
 {
     [Fact]
-    public void QuizGradeReturnedBroadcastCarriesAttemptIdentityWithoutCorrectAnswers()
+    public void QuizGradeReturnedDeviceSignalUsesExactlyOneDispatchPath()
+    {
+        var sessionId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        const string deviceId = "device-owner";
+        var json = $$"""
+        {
+          "topic":"realtime:exam-session:{{sessionId}}:device:{{deviceId}}",
+          "event":"broadcast",
+          "payload":{
+            "event":"QuizGradeReturned",
+            "payload":{
+              "eventType":"QuizGradeReturned",
+              "attemptId":"{{attemptId}}",
+              "sessionId":"{{sessionId}}"
+            }
+          }
+        }
+        """;
+
+        Assert.True(SupabaseRealtimeService.TryParseBroadcast(
+            json,
+            sessionId,
+            deviceId,
+            out var notification,
+            out var eventName));
+        Assert.Null(notification);
+        Assert.Equal($"{RealtimeEvents.QuizGradeReturned}:{attemptId:N}", eventName);
+        Assert.DoesNotContain("score", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("answer", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LegacySessionWideOrLeakyGradeBroadcastIsRejected()
     {
         var sessionId = Guid.NewGuid();
         var attemptId = Guid.NewGuid();
@@ -19,24 +52,56 @@ public sealed class PublicCloudTimelineTests
           "payload":{
             "event":"QuizGradeReturned",
             "payload":{
+              "eventType":"QuizGradeReturned",
               "attemptId":"{{attemptId}}",
               "sessionId":"{{sessionId}}",
-              "score":8.5,
-              "maxScore":10,
-              "returnedAtUtc":"2026-07-28T04:00:00Z"
+              "score":8.5
             }
           }
         }
         """;
 
-        Assert.False(SupabaseRealtimeService.TryParseTimeExtended(
+        Assert.False(SupabaseRealtimeService.TryParseBroadcast(
             json,
             sessionId,
+            "device-owner",
             out var notification,
             out var eventName));
         Assert.Null(notification);
-        Assert.Equal($"{RealtimeEvents.QuizGradeReturned}:{attemptId:N}", eventName);
-        Assert.DoesNotContain("correct", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(eventName);
+    }
+
+    [Fact]
+    public void PhoenixArrayGradeReopenedSignalRejectsPeerDevice()
+    {
+        var sessionId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        const string ownerDevice = "device-owner";
+        var json = $$"""
+        [null,"7","realtime:exam-session:{{sessionId}}:device:{{ownerDevice}}","broadcast",{
+          "event":"QuizGradeReopened",
+          "payload":{
+            "eventType":"QuizGradeReopened",
+            "attemptId":"{{attemptId}}",
+            "sessionId":"{{sessionId}}"
+          }
+        }]
+        """;
+
+        Assert.True(SupabaseRealtimeService.TryParseBroadcast(
+            json,
+            sessionId,
+            ownerDevice,
+            out var notification,
+            out var eventName));
+        Assert.Null(notification);
+        Assert.Equal($"{RealtimeEvents.QuizGradeReopened}:{attemptId:N}", eventName);
+        Assert.False(SupabaseRealtimeService.TryParseBroadcast(
+            json,
+            sessionId,
+            "device-peer",
+            out _,
+            out _));
     }
 
     [Fact]
@@ -108,9 +173,10 @@ public sealed class PublicCloudTimelineTests
         }
         """;
 
-        Assert.True(SupabaseRealtimeService.TryParseTimeExtended(
+        Assert.True(SupabaseRealtimeService.TryParseBroadcast(
             json,
             sessionId,
+            "device-owner",
             out var notification,
             out var fallback));
         Assert.Null(fallback);
@@ -118,9 +184,10 @@ public sealed class PublicCloudTimelineTests
         Assert.Equal(participantId, notification.TimeExtended!.ParticipantId);
         Assert.Equal(attemptId, notification.TimeExtended.AttemptId);
         Assert.Equal(requestId, notification.TimeExtended.RequestId);
-        Assert.False(SupabaseRealtimeService.TryParseTimeExtended(
+        Assert.False(SupabaseRealtimeService.TryParseBroadcast(
             json,
             Guid.NewGuid(),
+            "device-owner",
             out _,
             out _));
     }
@@ -140,9 +207,10 @@ public sealed class PublicCloudTimelineTests
         }
         """;
 
-        Assert.False(SupabaseRealtimeService.TryParseTimeExtended(
+        Assert.True(SupabaseRealtimeService.TryParseBroadcast(
             json,
             sessionId,
+            "device-owner",
             out var notification,
             out var fallback));
         Assert.Null(notification);

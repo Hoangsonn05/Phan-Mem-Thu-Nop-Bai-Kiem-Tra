@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Globalization;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
@@ -11,7 +12,8 @@ public sealed class QuizGradingService(
     AppDbContext db,
     IAuditService audit,
     IOutboxService outbox,
-    IRealtimePublisher realtime) : IQuizGradingService
+    IRealtimePublisher realtime,
+    ICloudAdapter? cloud = null) : IQuizGradingService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -109,11 +111,23 @@ public sealed class QuizGradingService(
     {
         var attempt = await TeacherAttemptAsync(attemptId, organizationId, cancellationToken);
         EnsureFinalized(attempt);
+        if (request.Score is < 0 or > 10)
+            throw new ApiException(ErrorCodes.ValidationFailed, "Điểm phải nằm trong khoảng 0 đến 10.");
+        if (IsPublicCloud(attempt))
+        {
+            var cloudResult = await RequireCloud().SavePublicQuizGradeAsync(
+                attempt.Id,
+                request.Score,
+                request.GeneralComment,
+                RequireCloudVersion(request.RowVersion),
+                RequireMutationRequestId(request.MutationRequestId),
+                cancellationToken);
+            ApplyCloudMutation(attempt, cloudResult);
+            return await ToTeacherDtoAsync(attempt, revealCorrect: true, cancellationToken);
+        }
         EnsureConcurrency(attempt, request.RowVersion);
         if (attempt.GradingStatus == GradingStatus.Returned)
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Kết quả đã công bố; cần mở lại trước khi sửa.", 409);
-        if (request.Score is < 0 or > 10)
-            throw new ApiException(ErrorCodes.ValidationFailed, "Điểm phải nằm trong khoảng 0 đến 10.");
         var before = await ToTeacherDtoAsync(attempt, revealCorrect: true, cancellationToken);
         attempt.Score = request.Score ?? attempt.AutoScore;
         attempt.MaxScore = 10.00m;
@@ -144,6 +158,17 @@ public sealed class QuizGradingService(
     {
         var attempt = await TeacherAttemptAsync(attemptId, organizationId, cancellationToken);
         EnsureFinalized(attempt);
+        if (IsPublicCloud(attempt))
+        {
+            var result = await RequireCloud().ReturnPublicQuizGradeAsync(
+                attempt.Id,
+                request.Message,
+                RequireCloudVersion(request.RowVersion),
+                RequireMutationRequestId(request.MutationRequestId),
+                cancellationToken);
+            ApplyCloudMutation(attempt, result);
+            return await ToTeacherDtoAsync(attempt, revealCorrect: true, cancellationToken);
+        }
         if (attempt.GradingStatus == GradingStatus.Returned)
             return await ToTeacherDtoAsync(attempt, revealCorrect: true, cancellationToken);
         EnsureConcurrency(attempt, request.RowVersion);
@@ -187,6 +212,17 @@ public sealed class QuizGradingService(
             throw new ApiException(ErrorCodes.ValidationFailed, "Phải có lý do mở lại kết quả.");
         var attempt = await TeacherAttemptAsync(attemptId, organizationId, cancellationToken);
         EnsureFinalized(attempt);
+        if (IsPublicCloud(attempt))
+        {
+            var cloudResult = await RequireCloud().ReopenPublicQuizGradeAsync(
+                attempt.Id,
+                request.Reason,
+                RequireCloudVersion(request.RowVersion),
+                RequireMutationRequestId(request.MutationRequestId),
+                cancellationToken);
+            ApplyCloudMutation(attempt, cloudResult);
+            return await ToTeacherDtoAsync(attempt, revealCorrect: true, cancellationToken);
+        }
         EnsureConcurrency(attempt, request.RowVersion);
         if (attempt.GradingStatus != GradingStatus.Returned)
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ mở lại kết quả đã công bố.", 409);
@@ -284,7 +320,9 @@ public sealed class QuizGradingService(
             attempt.GraderId,
             attempt.GradedAtUtc,
             attempt.ReturnedAtUtc,
-            attempt.RowVersion,
+            IsPublicCloud(attempt)
+                ? attempt.CloudVersion.ToString(CultureInfo.InvariantCulture)
+                : attempt.RowVersion,
             await BuildQuestionsAsync(attempt, revealCorrect, cancellationToken));
 
     private async Task<IReadOnlyList<QuizQuestionReviewDto>> BuildQuestionsAsync(
@@ -340,6 +378,73 @@ public sealed class QuizGradingService(
             || !string.Equals(attempt.RowVersion, rowVersion, StringComparison.Ordinal))
             throw new ApiException(ErrorCodes.ConcurrencyConflict, "Bài chấm đã được cập nhật ở nơi khác.", 409);
     }
+
+    private static bool IsPublicCloud(QuizAttempt attempt) =>
+        string.Equals(
+            attempt.SourceMode,
+            "PublicCloud",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static long RequireCloudVersion(string rowVersion)
+    {
+        if (!long.TryParse(
+                rowVersion,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var cloudVersion)
+            || cloudVersion < 1)
+        {
+            throw new ApiException(
+                ErrorCodes.ConcurrencyConflict,
+                "PublicCloud grading version không hợp lệ; hãy tải lại bài chấm.",
+                409);
+        }
+        return cloudVersion;
+    }
+
+    private static Guid RequireMutationRequestId(Guid requestId)
+    {
+        if (requestId == Guid.Empty)
+            throw new ApiException(
+                ErrorCodes.ValidationFailed,
+                "Thiếu MutationRequestId cho thao tác chấm PublicCloud.");
+        return requestId;
+    }
+
+    private static void ApplyCloudMutation(
+        QuizAttempt attempt,
+        CloudQuizGradeMutationResult result)
+    {
+        if (result.AttemptId != attempt.Id
+            || result.SessionId != attempt.SessionId
+            || result.ParticipantId != attempt.ParticipantId
+            || result.CloudVersion < 1
+            || result.MaxScore != 10.00m)
+        {
+            throw new ApiException(
+                ErrorCodes.CloudUploadFailed,
+                "Supabase trả contract chấm PublicCloud không khớp bài đang mở.",
+                502);
+        }
+
+        attempt.AutoScore = result.AutoScore;
+        attempt.Score = result.Score;
+        attempt.MaxScore = result.MaxScore;
+        attempt.GradingStatus = result.Status;
+        attempt.GeneralComment = result.GeneralComment;
+        attempt.GraderId = result.GraderId;
+        attempt.GradedAtUtc = result.GradedAtUtc;
+        attempt.ReturnedAtUtc = result.ReturnedAtUtc;
+        attempt.CloudVersion = result.CloudVersion;
+        attempt.CloudUpdatedAtUtc = result.UpdatedAtUtc;
+        attempt.CloudSyncState = "Pulled";
+    }
+
+    private ICloudAdapter RequireCloud() =>
+        cloud ?? throw new ApiException(
+            ErrorCodes.CloudOffline,
+            "PublicCloud chưa được cấu hình cho thao tác chấm của giáo viên.",
+            503);
 
     private Task EnqueueAsync(QuizAttempt attempt, CancellationToken cancellationToken) =>
         outbox.EnqueueAsync(
