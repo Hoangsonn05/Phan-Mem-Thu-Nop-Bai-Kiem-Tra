@@ -29,7 +29,7 @@ public sealed class SupabaseIdentityLoginTests
     private const string OrganizationId = "516543f3-ca00-480e-87ca-683243ffdc0b";
     private const string OtherOrganizationId = "ad085648-b954-4b0f-9ad6-fd7b8a727fd0";
     private const string ProviderUserId = "11f88943-ab77-4052-b4f1-83c13fb5dc93";
-    private const string UserAccessToken = "test-user-access-token";
+    private static readonly string UserAccessToken = Jwt(ProviderUserId);
 
     [Theory]
     [InlineData(UserRole.Admin)]
@@ -37,7 +37,8 @@ public sealed class SupabaseIdentityLoginTests
     public async Task ValidProfile_ProvisionsAccountAndIssuesUsableApplicationToken(UserRole role)
     {
         await using var database = await TestDatabase.CreateAsync();
-        var handler = new SupabaseHandler(Profile(role));
+        var handler = new SupabaseHandler(
+            Profile(role, usernameMissing: true));
         var harness = CreateHarness(database.Context, handler);
 
         var result = await harness.Auth.LoginAsync(LoginRequest(), "127.0.0.1", CancellationToken.None);
@@ -87,6 +88,37 @@ public sealed class SupabaseIdentityLoginTests
         Assert.True(user.MustChangePassword);
         Assert.Contains("23174800110@students.examtransfer.local", handler.PasswordGrantBodies.Single());
         Assert.Equal(1, handler.PasswordGrantCalls);
+    }
+
+    [Theory]
+    [InlineData(true, false, false, null)]
+    [InlineData(false, true, false, null)]
+    [InlineData(false, false, true, null)]
+    [InlineData(false, false, false, "DIFFERENT")]
+    public async Task IncompleteOrInconsistentStudentProfile_FailsClosed(
+        bool usernameMissing,
+        bool studentCodeMissing,
+        bool dateOfBirthMissing,
+        string? studentUsername)
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var handler = new SupabaseHandler(Profile(
+            UserRole.Student,
+            usernameMissing: usernameMissing,
+            studentCodeMissing: studentCodeMissing,
+            dateOfBirthMissing: dateOfBirthMissing,
+            studentUsername: studentUsername));
+        var harness = CreateHarness(database.Context, handler);
+
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            harness.Auth.LoginAsync(
+                StudentLoginRequest(),
+                null,
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.ProfileResponseInvalid, error.Code);
+        Assert.Equal(403, error.StatusCode);
+        Assert.Equal(0, await database.Context.UsersSet.CountAsync());
     }
 
     [Fact]
@@ -284,6 +316,45 @@ public sealed class SupabaseIdentityLoginTests
             harness.Auth.LoginAsync(LoginRequest(), null, CancellationToken.None));
 
         Assert.Equal(ErrorCodes.AuthAccessTokenMissing, error.Code);
+        Assert.Equal(0, handler.ProfileCalls);
+        Assert.Equal(0, await database.Context.UsersSet.CountAsync());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SupabaseJwtSubjectMismatchOrExpiry_FailsBeforeProfileLookup(
+        bool expired)
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var subject = expired ? ProviderUserId : Guid.NewGuid().ToString("D");
+        var handler = new SupabaseHandler(Profile(UserRole.Admin))
+        {
+            AuthBody = JsonSerializer.Serialize(new
+            {
+                access_token = Jwt(
+                    subject,
+                    expired
+                        ? DateTimeOffset.UtcNow.AddMinutes(-1)
+                        : DateTimeOffset.UtcNow.AddHours(1)),
+                refresh_token = "test-refresh-token",
+                expires_in = 3600,
+                user = new
+                {
+                    id = ProviderUserId,
+                    email = "admin@example.test"
+                }
+            })
+        };
+        var harness = CreateHarness(database.Context, handler);
+
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            harness.Auth.LoginAsync(
+                LoginRequest(),
+                null,
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.AuthResponseInvalid, error.Code);
         Assert.Equal(0, handler.ProfileCalls);
         Assert.Equal(0, await database.Context.UsersSet.CountAsync());
     }
@@ -497,25 +568,74 @@ public sealed class SupabaseIdentityLoginTests
     private static AccountLoginRequest StudentLoginRequest() =>
         new("23174800110", "correct-password", "device-1", "machine-1", "test");
 
-    private static string Profile(UserRole role, string organizationId = OrganizationId, bool isActive = true) =>
-        Profile(role.ToString(), organizationId, isActive);
+    private static string Profile(
+        UserRole role,
+        string organizationId = OrganizationId,
+        bool isActive = true,
+        bool usernameMissing = false,
+        bool studentCodeMissing = false,
+        bool dateOfBirthMissing = false,
+        string? studentUsername = null) =>
+        Profile(
+            role.ToString(),
+            organizationId,
+            isActive,
+            usernameMissing,
+            studentCodeMissing,
+            dateOfBirthMissing,
+            studentUsername);
 
-    private static string Profile(string role, string organizationId = OrganizationId, bool isActive = true) =>
+    private static string Profile(
+        string role,
+        string organizationId = OrganizationId,
+        bool isActive = true,
+        bool usernameMissing = false,
+        bool studentCodeMissing = false,
+        bool dateOfBirthMissing = false,
+        string? studentUsername = null) =>
         JsonSerializer.Serialize(new[]
         {
-            new
+            new Dictionary<string, object?>
             {
-                id = ProviderUserId,
-                organization_id = organizationId,
-                username = role == UserRole.Student.ToString() ? "23174800110" : "admin",
-                display_name = role == UserRole.Student.ToString() ? "Nguyen Tuan Anh" : "ExamTransfer Admin",
-                student_code = role == UserRole.Student.ToString() ? "23174800110" : null,
-                date_of_birth = role == UserRole.Student.ToString() ? "2005-05-09" : null,
-                must_change_password = role == UserRole.Student.ToString(),
-                role,
-                is_active = isActive
+                ["id"] = ProviderUserId,
+                ["organization_id"] = organizationId,
+                ["username"] = usernameMissing
+                    ? null
+                    : role == UserRole.Student.ToString()
+                        ? studentUsername ?? "23174800110"
+                        : "admin",
+                ["display_name"] = role == UserRole.Student.ToString()
+                    ? "Nguyen Tuan Anh"
+                    : "ExamTransfer Admin",
+                ["student_code"] = studentCodeMissing
+                    ? null
+                    : role == UserRole.Student.ToString() ? "23174800110" : null,
+                ["date_of_birth"] = dateOfBirthMissing
+                    ? null
+                    : role == UserRole.Student.ToString() ? "2005-05-09" : null,
+                ["must_change_password"] = role == UserRole.Student.ToString(),
+                ["role"] = role,
+                ["is_active"] = isActive
             }
         });
+
+    private static string Jwt(
+        string subject,
+        DateTimeOffset? expiresAt = null)
+    {
+        static string Encode(object value) =>
+            Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(value))
+                .TrimEnd('=')
+                .Replace('+', '-')
+                .Replace('/', '_');
+
+        return $"{Encode(new { alg = "none" })}.{Encode(new
+        {
+            sub = subject,
+            exp = (expiresAt ?? DateTimeOffset.UtcNow.AddHours(1))
+                .ToUnixTimeSeconds()
+        })}.signature";
+    }
 
     private sealed record AuthHarness(
         AccountAuthenticationService Auth,

@@ -275,7 +275,10 @@ public sealed class AccountAuthenticationService(
         CancellationToken cancellationToken)
     {
         var profile = external.Profile;
-        if (!string.Equals(profile.ProviderUserId, external.ProviderUserId, StringComparison.OrdinalIgnoreCase))
+        if (!Guid.TryParse(external.ProviderUserId, out var providerUserId)
+            || providerUserId == Guid.Empty
+            || !Guid.TryParse(profile.ProviderUserId, out var profileProviderUserId)
+            || profileProviderUserId != providerUserId)
         {
             throw new ApiException(
                 ErrorCodes.ProfileResponseInvalid,
@@ -328,6 +331,27 @@ public sealed class AccountAuthenticationService(
         if (!profile.IsActive)
             throw new ApiException(ErrorCodes.AccountInactive, "Tài khoản đã bị vô hiệu hóa.", 403);
 
+        if (string.IsNullOrWhiteSpace(profile.DisplayName))
+            throw InvalidProfileForRole("Application profile display name is missing.");
+
+        if (role == UserRole.Student)
+        {
+            if (string.IsNullOrWhiteSpace(profile.Username)
+                || string.IsNullOrWhiteSpace(profile.StudentCode)
+                || profile.DateOfBirth is null
+                || !string.Equals(
+                    profile.Username.Trim(),
+                    profile.StudentCode.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+                throw InvalidProfileForRole(
+                    "Student profile fields are missing or inconsistent.");
+        }
+        else if (string.IsNullOrWhiteSpace(external.Email))
+        {
+            throw InvalidProfileForRole(
+                "Supabase Auth returned no verified login email.");
+        }
+
         var normalizedAccount = NormalizeCode(suppliedAccount)!;
         var normalizedExternalEmail = NormalizeCode(external.Email);
         var normalizedProfileUsername = NormalizeCode(profile.Username);
@@ -355,10 +379,12 @@ public sealed class AccountAuthenticationService(
             }
         }
 
-        var username = FirstNonBlank(profile.Username, user.Username, external.Account, suppliedAccount)!;
-        var displayName = FirstNonBlank(profile.DisplayName, user.DisplayName, username)!;
+        var username = role == UserRole.Student
+            ? profile.Username!
+            : FirstNonBlank(profile.Username, external.Email)!;
+        var displayName = profile.DisplayName!;
         var email = FirstNonBlank(external.Email, user.Email);
-        var studentCode = FirstNonBlank(profile.StudentCode, user.StudentCode);
+        var studentCode = profile.StudentCode;
         var normalizedUsername = NormalizeCode(username)!;
         var normalizedEmail = NormalizeCode(email);
         var normalizedStudentCode = NormalizeCode(studentCode);
@@ -396,6 +422,12 @@ public sealed class AccountAuthenticationService(
 
     private static string? FirstNonBlank(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+
+    private static ApiException InvalidProfileForRole(string message) =>
+        new(
+            ErrorCodes.ProfileResponseInvalid,
+            message,
+            403);
 
     private static ApiException ProvisioningConflict() =>
         new(

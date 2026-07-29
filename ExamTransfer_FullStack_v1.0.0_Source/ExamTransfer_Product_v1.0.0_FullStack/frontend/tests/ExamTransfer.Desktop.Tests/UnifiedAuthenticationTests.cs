@@ -144,6 +144,54 @@ public sealed class UnifiedAuthenticationTests
     }
 
     [Fact]
+    public void LocalServerSessionRestore_RequiresSubjectRoleOrganizationAndExpiry()
+    {
+        var path = SessionPath("local-restore-binding");
+        try
+        {
+            var account = Account(UserRole.Admin);
+            var state = new AppAuthSessionState(path);
+            state.SetAuthenticated(
+                account,
+                LocalToken(account),
+                AuthSessionAuthority.LocalServer);
+            Assert.True(
+                new AppAuthSessionState(path)
+                    .TryRestoreAuthenticatedSession(out _));
+
+            state.SetAuthenticated(
+                account,
+                LocalToken(account, userId: Guid.NewGuid()),
+                AuthSessionAuthority.LocalServer);
+            Assert.False(
+                new AppAuthSessionState(path)
+                    .TryRestoreAuthenticatedSession(out _));
+
+            state.SetAuthenticated(
+                account,
+                LocalToken(account, organizationId: Guid.NewGuid().ToString("D")),
+                AuthSessionAuthority.LocalServer);
+            Assert.False(
+                new AppAuthSessionState(path)
+                    .TryRestoreAuthenticatedSession(out _));
+
+            state.SetAuthenticated(
+                account,
+                LocalToken(
+                    account,
+                    expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1)),
+                AuthSessionAuthority.LocalServer);
+            Assert.False(
+                new AppAuthSessionState(path)
+                    .TryRestoreAuthenticatedSession(out _));
+        }
+        finally
+        {
+            DeleteSessionDirectory(path);
+        }
+    }
+
+    [Fact]
     public void LogoutClear_RemovesRoleProfileAndProtectedSession()
     {
         var path = Path.Combine(
@@ -211,6 +259,97 @@ public sealed class UnifiedAuthenticationTests
     }
 
     [Theory]
+    [InlineData("username")]
+    [InlineData("student_code")]
+    [InlineData("date_of_birth")]
+    [InlineData("username_mismatch")]
+    public async Task InvalidStudentProfile_FailsBeforeAnyLocalServerAction(
+        string invalidField)
+    {
+        var identity = Guid.NewGuid();
+        var organization = Guid.NewGuid();
+        var supabaseHandler = new SupabaseAccountHandler(
+            identity,
+            organization,
+            "Student",
+            username: invalidField == "username_mismatch" ? "OTHER" : null,
+            usernameMissing: invalidField == "username",
+            studentCodeMissing: invalidField == "student_code",
+            dateOfBirthMissing: invalidField == "date_of_birth");
+        var backendHandler = new RejectingBackendHandler();
+        var runtime = new RecordingRuntime();
+        var service = Service(
+            supabaseHandler,
+            backendHandler,
+            runtime,
+            organization,
+            AppContext.BaseDirectory);
+
+        var error = await Assert.ThrowsAsync<PublicCloudApiException>(() =>
+            service.LoginAsync(
+                "HS001",
+                "correct-password",
+                "device-1",
+                "student-pc",
+                "1.3.7",
+                default));
+
+        Assert.Equal(ErrorCodes.AuthenticatedRoleInvalid, error.Code);
+        Assert.Equal(0, backendHandler.RequestCount);
+        Assert.Equal(0, runtime.StartCount);
+    }
+
+    [Theory]
+    [InlineData("inactive")]
+    [InlineData("organization")]
+    [InlineData("subject")]
+    [InlineData("profile_id")]
+    [InlineData("missing_profile")]
+    [InlineData("expired")]
+    public async Task InvalidAuthenticatedProfile_FailsClosedBeforeServerStartup(
+        string failure)
+    {
+        var identity = Guid.NewGuid();
+        var configuredOrganization = Guid.NewGuid();
+        var profileOrganization = failure == "organization"
+            ? Guid.NewGuid()
+            : configuredOrganization;
+        var supabaseHandler = new SupabaseAccountHandler(
+            identity,
+            profileOrganization,
+            "Admin",
+            usernameMissing: true,
+            isActive: failure != "inactive",
+            jwtSubject: failure == "subject" ? Guid.NewGuid() : null,
+            profileUserId: failure == "profile_id" ? Guid.NewGuid() : null,
+            profileExists: failure != "missing_profile",
+            jwtExpiresAt: failure == "expired"
+                ? DateTimeOffset.UtcNow.AddMinutes(-1)
+                : null);
+        var backendHandler = new RejectingBackendHandler();
+        var runtime = new RecordingRuntime();
+        var service = Service(
+            supabaseHandler,
+            backendHandler,
+            runtime,
+            configuredOrganization,
+            AppContext.BaseDirectory);
+
+        var error = await Assert.ThrowsAsync<PublicCloudApiException>(() =>
+            service.LoginAsync(
+                "admin@example.test",
+                "correct-password",
+                "device-1",
+                "admin-pc",
+                "1.3.7",
+                default));
+
+        Assert.Equal(ErrorCodes.AuthenticatedRoleInvalid, error.Code);
+        Assert.Equal(0, backendHandler.RequestCount);
+        Assert.Equal(0, runtime.StartCount);
+    }
+
+    [Theory]
     [InlineData("Teacher", UserRole.Teacher)]
     [InlineData("Admin", UserRole.Admin)]
     public async Task TeacherOrAdminLogin_StartsOneServerAndRequiresMatchingLocalProfile(
@@ -223,7 +362,8 @@ public sealed class UnifiedAuthenticationTests
         var supabaseHandler = new SupabaseAccountHandler(
             identity,
             organization,
-            cloudRole);
+            cloudRole,
+            usernameMissing: true);
         var backendHandler = new LocalAccountHandler(
             identity,
             organization,
@@ -284,6 +424,41 @@ public sealed class UnifiedAuthenticationTests
         Assert.Equal(0, runtime.StartCount);
     }
 
+    [Fact]
+    public async Task LocalProfileMismatch_StopsTheServerStartedForLogin()
+    {
+        var identity = Guid.NewGuid();
+        var organization = Guid.NewGuid();
+        using var layout = TestLayout.Create();
+        var runtime = new RecordingRuntime { BecomeHealthyAfterStart = true };
+        var service = Service(
+            new SupabaseAccountHandler(
+                identity,
+                organization,
+                "Teacher",
+                usernameMissing: true),
+            new LocalAccountHandler(
+                identity,
+                organization,
+                UserRole.Admin),
+            runtime,
+            organization,
+            layout.Client);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.LoginAsync(
+                "teacher@example.test",
+                "correct-password",
+                "device-1",
+                "teacher-pc",
+                "1.3.7",
+                default));
+
+        Assert.Equal(1, runtime.StartCount);
+        Assert.Equal(1, runtime.StopCount);
+        Assert.False(runtime.Healthy);
+    }
+
     private static UnifiedAuthenticationService Service(
         HttpMessageHandler supabaseHandler,
         HttpMessageHandler backendHandler,
@@ -310,7 +485,10 @@ public sealed class UnifiedAuthenticationTests
         return new(backend, cloud, lifecycle);
     }
 
-    private static string Jwt(Guid subject, Guid sessionId)
+    private static string Jwt(
+        Guid subject,
+        Guid sessionId,
+        DateTimeOffset? expiresAt = null)
     {
         static string Encode(object value)
         {
@@ -325,7 +503,8 @@ public sealed class UnifiedAuthenticationTests
         {
             sub = subject,
             session_id = sessionId,
-            exp = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds()
+            exp = (expiresAt ?? DateTimeOffset.UtcNow.AddHours(1))
+                .ToUnixTimeSeconds()
         })}.signature";
     }
 
@@ -346,6 +525,30 @@ public sealed class UnifiedAuthenticationTests
             new DateOnly(2010, 1, 1),
             false,
             userId.ToString("D"));
+
+    private static string LocalToken(
+        CurrentAccountDto account,
+        Guid? userId = null,
+        UserRole? role = null,
+        string? organizationId = null,
+        DateTimeOffset? expiresAt = null)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            userId = userId ?? account.UserId,
+            loginSessionId = account.LoginSessionId,
+            role = (int)(role ?? account.Role),
+            organizationId = organizationId ?? account.OrganizationId,
+            deviceId = account.DeviceId,
+            exp = (expiresAt ?? DateTimeOffset.UtcNow.AddHours(1))
+                .ToUnixTimeSeconds()
+        });
+        var encoded = Convert.ToBase64String(payload)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+        return $"{encoded}.signature";
+    }
 
     private static CurrentAccountDto Account(UserRole role)
     {
@@ -402,7 +605,18 @@ public sealed class UnifiedAuthenticationTests
     private sealed class SupabaseAccountHandler(
         Guid userId,
         Guid organizationId,
-        string role) : HttpMessageHandler
+        string role,
+        string? username = null,
+        string? studentCode = null,
+        string? dateOfBirth = null,
+        bool usernameMissing = false,
+        bool studentCodeMissing = false,
+        bool dateOfBirthMissing = false,
+        bool isActive = true,
+        Guid? jwtSubject = null,
+        Guid? profileUserId = null,
+        bool profileExists = true,
+        DateTimeOffset? jwtExpiresAt = null) : HttpMessageHandler
     {
         public List<Uri> RequestUris { get; } = [];
 
@@ -415,12 +629,15 @@ public sealed class UnifiedAuthenticationTests
             {
                 return Ok(new Dictionary<string, object?>
                 {
-                    ["access_token"] = Jwt(userId, Guid.NewGuid()),
+                    ["access_token"] = Jwt(
+                        jwtSubject ?? userId,
+                        Guid.NewGuid(),
+                        jwtExpiresAt),
                     ["refresh_token"] = "refresh-token-redacted",
                     ["expires_in"] = 3600,
                     ["user"] = new Dictionary<string, object?>
                     {
-                        ["id"] = userId.ToString("D"),
+                        ["id"] = (profileUserId ?? userId).ToString("D"),
                         ["email"] = role == "Student"
                             ? "hs001@students.examtransfer.local"
                             : "teacher@example.test"
@@ -430,19 +647,29 @@ public sealed class UnifiedAuthenticationTests
 
             if (request.RequestUri.AbsolutePath == "/rest/v1/profiles")
             {
+                if (!profileExists)
+                    return Ok(Array.Empty<object>());
                 return Ok(new[]
                 {
                     new Dictionary<string, object?>
                     {
                         ["id"] = userId.ToString("D"),
                         ["organization_id"] = organizationId.ToString("D"),
-                        ["username"] = role == "Student" ? "HS001" : "teacher",
+                        ["username"] = usernameMissing
+                            ? null
+                            : role == "Student"
+                                ? username ?? "HS001"
+                                : username ?? "teacher",
                         ["display_name"] = role == "Student" ? "Học sinh" : "Giáo viên",
-                        ["student_code"] = role == "Student" ? "HS001" : null,
-                        ["date_of_birth"] = role == "Student" ? "2010-01-01" : null,
+                        ["student_code"] = studentCodeMissing
+                            ? null
+                            : role == "Student" ? studentCode ?? "HS001" : studentCode,
+                        ["date_of_birth"] = dateOfBirthMissing
+                            ? null
+                            : role == "Student" ? dateOfBirth ?? "2010-01-01" : dateOfBirth,
                         ["must_change_password"] = false,
                         ["role"] = role,
-                        ["is_active"] = true
+                        ["is_active"] = isActive
                     }
                 });
             }
@@ -552,6 +779,8 @@ public sealed class UnifiedAuthenticationTests
         private bool healthy;
         public bool BecomeHealthyAfterStart { get; init; }
         public int StartCount { get; private set; }
+        public int StopCount { get; private set; }
+        public bool Healthy => healthy;
 
         public Task<LocalServerProbeResult> ProbeAsync(
             CancellationToken cancellationToken) =>
@@ -589,6 +818,7 @@ public sealed class UnifiedAuthenticationTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            StopCount++;
             healthy = false;
             return Task.CompletedTask;
         }

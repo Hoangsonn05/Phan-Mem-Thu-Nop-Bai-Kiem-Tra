@@ -111,6 +111,11 @@ public sealed class SupabaseIdentityClient(
                 503);
         }
 
+        if (!TryReadJwtIdentity(accessToken, out var tokenSubject, out var tokenExpiresAt)
+            || !string.Equals(tokenSubject, providerUserId, StringComparison.OrdinalIgnoreCase)
+            || tokenExpiresAt <= DateTimeOffset.UtcNow)
+            throw InvalidAuthResponse();
+
         logger.LogInformation("Supabase password authentication succeeded; requesting the application profile.");
         var profile = await GetProfileAsync(
             supabaseUrl,
@@ -124,7 +129,9 @@ public sealed class SupabaseIdentityClient(
             request.Account.Trim(),
             email,
             refreshToken,
-            DateTimeOffset.UtcNow.AddSeconds(expiresIn),
+            DateTimeOffset.UtcNow.AddSeconds(expiresIn) < tokenExpiresAt
+                ? DateTimeOffset.UtcNow.AddSeconds(expiresIn)
+                : tokenExpiresAt,
             profile,
             accessToken);
     }
@@ -303,6 +310,40 @@ public sealed class SupabaseIdentityClient(
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
         {
             throw InvalidAuthResponse();
+        }
+    }
+
+    private static bool TryReadJwtIdentity(
+        string token,
+        out string? subject,
+        out DateTimeOffset expiresAt)
+    {
+        subject = null;
+        expiresAt = default;
+        try
+        {
+            var parts = token.Split('.');
+            if (parts.Length != 3) return false;
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(
+                payload.Length + ((4 - payload.Length % 4) % 4),
+                '=');
+            using var document = JsonDocument.Parse(
+                Convert.FromBase64String(payload));
+            subject = document.RootElement.TryGetProperty("sub", out var sub)
+                ? sub.GetString()
+                : null;
+            expiresAt = document.RootElement.TryGetProperty("exp", out var exp)
+                && exp.TryGetInt64(out var unix)
+                    ? DateTimeOffset.FromUnixTimeSeconds(unix)
+                    : default;
+            return !string.IsNullOrWhiteSpace(subject)
+                && expiresAt != default;
+        }
+        catch (Exception ex) when (
+            ex is FormatException or JsonException or ArgumentOutOfRangeException)
+        {
+            return false;
         }
     }
 

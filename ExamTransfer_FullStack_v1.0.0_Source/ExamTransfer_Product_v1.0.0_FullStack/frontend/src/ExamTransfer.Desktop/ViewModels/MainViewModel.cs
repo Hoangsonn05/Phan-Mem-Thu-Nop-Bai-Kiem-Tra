@@ -149,6 +149,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         try
         {
+            var configuredOrganization =
+                AppServices.PublicCloudOptions.Get().OrganizationId;
+            if (configuredOrganization is null
+                || !Guid.TryParse(
+                    restored.Account.OrganizationId,
+                    out var restoredOrganization)
+                || restoredOrganization != configuredOrganization.Value)
+                throw new InvalidOperationException(
+                    "RESTORED_AUTH_ORGANIZATION_MISMATCH");
+
             CurrentAccountDto current;
             if (restored.Authority == AuthSessionAuthority.Supabase)
             {
@@ -174,6 +184,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 current = ApiGuard.Require(await api.GetAsync<CurrentAccountDto>("api/v1/auth/me"));
                 if (current.UserId != restored.Account.UserId
                     || current.Role != restored.Account.Role
+                    || !string.Equals(
+                        current.OrganizationId,
+                        restored.Account.OrganizationId,
+                        StringComparison.OrdinalIgnoreCase)
                     || !string.Equals(
                         current.ProviderUserId,
                         restored.Account.ProviderUserId,
@@ -401,7 +415,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            var items = authState.IsStudent ? StudentItems() : TeacherItems();
+            var items = authState.CurrentAccount?.Role switch
+            {
+                UserRole.Student => StudentItems(),
+                UserRole.Teacher or UserRole.Admin => TeacherItems(),
+                _ => throw new InvalidOperationException(
+                    ErrorCodes.AuthenticatedRoleInvalid)
+            };
             foreach (var item in items) Navigation.Add(item);
 
             var first = Navigation.FirstOrDefault();

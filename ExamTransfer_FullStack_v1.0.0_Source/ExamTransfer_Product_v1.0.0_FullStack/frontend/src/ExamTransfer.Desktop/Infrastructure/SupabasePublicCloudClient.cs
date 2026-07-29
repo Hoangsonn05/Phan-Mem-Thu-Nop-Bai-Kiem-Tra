@@ -854,6 +854,14 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
     {
         if (!Guid.TryParse(providerUserId, out var userId) || userId == Guid.Empty)
             throw InvalidAuthenticatedRole("Supabase user id is invalid.");
+        if (string.IsNullOrWhiteSpace(accessToken)
+            || !TryReadJwtIdentity(accessToken, out var jwtSubject, out var jwtExpiresAt)
+            || !Guid.TryParse(jwtSubject, out var jwtUserId)
+            || jwtUserId != userId
+            || jwtExpiresAt <= DateTimeOffset.UtcNow)
+            throw InvalidAuthenticatedRole("Supabase access token subject or expiry is invalid.");
+        if (expiresAtUtc == default || jwtExpiresAt < expiresAtUtc)
+            expiresAtUtc = jwtExpiresAt;
 
         var options = RuntimeOptions;
         if (options.OrganizationId is null)
@@ -879,10 +887,10 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         var row = document.RootElement[0];
         var profileId = RequiredString(row, "id");
         var organizationId = RequiredString(row, "organization_id");
-        var username = RequiredString(row, "username");
         var displayName = RequiredString(row, "display_name");
         var roleValue = RequiredString(row, "role");
-        if (!string.Equals(profileId, providerUserId, StringComparison.OrdinalIgnoreCase)
+        if (!Guid.TryParse(profileId, out var profileUserId)
+            || profileUserId != userId
             || !Guid.TryParse(organizationId, out var profileOrganizationId)
             || profileOrganizationId != options.OrganizationId.Value
             || !Enum.TryParse<UserRole>(roleValue, true, out var role)
@@ -895,18 +903,35 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             || mustChange.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
             throw InvalidAuthenticatedRole("Authenticated application profile is inactive or malformed.");
 
+        var username = OptionalString(row, "username");
         var studentCode = OptionalString(row, "student_code");
         var dateOfBirth = OptionalDateOnly(row, "date_of_birth");
-        if (role == UserRole.Student
-            && (string.IsNullOrWhiteSpace(studentCode) || dateOfBirth is null))
-            throw InvalidAuthenticatedRole("Authenticated student profile is incomplete.");
+        string accountIdentifier;
+        if (role == UserRole.Student)
+        {
+            if (string.IsNullOrWhiteSpace(username)
+                || string.IsNullOrWhiteSpace(studentCode)
+                || dateOfBirth is null
+                || !string.Equals(
+                    username.Trim(),
+                    studentCode.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+                throw InvalidAuthenticatedRole("Authenticated student profile is incomplete or inconsistent.");
+            accountIdentifier = username.Trim();
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(authenticatedEmail))
+                throw InvalidAuthenticatedRole("Supabase authenticated email is missing.");
+            accountIdentifier = authenticatedEmail.Trim();
+        }
 
         var loginSessionId = TryReadJwtSessionId(accessToken, out var sessionId)
             ? sessionId
             : Guid.Empty;
         return new CurrentAccountDto(
             userId,
-            username,
+            accountIdentifier,
             authenticatedEmail,
             displayName,
             studentCode,

@@ -244,10 +244,15 @@ public sealed class AppAuthSessionState : ObservableObject
     private static bool ValidAuthorityBinding(StoredAuthSession stored)
     {
         if (stored.Authority == AuthSessionAuthority.LocalServer)
-            return stored.Account!.Role is UserRole.Admin or UserRole.Teacher;
+            return stored.Account!.Role is UserRole.Admin or UserRole.Teacher
+                && ValidLocalServerTokenBinding(
+                    stored.AccessToken,
+                    stored.Account);
         if (stored.Authority != AuthSessionAuthority.Supabase
             || stored.Account!.Role != UserRole.Student
             || string.IsNullOrWhiteSpace(stored.Account.ProviderUserId)
+            || !Guid.TryParse(stored.Account.OrganizationId, out var organizationId)
+            || organizationId == Guid.Empty
             || !Guid.TryParse(stored.Account.ProviderUserId, out var providerId)
             || providerId != stored.Account.UserId)
             return false;
@@ -278,6 +283,46 @@ public sealed class AppAuthSessionState : ObservableObject
                 && sessionMatches;
         }
         catch (Exception ex) when (ex is FormatException or JsonException or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ValidLocalServerTokenBinding(
+        string token,
+        CurrentAccountDto account)
+    {
+        try
+        {
+            var segments = token.Split('.');
+            if (segments.Length != 2) return false;
+            var payload = segments[0].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(
+                payload.Length + ((4 - payload.Length % 4) % 4),
+                '=');
+            using var document = JsonDocument.Parse(
+                Convert.FromBase64String(payload));
+            var root = document.RootElement;
+            return root.TryGetProperty("userId", out var user)
+                && Guid.TryParse(user.GetString(), out var userId)
+                && userId == account.UserId
+                && root.TryGetProperty("loginSessionId", out var session)
+                && Guid.TryParse(session.GetString(), out var sessionId)
+                && sessionId == account.LoginSessionId
+                && root.TryGetProperty("role", out var role)
+                && role.TryGetInt32(out var roleValue)
+                && roleValue == (int)account.Role
+                && root.TryGetProperty("organizationId", out var organization)
+                && string.Equals(
+                    organization.GetString(),
+                    account.OrganizationId,
+                    StringComparison.OrdinalIgnoreCase)
+                && root.TryGetProperty("exp", out var exp)
+                && exp.TryGetInt64(out var unix)
+                && DateTimeOffset.FromUnixTimeSeconds(unix) > DateTimeOffset.UtcNow;
+        }
+        catch (Exception ex) when (
+            ex is FormatException or JsonException or ArgumentOutOfRangeException)
         {
             return false;
         }
