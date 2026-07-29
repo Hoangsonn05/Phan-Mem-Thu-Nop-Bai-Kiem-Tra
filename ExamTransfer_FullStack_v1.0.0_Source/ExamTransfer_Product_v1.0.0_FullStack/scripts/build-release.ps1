@@ -30,9 +30,9 @@ function Require-File([string]$Path) {
 
 function Find-InnoCompiler {
     $candidates = @(@(
-        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
-        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
-    ) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) })
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+        ) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) })
 
     if ($candidates.Count -eq 0) {
         throw 'Inno Setup 6 was not found. Install Inno Setup 6 and retry.'
@@ -58,7 +58,8 @@ function Test-PublishableKey([string]$Value) {
         $payload = $payload.PadRight($payload.Length + ((4 - ($payload.Length % 4)) % 4), '=')
         $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json
         return [string]$json.role -ceq 'anon'
-    } catch {
+    }
+    catch {
         return $false
     }
 }
@@ -71,6 +72,7 @@ Require-File $installerScript
 
 $publicCloudUrl = [string]$env:EXAMTRANSFER_SUPABASE_URL
 $publicCloudKey = [string]$env:EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY
+$publicCloudOrganizationId = [string]$env:EXAMTRANSFER_ORGANIZATION_ID
 $parsedPublicCloudUrl = $null
 if ([string]::IsNullOrWhiteSpace($publicCloudUrl) -or
     -not [Uri]::TryCreate($publicCloudUrl.Trim(), [UriKind]::Absolute, [ref]$parsedPublicCloudUrl) -or
@@ -79,6 +81,14 @@ if ([string]::IsNullOrWhiteSpace($publicCloudUrl) -or
 }
 if (-not (Test-PublishableKey $publicCloudKey.Trim())) {
     throw 'PUBLICCLOUD_INVALID_PUBLISHABLE_KEY: supply a publishable or legacy anon key; secret/service-role/placeholder values are rejected.'
+}
+$parsedOrganizationId = [guid]::Empty
+if ([string]::IsNullOrWhiteSpace($publicCloudOrganizationId) -or
+    -not [guid]::TryParse(
+        $publicCloudOrganizationId.Trim(),
+        [ref]$parsedOrganizationId) -or
+    $parsedOrganizationId -eq [guid]::Empty) {
+    throw 'PUBLICCLOUD_INVALID_ORGANIZATION_ID: official installer build requires EXAMTRANSFER_ORGANIZATION_ID as a non-empty UUID.'
 }
 
 $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
@@ -162,8 +172,9 @@ dotnet publish $frontendProject `
 if ($LASTEXITCODE -ne 0) { throw 'Frontend publish failed.' }
 
 $publicConfigDocument = [ordered]@{
-    supabaseUrl = $publicCloudUrl.Trim().TrimEnd('/')
+    supabaseUrl    = $publicCloudUrl.Trim().TrimEnd('/')
     publishableKey = $publicCloudKey.Trim()
+    organizationId = $parsedOrganizationId.ToString('D')
 }
 [IO.File]::WriteAllText(
     $publicCloudConfig,
@@ -196,24 +207,24 @@ Require-File (Join-Path $serverOutput 'ExamTransfer.LocalServer.exe')
 $clientHash = (Get-FileHash (Join-Path $clientOutput 'ExamTransfer.Desktop.exe') -Algorithm SHA256).Hash
 $serverHash = (Get-FileHash (Join-Path $serverOutput 'ExamTransfer.LocalServer.exe') -Algorithm SHA256).Hash
 $manifest = [ordered]@{
-    semanticVersion = $Version
-    buildId = $buildId
-    gitCommit = $gitCommit
-    workingTreeDirty = $workingTreeDirty
+    semanticVersion   = $Version
+    buildId           = $buildId
+    gitCommit         = $gitCommit
+    workingTreeDirty  = $workingTreeDirty
     buildTimestampUtc = $buildTimestamp
     discoveryProtocol = 'ExamTransfer/2'
-    discoveryUdpPort = 40550
-    client = [ordered]@{
-        file = 'Client/ExamTransfer.Desktop.exe'
+    discoveryUdpPort  = 40550
+    client            = [ordered]@{
+        file   = 'Client/ExamTransfer.Desktop.exe'
         sha256 = $clientHash
     }
-    server = [ordered]@{
-        file = 'Server/ExamTransfer.LocalServer.exe'
+    server            = [ordered]@{
+        file   = 'Server/ExamTransfer.LocalServer.exe'
         sha256 = $serverHash
     }
     publicCloudConfig = [ordered]@{
-        file = 'Client/publiccloud.runtime.json'
-        sha256 = $publicCloudConfigHash
+        file           = 'Client/publiccloud.runtime.json'
+        sha256         = $publicCloudConfigHash
         classification = 'publishable-client-config'
     }
 }

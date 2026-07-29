@@ -374,7 +374,7 @@ public sealed class SixFindingsV133Tests
             if (path.EndsWith("/auth/v1/token", StringComparison.Ordinal))
                 return Task.FromResult(Json("""{"access_token":"token","refresh_token":"refresh","expires_in":3600}"""));
             if (path.EndsWith("/rpc/get_examtransfer_cloud_capabilities", StringComparison.Ordinal))
-                return Task.FromResult(Json("""{"schemaVersion":22}"""));
+                return Task.FromResult(Json("""{"schemaVersion":23}"""));
 
             JoinCalls++;
             if (terminalCode is not null)

@@ -25,7 +25,8 @@ public sealed record CurrentAccountDto(
     string DeviceId,
     DateTimeOffset ExpiresAtUtc,
     DateOnly? DateOfBirth = null,
-    bool MustChangePassword = false);
+    bool MustChangePassword = false,
+    string? ProviderUserId = null);
 
 public sealed record PasswordChangeResultDto(
     bool Changed,

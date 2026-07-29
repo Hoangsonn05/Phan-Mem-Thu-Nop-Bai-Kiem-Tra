@@ -58,11 +58,11 @@ public sealed class RuntimeHealthReporter(
         var cloudConfigured = !options.Value.Cloud.Enabled
             ? Component("Degraded", "SUPABASE_DISABLED", "Supabase is disabled; LanOnly remains available.")
             : cloud.Configured
-                ? Component("Healthy", "SUPABASE_CONFIGURED", "Supabase configuration is present; remote compatibility was not queried by this health endpoint.")
+                ? Component("Healthy", "SUPABASE_CONFIGURED", "Supabase configuration is present.")
                 : Component("Degraded", "SUPABASE_CONFIGURATION_INCOMPLETE", "Supabase is enabled but its local configuration is incomplete.");
         var cloudSchema = !options.Value.Cloud.Enabled
             ? Component("Degraded", "SUPABASE_SCHEMA_NOT_APPLICABLE", "Cloud is disabled.")
-            : Component("Degraded", "SUPABASE_SCHEMA_NOT_CHECKED", $"Remote schema compatibility version {CloudSchemaCompatibility.RequiredVersion} requires an explicit preflight.");
+            : await CheckCloudSchemaAsync(cloud, cancellationToken);
 
         var udp = !discovery.Enabled
             ? Component("Degraded", "UDP_DISCOVERY_DISABLED", "UDP discovery is disabled.")
@@ -75,12 +75,20 @@ public sealed class RuntimeHealthReporter(
         var allowed = !LanNetworkConfiguration.RunningInContainer || cidrs.Count > 0
             ? Component("Healthy", "LAN_CIDRS_READY", cidrs.Count == 0 ? "Native mode uses active physical adapter CIDRs." : $"{cidrs.Count} explicit private CIDR entries configured.")
             : Component("Degraded", "LAN_CIDRS_REQUIRED_IN_DOCKER", "Docker mode requires explicit LanAccess:AllowedCidrs.");
-        var worker = options.Value.Cloud.Enabled && cloud.CanSynchronize
-            ? Component("Degraded", "CLOUD_WORKER_WAITING_FOR_PREFLIGHT", "Cloud worker is configured but remote schema compatibility is not checked by health.")
-            : Component("Degraded", "CLOUD_WORKER_INACTIVE", "Cloud worker will not process until cloud configuration and authentication are ready.");
-        var pullWorker = options.Value.Cloud.Enabled && cloud.CanSynchronize
-            ? Component("Degraded", "PUBLIC_CLOUD_PULL_WAITING_FOR_PREFLIGHT", "PublicCloud pull is configured and still requires schema preflight.")
-            : Component("Degraded", "PUBLIC_CLOUD_PULL_INACTIVE", "PublicCloud pull is inactive.");
+        var worker = options.Value.Cloud.Enabled
+            && cloud.CanSynchronize
+            && cloudSchema.Status == "Healthy"
+            ? Component("Healthy", "CLOUD_WORKER_HEALTHY", "Cloud worker authentication and schema preflight are ready.")
+            : cloud.CanSynchronize
+                ? Component("Degraded", "CLOUD_WORKER_BLOCKED_BY_PREFLIGHT", "Cloud worker is blocked because schema preflight did not pass.")
+                : Component("Degraded", "CLOUD_WORKER_INACTIVE", "Cloud worker will not process until cloud configuration and authentication are ready.");
+        var pullWorker = options.Value.Cloud.Enabled
+            && cloud.CanSynchronize
+            && cloudSchema.Status == "Healthy"
+            ? Component("Healthy", "PUBLIC_CLOUD_PULL_HEALTHY", "PublicCloud pull authentication and schema preflight are ready.")
+            : cloud.CanSynchronize
+                ? Component("Degraded", "PUBLIC_CLOUD_PULL_BLOCKED_BY_PREFLIGHT", "PublicCloud pull is blocked because schema preflight did not pass.")
+                : Component("Degraded", "PUBLIC_CLOUD_PULL_INACTIVE", "PublicCloud pull is inactive.");
 
         var criticalUnhealthy = sqlite.Status == "Unhealthy" || volume.Status == "Unhealthy" || keys.Status == "Unhealthy";
         var anyDegraded = new[] { udp, advertised, allowed, cloudConfigured, cloudSchema, worker, pullWorker }
@@ -113,6 +121,47 @@ public sealed class RuntimeHealthReporter(
             options.Value.LanAccess.TrustDockerDesktopNat
                 ? "ExplicitDockerGatewayAndWindowsPrivateFirewall"
                 : "ApplicationRemoteIpOnly");
+    }
+
+    private static async Task<RuntimeHealthComponent> CheckCloudSchemaAsync(
+        ICloudAdapter cloud,
+        CancellationToken cancellationToken)
+    {
+        if (!cloud.Configured)
+        {
+            return Component(
+                "Degraded",
+                "SUPABASE_SCHEMA_NOT_CHECKED",
+                "Remote schema preflight requires complete Supabase configuration.");
+        }
+
+        if (!cloud.CanSynchronize)
+        {
+            return Component(
+                "Degraded",
+                "SUPABASE_SCHEMA_NOT_CHECKED",
+                "Remote schema preflight requires an authenticated cloud session.");
+        }
+
+        try
+        {
+            return await cloud.CheckHealthAsync(cancellationToken)
+                ? Component(
+                    "Healthy",
+                    "SUPABASE_SCHEMA_COMPATIBLE",
+                    $"Remote schema compatibility version {CloudSchemaCompatibility.RequiredVersion} passed.")
+                : Component(
+                    "Degraded",
+                    "SUPABASE_SCHEMA_INCOMPATIBLE_OR_UNREACHABLE",
+                    $"Remote schema compatibility version {CloudSchemaCompatibility.RequiredVersion} failed.");
+        }
+        catch
+        {
+            return Component(
+                "Degraded",
+                "SUPABASE_SCHEMA_INCOMPATIBLE_OR_UNREACHABLE",
+                $"Remote schema compatibility version {CloudSchemaCompatibility.RequiredVersion} failed.");
+        }
     }
 
     private async Task<RuntimeHealthComponent> CheckSqliteAsync(CancellationToken cancellationToken)

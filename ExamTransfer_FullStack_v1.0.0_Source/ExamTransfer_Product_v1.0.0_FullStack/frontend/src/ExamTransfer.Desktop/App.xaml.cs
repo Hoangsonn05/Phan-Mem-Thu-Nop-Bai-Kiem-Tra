@@ -8,27 +8,12 @@ namespace ExamTransfer.Desktop;
 
 public partial class App : Application
 {
-    protected override async void OnStartup(StartupEventArgs e)
+    protected override void OnStartup(StartupEventArgs e)
     {
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
         base.OnStartup(e);
-        var lifecycle = await ViewModels.AppServices.LocalServerLifecycle.EnsureStartedAsync();
-        FrontendLogger.LogMessage(
-            $"app_build={ExamTransfer.Shared.Contracts.ReleaseIdentity.BuildId}; server_build={lifecycle.ServerBuildId ?? "<none>"}; protocol={lifecycle.Protocol ?? ExamTransfer.Shared.Contracts.DiscoveryProtocol.ProtocolVersion}; lifecycle_status={lifecycle.Status}",
-            "BuildIdentity");
-        if (lifecycle.Status is not ("SERVER_HEALTHY" or "SERVER_STARTED" or "STUDENT_INSTALL" or "NOT_TEACHER_INSTALL"))
-        {
-            FrontendLogger.LogMessage(
-                $"status={lifecycle.Status}; executable={lifecycle.ExecutablePath ?? "<none>"}; exit_code={lifecycle.ExitCode?.ToString() ?? "<none>"}",
-                "LocalServerLifecycle");
-            MessageBox.Show(
-                lifecycle.Message,
-                "ExamTransfer Local Server",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-        }
         ViewModels.AppServices.SubmissionRecovery.Start();
     }
 
@@ -36,6 +21,7 @@ public partial class App : Application
     {
         ViewModels.AppServices.SubmissionRecovery.Dispose();
         ViewModels.AppServices.PublicRealtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        ViewModels.AppServices.LocalServerLifecycle.StopAsync().GetAwaiter().GetResult();
         base.OnExit(e);
     }
 

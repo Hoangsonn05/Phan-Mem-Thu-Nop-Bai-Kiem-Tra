@@ -125,7 +125,8 @@ public sealed class SupabaseIdentityClient(
             email,
             refreshToken,
             DateTimeOffset.UtcNow.AddSeconds(expiresIn),
-            profile);
+            profile,
+            accessToken);
     }
 
     public async Task ChangePasswordAsync(

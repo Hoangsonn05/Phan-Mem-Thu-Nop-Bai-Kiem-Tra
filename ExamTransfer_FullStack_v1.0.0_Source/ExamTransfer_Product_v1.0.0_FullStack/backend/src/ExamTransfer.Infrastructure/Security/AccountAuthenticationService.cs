@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
+using ExamTransfer.Infrastructure.Cloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.DataProtection;
@@ -17,7 +18,9 @@ public sealed class AccountAuthenticationService(
     IAccountTokenService accountTokens,
     ILoginChallengeService challenges,
     IDataProtectionProvider dataProtection,
-    IOptions<ExamTransferOptions> options) : IAccountAuthenticationService
+    IOptions<ExamTransferOptions> options,
+    CloudSessionState? cloudSessionState = null,
+    ICloudSyncSignal? cloudSyncSignal = null) : IAccountAuthenticationService
 {
     private readonly ExamTransferOptions appOptions = options.Value;
     private readonly IDataProtector refreshProtector = dataProtection.CreateProtector("ExamTransfer.Auth.RefreshToken.v1");
@@ -58,7 +61,16 @@ public sealed class AccountAuthenticationService(
         var encryptedRefreshToken = string.IsNullOrWhiteSpace(external.RefreshToken)
             ? null
             : refreshProtector.Protect(external.RefreshToken);
-        return await SignInAsync(user, request.DeviceId, request.MachineName, ipAddress, encryptedRefreshToken, cancellationToken);
+        var result = await SignInAsync(
+            user,
+            request.DeviceId,
+            request.MachineName,
+            ipAddress,
+            encryptedRefreshToken,
+            cancellationToken);
+
+        HandoffCloudSession(user, external);
+        return result;
     }
 
     public async Task<AccountLoginResultDto> ConfirmStudentAsync(StudentIdentityConfirmRequest request, string? ipAddress, CancellationToken cancellationToken)
@@ -191,6 +203,32 @@ public sealed class AccountAuthenticationService(
         }
 
         await sessions.LogoutAsync(principal, request.Reason, cancellationToken);
+        if (principal.Role is UserRole.Admin or UserRole.Teacher)
+            cloudSessionState?.Clear();
+    }
+
+    private void HandoffCloudSession(User user, ExternalIdentityResult external)
+    {
+        if (user.Role is not (UserRole.Admin or UserRole.Teacher)
+            || cloudSessionState is null
+            || string.IsNullOrWhiteSpace(external.AccessToken)
+            || string.IsNullOrWhiteSpace(external.RefreshToken)
+            || external.ProviderExpiresAtUtc is null)
+        {
+            return;
+        }
+
+        cloudSessionState.Set(
+            new CloudSessionSnapshot(
+                external.AccessToken,
+                external.RefreshToken,
+                external.ProviderExpiresAtUtc.Value,
+                external.ProviderUserId,
+                external.Email ?? user.Email ?? external.Account,
+                OrganizationId(user),
+                user.Role.ToString()),
+            appOptions.Cloud.PersistUserSession);
+        cloudSyncSignal?.Pulse();
     }
 
     private async Task<AccountLoginResultDto> SignInAsync(
@@ -453,7 +491,8 @@ public sealed class AccountAuthenticationService(
             session.DeviceId,
             tokenExpiresAtUtc,
             user.DateOfBirth,
-            user.MustChangePassword);
+            user.MustChangePassword,
+            user.SupabaseAuthUserId);
 
     private string? OrganizationId(User user) =>
         user.OrganizationId ?? appOptions.Cloud.OrganizationId;

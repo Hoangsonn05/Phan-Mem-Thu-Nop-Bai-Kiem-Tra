@@ -169,7 +169,7 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Hệ thống thu nộp bài kiểm tra"
                                    FontSize="10.5" Foreground="{StaticResource LoginHeroMutedBrush}" />
-                        <TextBlock Grid.Column="1" Text="v1.2.0"
+                        <TextBlock Grid.Column="1" Text="{Binding VersionLabel}"
                                    FontSize="10.5" Foreground="{StaticResource LoginHeroMutedBrush}" />
                     </Grid>
                 </Grid>

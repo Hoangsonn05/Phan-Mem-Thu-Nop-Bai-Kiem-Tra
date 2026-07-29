@@ -54,9 +54,12 @@ public sealed class DiscoveryController(
         if (!lanAccessPolicy.IsAllowed(remoteAddress))
             throw new ApiException(ErrorCodes.LanAccessDenied, "Thiết bị không nằm trong mạng nội bộ được phép.", 403);
 
+        var requestAddress = HttpContext.Connection.RemoteIpAddress;
         var endpoint = LanNetworkConfiguration.ResolveAdvertisedEndpoint(
             options.Value,
-            HttpContext.Connection.RemoteIpAddress);
+            requestAddress is not null && System.Net.IPAddress.IsLoopback(requestAddress)
+                ? null
+                : requestAddress);
         if (!endpoint.Ready)
             throw new ApiException(
                 endpoint.Code,

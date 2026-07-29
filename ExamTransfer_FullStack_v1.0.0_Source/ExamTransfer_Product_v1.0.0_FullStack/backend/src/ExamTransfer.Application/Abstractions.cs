@@ -86,7 +86,8 @@ public sealed record ExternalIdentityResult(
     string? Email,
     string? RefreshToken,
     DateTimeOffset? ProviderExpiresAtUtc,
-    ExternalApplicationProfile Profile);
+    ExternalApplicationProfile Profile,
+    string? AccessToken = null);
 
 public sealed record ExternalApplicationProfile(
     string ProviderUserId,

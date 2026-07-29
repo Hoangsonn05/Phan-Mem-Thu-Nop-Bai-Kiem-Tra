@@ -4,6 +4,8 @@ using ExamTransfer.Infrastructure;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Infrastructure.Services;
+using ExamTransfer.LocalServer;
+using ExamTransfer.LocalServer.Discovery;
 using ExamTransfer.LocalServer.Workers;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
@@ -173,6 +175,84 @@ public sealed class SixFindingsV133BackendTests
         Assert.Equal(SessionAccessMode.PublicCloud, local.AccessMode);
     }
 
+    [Fact]
+    public async Task RuntimeHealth_RunsSchemaPreflightAndReportsBothWorkersHealthy()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var cloud = new SuccessfulPushCloud();
+        var options = Options.Create(new ExamTransferOptions
+        {
+            Cloud = new CloudOptions
+            {
+                Enabled = true
+            }
+        });
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(builder =>
+            builder.UseSqlite($"Data Source={database.Path}"));
+        services.AddSingleton<ICloudAdapter>(cloud);
+        await using var provider = services.BuildServiceProvider();
+        var reporter = new RuntimeHealthReporter(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new TestStoragePaths(Path.GetDirectoryName(database.Path)!),
+            options,
+            new DiscoveryRuntimeState());
+
+        var report = await reporter.GetAsync(CancellationToken.None);
+
+        Assert.Equal("Healthy", report.SupabaseSchemaCompatible.Status);
+        Assert.Equal(
+            "SUPABASE_SCHEMA_COMPATIBLE",
+            report.SupabaseSchemaCompatible.Code);
+        Assert.Equal("Healthy", report.CloudWorker.Status);
+        Assert.Equal("CLOUD_WORKER_HEALTHY", report.CloudWorker.Code);
+        Assert.Equal("Healthy", report.PublicCloudPullWorker.Status);
+        Assert.Equal(
+            "PUBLIC_CLOUD_PULL_HEALTHY",
+            report.PublicCloudPullWorker.Code);
+        Assert.Equal(1, cloud.HealthChecks);
+    }
+
+    [Fact]
+    public async Task RuntimeHealth_FailedSchemaPreflightKeepsBothWorkersBlocked()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var cloud = new SuccessfulPushCloud { HealthResult = false };
+        var options = Options.Create(new ExamTransferOptions
+        {
+            Cloud = new CloudOptions
+            {
+                Enabled = true
+            }
+        });
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(builder =>
+            builder.UseSqlite($"Data Source={database.Path}"));
+        services.AddSingleton<ICloudAdapter>(cloud);
+        await using var provider = services.BuildServiceProvider();
+        var reporter = new RuntimeHealthReporter(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new TestStoragePaths(Path.GetDirectoryName(database.Path)!),
+            options,
+            new DiscoveryRuntimeState());
+
+        var report = await reporter.GetAsync(CancellationToken.None);
+
+        Assert.Equal("Degraded", report.SupabaseSchemaCompatible.Status);
+        Assert.Equal(
+            "SUPABASE_SCHEMA_INCOMPATIBLE_OR_UNREACHABLE",
+            report.SupabaseSchemaCompatible.Code);
+        Assert.Equal("Degraded", report.CloudWorker.Status);
+        Assert.Equal(
+            "CLOUD_WORKER_BLOCKED_BY_PREFLIGHT",
+            report.CloudWorker.Code);
+        Assert.Equal("Degraded", report.PublicCloudPullWorker.Status);
+        Assert.Equal(
+            "PUBLIC_CLOUD_PULL_BLOCKED_BY_PREFLIGHT",
+            report.PublicCloudPullWorker.Code);
+        Assert.Equal(1, cloud.HealthChecks);
+    }
+
     private static SessionService CreateSessionService(
         AppDbContext db,
         ICloudAdapter cloud,
@@ -245,13 +325,18 @@ public sealed class SixFindingsV133BackendTests
 
     private sealed class SuccessfulPushCloud : ICloudAdapter
     {
+        public int HealthChecks { get; private set; }
+        public bool HealthResult { get; init; } = true;
         public bool Enabled => true;
         public bool Configured => true;
         public bool Authenticated => true;
         public bool CanSynchronize => true;
         public CloudLoginResult? CurrentSession => null;
-        public Task<bool> CheckHealthAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(true);
+        public Task<bool> CheckHealthAsync(CancellationToken cancellationToken)
+        {
+            HealthChecks++;
+            return Task.FromResult(HealthResult);
+        }
         public Task<CloudPreflightResult> PreflightAsync(CancellationToken cancellationToken) =>
             throw new NotSupportedException();
         public Task<CloudPushResult> PushAsync(
@@ -277,5 +362,23 @@ public sealed class SixFindingsV133BackendTests
             string destinationPath,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class TestStoragePaths(string root) : IStoragePaths
+    {
+        public string RootPath { get; } = root;
+        public string DatabasePath => Path.Combine(RootPath, "database", "exam-transfer.db");
+        public string BackupRoot => Path.Combine(RootPath, "backups");
+        public string ExportRoot => Path.Combine(RootPath, "exports");
+        public string TemporaryRoot => Path.Combine(RootPath, "temporary");
+        public string ExamVersionRoot(Guid examId, int version) =>
+            Path.Combine(RootPath, "exams", examId.ToString("N"), $"v{version}");
+        public string SessionRoot(Guid sessionId) =>
+            Path.Combine(RootPath, "sessions", sessionId.ToString("N"));
+        public string SubmissionRoot(Guid sessionId, string studentCode, Guid submissionId) =>
+            Path.Combine(SessionRoot(sessionId), studentCode, submissionId.ToString("N"));
+        public string ReceiptRoot(Guid sessionId) =>
+            Path.Combine(SessionRoot(sessionId), "receipts");
+        public void EnsureCreated() => Directory.CreateDirectory(RootPath);
     }
 }

@@ -8,6 +8,19 @@ $guard = Join-Path $PSScriptRoot 'installer-localserver-guard.ps1'
 if (-not (Test-Path -LiteralPath $guard -PathType Leaf)) {
     throw "Installer guard was not found: $guard"
 }
+$installerPath = Join-Path (
+    Split-Path -Parent $PSScriptRoot) 'installer\ExamTransfer.iss'
+$installerSource = Get-Content -LiteralPath $installerPath -Raw
+$legacyPortMatches = [regex]::Matches(
+    $installerSource,
+    '(?m)^\s*#define MyLegacyDiscoveryPort(?:Primary|Secondary) "(\d+)"\s*$')
+if ($legacyPortMatches.Count -ne 2) {
+    throw 'Installer legacy discovery port contract is missing or ambiguous.'
+}
+$legacyDiscoveryPorts = @(
+    $legacyPortMatches | ForEach-Object { [int]$_.Groups[1].Value }
+)
+$legacyDiscoveryPortsArgument = $legacyDiscoveryPorts -join ','
 
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) (
     'ExamTransfer-InstallerGuard-' + [Guid]::NewGuid().ToString('N'))
@@ -20,6 +33,60 @@ $userDataMarker = Join-Path $userDataDirectory 'preserve.marker'
 $installedProcess = $null
 $unrelatedProcess = $null
 
+function Assert-True([bool]$Condition, [string]$Message) {
+    if (-not $Condition) {
+        throw $Message
+    }
+}
+
+function Assert-Equal($Expected, $Actual, [string]$Message) {
+    if ($Expected -ne $Actual) {
+        throw "$Message Expected=[$Expected] Actual=[$Actual]"
+    }
+}
+
+function Write-JsonFile([string]$Path, $Value) {
+    $directory = Split-Path -Parent $Path
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    [IO.File]::WriteAllText(
+        $Path,
+        ($Value | ConvertTo-Json -Depth 20) + [Environment]::NewLine,
+        (New-Object Text.UTF8Encoding($false)))
+}
+
+function Invoke-RuntimeUpgrade(
+    [string]$RuntimeSettingsPath,
+    [string]$PublicConfigPath,
+    [string]$CanonicalStorageRoot,
+    [string]$LogPath) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 promotes redirected native stderr to a
+        # NativeCommandError. Keep the child exit code authoritative here
+        # because fail-closed cases intentionally return 44.
+        $ErrorActionPreference = 'Continue'
+        $output = @(& powershell `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File $guard `
+            -Mode UpgradeRuntimeSettings `
+            -InstalledServerPath $installedExe `
+            -RuntimeSettingsPath $RuntimeSettingsPath `
+            -PublicConfigPath $PublicConfigPath `
+            -CanonicalStorageRoot $CanonicalStorageRoot `
+            -LegacyDiscoveryPorts $legacyDiscoveryPortsArgument `
+            -MigrationLogPath $LogPath 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = ($output | Out-String).Trim()
+    }
+}
+
 try {
     New-Item -ItemType Directory -Path $installedDirectory -Force | Out-Null
     New-Item -ItemType Directory -Path $unrelatedDirectory -Force | Out-Null
@@ -27,6 +94,239 @@ try {
     Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\PING.EXE') -Destination $installedExe
     Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\PING.EXE') -Destination $unrelatedExe
     Set-Content -LiteralPath $userDataMarker -Value 'preserve' -Encoding ascii
+
+    $publicConfigPath = Join-Path $fixtureRoot 'package\Client\publiccloud.runtime.json'
+    $publicOrganizationId = '6d043715-30a0-48a2-8f2f-5aabdd918c32'
+    $publicPublishableKey = 'sb_publishable_12345678901234567890'
+    Write-JsonFile $publicConfigPath ([ordered]@{
+        supabaseUrl = 'https://installed.supabase.co'
+        publishableKey = $publicPublishableKey
+        organizationId = $publicOrganizationId
+    })
+    $canonicalStorageRoot = '%ProgramData%/ExamTransfer'
+
+    foreach ($role in @('Teacher', 'Student')) {
+        $cleanRoot = Join-Path $fixtureRoot "Clean$role"
+        $runtimeSettingsPath = Join-Path $cleanRoot 'config\runtime-settings.json'
+        $migrationLogPath = Join-Path $cleanRoot 'logs\installer-runtime-settings.log'
+        $result = Invoke-RuntimeUpgrade `
+            $runtimeSettingsPath `
+            $publicConfigPath `
+            $canonicalStorageRoot `
+            $migrationLogPath
+        Assert-Equal 0 $result.ExitCode "$role clean runtime migration failed."
+        $runtime = Get-Content -LiteralPath $runtimeSettingsPath -Raw | ConvertFrom-Json
+        Assert-Equal 40550 ([int]$runtime.Discovery.Port) "$role clean discovery port."
+        Assert-Equal $canonicalStorageRoot ([string]$runtime.Storage.RootPath) "$role clean storage root."
+        Assert-Equal 'https://installed.supabase.co' ([string]$runtime.Cloud.SupabaseUrl) "$role clean SupabaseUrl."
+        Assert-Equal $publicPublishableKey ([string]$runtime.Cloud.PublishableKey) "$role clean publishable key."
+        Assert-Equal $publicOrganizationId ([string]$runtime.Cloud.OrganizationId) "$role clean OrganizationId."
+        Assert-Equal 'Production' ([string]$runtime.Cloud.Environment) "$role clean Environment."
+        Assert-Equal 'UserSession' ([string]$runtime.Cloud.AccessMode) "$role clean AccessMode."
+        Assert-True (Test-Path -LiteralPath $migrationLogPath -PathType Leaf) "$role migration log missing."
+        Assert-Equal 0 @(
+            Get-ChildItem -LiteralPath (Split-Path -Parent $runtimeSettingsPath) `
+                -Filter 'runtime-settings.backup-*.json' -ErrorAction SilentlyContinue
+        ).Count "$role clean install created an unnecessary backup."
+    }
+
+    $legacyVersions = @('1.3.0', '1.3.1', '1.3.2')
+    for ($index = 0; $index -lt $legacyVersions.Count; $index++) {
+        $version = $legacyVersions[$index]
+        $legacyRoot = Join-Path $fixtureRoot "Upgrade-$version"
+        $runtimeSettingsPath = Join-Path $legacyRoot 'config\runtime-settings.json'
+        $migrationLogPath = Join-Path $legacyRoot 'logs\installer-runtime-settings.log'
+        $legacyPort = $legacyDiscoveryPorts[[Math]::Min($index, 1)]
+        $legacyCloud = [ordered]@{
+            Enabled = $true
+            SupabaseUrl = "https://legacy-$($version.Replace('.', '-')).supabase.co"
+            PublishableKey = "sb_publishable_$($version.Replace('.', ''))12345678901234567890"
+            OrganizationId = 'c2ed9ccd-b0bc-4bbf-af8e-ea4912e6f7b2'
+            Environment = "Legacy-$version"
+            AccessMode = 'TrustedServer'
+        }
+        Write-JsonFile $runtimeSettingsPath ([ordered]@{
+            InstallVersion = $version
+            Discovery = [ordered]@{ Enabled = $true; Port = $legacyPort }
+            Storage = [ordered]@{
+                RootPath = "D:\dev\ExamTransfer_Product_$version\backend\src\ExamTransfer.LocalServer\data"
+                MinFreeBytes = 123456
+            }
+            Cloud = $legacyCloud
+            UserData = [ordered]@{ Marker = "user-$version" }
+            DeviceIdentity = [ordered]@{ Id = "device-$version"; KeyId = "key-$version" }
+        })
+        $originalBytes = [IO.File]::ReadAllBytes($runtimeSettingsPath)
+
+        $result = Invoke-RuntimeUpgrade `
+            $runtimeSettingsPath `
+            $publicConfigPath `
+            $canonicalStorageRoot `
+            $migrationLogPath
+        Assert-Equal 0 $result.ExitCode "Teacher upgrade $version failed."
+        $runtime = Get-Content -LiteralPath $runtimeSettingsPath -Raw | ConvertFrom-Json
+        Assert-Equal 40550 ([int]$runtime.Discovery.Port) "Teacher upgrade $version discovery port."
+        Assert-Equal $canonicalStorageRoot ([string]$runtime.Storage.RootPath) "Teacher upgrade $version storage root."
+        foreach ($property in @(
+            'Enabled',
+            'SupabaseUrl',
+            'PublishableKey',
+            'OrganizationId',
+            'Environment',
+            'AccessMode')) {
+            Assert-Equal `
+                $legacyCloud[$property] `
+                $runtime.Cloud.$property `
+                "Teacher upgrade $version did not preserve Cloud.$property."
+        }
+        Assert-Equal "user-$version" ([string]$runtime.UserData.Marker) "Teacher upgrade $version user data."
+        Assert-Equal "device-$version" ([string]$runtime.DeviceIdentity.Id) "Teacher upgrade $version device identity."
+        $backups = @(
+            Get-ChildItem -LiteralPath (Split-Path -Parent $runtimeSettingsPath) `
+                -Filter 'runtime-settings.backup-*.json'
+        )
+        Assert-Equal 1 $backups.Count "Teacher upgrade $version backup count."
+        Assert-True (
+            [Linq.Enumerable]::SequenceEqual(
+                [byte[]]$originalBytes,
+                [byte[]][IO.File]::ReadAllBytes($backups[0].FullName))
+        ) "Teacher upgrade $version backup was not byte-exact."
+
+        $migratedHash = (Get-FileHash -LiteralPath $runtimeSettingsPath -Algorithm SHA256).Hash
+        $result = Invoke-RuntimeUpgrade `
+            $runtimeSettingsPath `
+            $publicConfigPath `
+            $canonicalStorageRoot `
+            $migrationLogPath
+        Assert-Equal 0 $result.ExitCode "Teacher upgrade $version idempotence rerun failed."
+        Assert-Equal `
+            $migratedHash `
+            (Get-FileHash -LiteralPath $runtimeSettingsPath -Algorithm SHA256).Hash `
+            "Teacher upgrade $version changed on idempotence rerun."
+        Assert-Equal 1 @(
+            Get-ChildItem -LiteralPath (Split-Path -Parent $runtimeSettingsPath) `
+                -Filter 'runtime-settings.backup-*.json'
+        ).Count "Teacher upgrade $version created a second backup on no-op rerun."
+    }
+
+    $studentLegacyRoot = Join-Path $fixtureRoot 'StudentLegacy'
+    $studentRuntimePath = Join-Path $studentLegacyRoot 'config\runtime-settings.json'
+    Write-JsonFile $studentRuntimePath ([ordered]@{
+        Discovery = [ordered]@{ Port = $legacyDiscoveryPorts[1] }
+        Storage = [ordered]@{ RootPath = 'E:\ExamTransferStudentData' }
+        Cloud = [ordered]@{
+            Enabled = $false
+            SupabaseUrl = 'https://student-legacy.supabase.co'
+            PublishableKey = 'sb_publishable_legacy_student_1234567890'
+            OrganizationId = '180bfa10-bcca-4b2d-993f-484ff1a96a91'
+            Environment = 'StudentLegacy'
+            AccessMode = 'UserSession'
+        }
+        UserData = [ordered]@{ Marker = 'student-user-data' }
+        DeviceIdentity = [ordered]@{ Id = 'student-device' }
+    })
+    $result = Invoke-RuntimeUpgrade `
+        $studentRuntimePath `
+        $publicConfigPath `
+        $canonicalStorageRoot `
+        (Join-Path $studentLegacyRoot 'logs\migration.log')
+    Assert-Equal 0 $result.ExitCode 'Student legacy upgrade failed.'
+    $studentRuntime = Get-Content -LiteralPath $studentRuntimePath -Raw | ConvertFrom-Json
+    Assert-Equal 40550 ([int]$studentRuntime.Discovery.Port) 'Student legacy port.'
+    Assert-Equal 'E:\ExamTransferStudentData' ([string]$studentRuntime.Storage.RootPath) 'Custom student storage must be preserved.'
+    Assert-Equal 'student-user-data' ([string]$studentRuntime.UserData.Marker) 'Student user data.'
+    Assert-Equal 'student-device' ([string]$studentRuntime.DeviceIdentity.Id) 'Student device identity.'
+
+    $failureRoot = Join-Path $fixtureRoot 'FailClosed'
+    $missingPublicRuntime = Join-Path $failureRoot 'missing-public.json'
+    $result = Invoke-RuntimeUpgrade `
+        $missingPublicRuntime `
+        (Join-Path $failureRoot 'missing-public-config.json') `
+        $canonicalStorageRoot `
+        (Join-Path $failureRoot 'missing-public.log')
+    Assert-Equal 44 $result.ExitCode 'Missing public config did not fail closed.'
+    Assert-True (-not (Test-Path -LiteralPath $missingPublicRuntime)) 'Missing public config created runtime settings.'
+
+    $secretPublicPath = Join-Path $failureRoot 'secret-public.json'
+    Write-JsonFile $secretPublicPath ([ordered]@{
+        supabaseUrl = 'https://secret.supabase.co'
+        publishableKey = $publicPublishableKey
+        organizationId = $publicOrganizationId
+        serviceRoleKey = 'forbidden'
+    })
+    $result = Invoke-RuntimeUpgrade `
+        (Join-Path $failureRoot 'secret-public-runtime.json') `
+        $secretPublicPath `
+        $canonicalStorageRoot `
+        (Join-Path $failureRoot 'secret-public.log')
+    Assert-Equal 44 $result.ExitCode 'Secret-bearing public config did not fail closed.'
+
+    $secretRuntimePath = Join-Path $failureRoot 'secret-runtime.json'
+    Write-JsonFile $secretRuntimePath ([ordered]@{
+        Discovery = [ordered]@{ Port = $legacyDiscoveryPorts[0] }
+        Storage = [ordered]@{ RootPath = 'D:\dev\ExamTransfer_Product\backend\src\ExamTransfer.LocalServer\data' }
+        Cloud = [ordered]@{ SecretKey = 'forbidden-secret' }
+    })
+    $secretRuntimeHash = (Get-FileHash -LiteralPath $secretRuntimePath -Algorithm SHA256).Hash
+    $result = Invoke-RuntimeUpgrade `
+        $secretRuntimePath `
+        $publicConfigPath `
+        $canonicalStorageRoot `
+        (Join-Path $failureRoot 'secret-runtime.log')
+    Assert-Equal 44 $result.ExitCode 'Secret-bearing runtime config did not fail closed.'
+    Assert-Equal `
+        $secretRuntimeHash `
+        (Get-FileHash -LiteralPath $secretRuntimePath -Algorithm SHA256).Hash `
+        'Secret-bearing runtime config was modified.'
+
+    foreach ($requiredInstallerContract in @(
+        'UpgradeRuntimeSettings',
+        'RUNTIME_SETTINGS_UPGRADE_FAILED',
+        'InstallValidationExitCode := 44',
+        'GetCustomSetupExitCode',
+        'Check: CanLaunchClient',
+        'Attribs: readonly; Flags: ignoreversion overwritereadonly uninsremovereadonly',
+        'Type: files; Name: "{app}\install-role.ini"',
+        'Type: dirifempty; Name: "{app}"',
+        'installer-localserver-guard.log',
+        'Source: "{#MyReleaseRoot}\Server\*"',
+        'RunLocalServerGuard(''StopOnly''',
+        ("ExamTransfer UDP {0}" -f $legacyDiscoveryPorts[0]),
+        'ExamTransfer UDP 40550',
+        'protocol=UDP localport=40550',
+        'protocol=TCP localport=5048')) {
+        Assert-True (
+            $installerSource.IndexOf(
+                $requiredInstallerContract,
+                [StringComparison]::Ordinal) -ge 0
+        ) "Installer contract missing: $requiredInstallerContract"
+    }
+    foreach ($forbiddenInstallerContract in @(
+        '[Types]',
+        '[Components]',
+        'IsStudentOnlyInstall',
+        'WizardIsComponentSelected',
+        'SetIniString(''Install'', ''Role''',
+        'RunLocalServerGuard(''StartAndVerify''')) {
+        Assert-True (
+            $installerSource.IndexOf(
+                $forbiddenInstallerContract,
+                [StringComparison]::Ordinal) -lt 0
+        ) "Installer still contains split-role contract: $forbiddenInstallerContract"
+    }
+
+    $buildReleaseSource = Get-Content -LiteralPath (
+        Join-Path $PSScriptRoot 'build-release.ps1') -Raw
+    foreach ($requiredReleaseContract in @(
+        'EXAMTRANSFER_ORGANIZATION_ID',
+        'PUBLICCLOUD_INVALID_ORGANIZATION_ID',
+        'organizationId = $parsedOrganizationId.ToString(''D'')')) {
+        Assert-True (
+            $buildReleaseSource.IndexOf(
+                $requiredReleaseContract,
+                [StringComparison]::Ordinal) -ge 0
+        ) "Release config contract missing: $requiredReleaseContract"
+    }
 
     $arguments = @('-t', '127.0.0.1')
     $installedProcess = Start-Process `
@@ -63,6 +363,10 @@ try {
     }
 
     Write-Host 'PASS code=INSTALLER_EXACT_PATH_PROCESS_GUARD unrelated_same_name=preserved user_data=preserved' -ForegroundColor Green
+    Write-Host 'PASS code=RUNTIME_SETTINGS_CLEAN_INSTALL role=unified port=40550 storage=programdata cloud=public-only' -ForegroundColor Green
+    Write-Host 'PASS code=RUNTIME_SETTINGS_UPGRADE versions=1.3.0,1.3.1,1.3.2 backup=exact cloud=preserved user_data=preserved device=preserved' -ForegroundColor Green
+    Write-Host 'PASS code=RUNTIME_SETTINGS_IDEMPOTENT student_legacy=normalized custom_storage=preserved secrets=fail-closed' -ForegroundColor Green
+    Write-Host 'PASS code=INSTALLER_STATIC_CONTRACT unified=client+server role_source=authenticated_profile autostart=disabled firewall=TCP5048+UDP40550 legacy_udp=removed' -ForegroundColor Green
 }
 finally {
     foreach ($process in @($installedProcess, $unrelatedProcess)) {

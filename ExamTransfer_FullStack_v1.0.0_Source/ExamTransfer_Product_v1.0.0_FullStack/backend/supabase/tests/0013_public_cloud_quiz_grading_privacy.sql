@@ -266,7 +266,7 @@ select is(
      and payload->>'sessionId'='51300000-0000-0000-0000-000000000000'),
   0,
   'peer participant device receives no grade signal');
-select is(
+select ok(
   (select array_agg(key order by key)
    from (
      select distinct jsonb_object_keys(payload) as key
@@ -278,9 +278,19 @@ select is(
        and payload->>'eventType'='QuizGradeReturned'
        and payload->>'attemptId'='51600000-0000-0000-0000-000000000001'
        and payload->>'sessionId'='51300000-0000-0000-0000-000000000000'
-    ) keys),
-  array['attemptId','eventType','sessionId']::text[],
-  'broadcast payload has the exact allowed key set');
+    ) keys) = array['attemptId','eventType','id','sessionId']::text[]
+  and not exists(
+    select 1
+    from realtime.messages
+    where event='QuizGradeReturned'
+      and topic in (
+        'exam-session:51300000-0000-0000-0000-000000000000:device:phase2-owner-a',
+        'exam-session:51300000-0000-0000-0000-000000000000:device:phase2-owner-b')
+      and payload->>'eventType'='QuizGradeReturned'
+      and payload->>'attemptId'='51600000-0000-0000-0000-000000000001'
+      and payload->>'sessionId'='51300000-0000-0000-0000-000000000000'
+      and (payload->>'id')::uuid is distinct from id),
+  'broadcast physical payload has exact keys and a valid transport UUID');
 select ok(not exists(
   select 1
   from realtime.messages

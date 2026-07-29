@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Windows.Input;
 using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
@@ -11,17 +10,23 @@ public sealed class LoginViewModel : ObservableObject
     private readonly IBackendClient api;
     private readonly AppAuthSessionState authState;
     private readonly Func<Task> authenticated;
+    private readonly IUnifiedAuthenticationService authentication;
     private string account = string.Empty;
     private string password = string.Empty;
     private bool isBusy;
     private string status = "Học sinh nhập mã sinh viên; giáo viên và quản trị viên nhập email.";
     private string statusTone = "info";
 
-    public LoginViewModel(IBackendClient api, AppAuthSessionState authState, Func<Task> authenticated)
+    public LoginViewModel(
+        IBackendClient api,
+        AppAuthSessionState authState,
+        Func<Task> authenticated,
+        IUnifiedAuthenticationService? authentication = null)
     {
         this.api = api;
         this.authState = authState;
         this.authenticated = authenticated;
+        this.authentication = authentication ?? AppServices.Authentication;
         DeviceId = EnsureDeviceId();
         LoginCommand = new AsyncRelayCommand(LoginAsync, CanLogin);
     }
@@ -47,6 +52,7 @@ public sealed class LoginViewModel : ObservableObject
     }
 
     public string DeviceId { get; }
+    public string VersionLabel => $"v{ReleaseIdentity.SemanticVersion}";
 
     public bool IsBusy
     {
@@ -86,29 +92,19 @@ public sealed class LoginViewModel : ObservableObject
             IsBusy = true;
             Status = "Đang xác thực tài khoản...";
             StatusTone = "primary";
+            authState.Clear();
+            api.SetAccountToken(null);
+            api.SetParticipantToken(null);
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            var result = ApiGuard.Require(await api.PostAsync<AccountLoginRequest, AccountLoginResultDto>(
-                "api/v1/auth/login",
-                new AccountLoginRequest(
-                    Account.Trim(),
-                    Password,
-                    DeviceId,
-                    Environment.MachineName,
-                    AppVersion),
-                cts.Token));
-
-            if (result.RequiresStudentConfirmation)
-            {
-                throw new InvalidOperationException(
-                    "Máy chủ vẫn đang dùng luồng xác nhận sinh viên cũ. Hãy kiểm tra lại bản vá backend giai đoạn 2.");
-            }
-
-            if (string.IsNullOrWhiteSpace(result.AccessToken))
-                throw new InvalidOperationException("Máy chủ không trả về token đăng nhập.");
-
-            api.SetAccountToken(result.AccessToken);
-            var current = ApiGuard.Require(await api.GetAsync<CurrentAccountDto>("api/v1/auth/me", cts.Token));
+            var result = await authentication.LoginAsync(
+                Account.Trim(),
+                Password,
+                DeviceId,
+                Environment.MachineName,
+                AppVersion,
+                cts.Token);
+            var current = result.Account;
 
             if (current.Role == UserRole.Student)
             {
@@ -119,9 +115,13 @@ public sealed class LoginViewModel : ObservableObject
                     throw new InvalidOperationException("Hồ sơ sinh viên chưa có ngày sinh.");
             }
 
-            if (current.Role == UserRole.Student && AppServices.PublicCloud.Configured)
-                await AppServices.PublicCloud.LoginAsync(Account.Trim(), Password, cts.Token);
-            authState.SetAuthenticated(current, result.AccessToken);
+            if (current.Role is not (UserRole.Student or UserRole.Teacher or UserRole.Admin))
+                throw new InvalidOperationException(ErrorCodes.AuthenticatedRoleInvalid);
+
+            authState.SetAuthenticated(
+                current,
+                result.AccessToken,
+                result.Authority);
             authState.SetTransientCredentials(Account, Password);
             Password = string.Empty;
             Status = "Đăng nhập thành công.";
@@ -130,7 +130,10 @@ public sealed class LoginViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            authState.Clear();
             api.SetAccountToken(null);
+            api.SetParticipantToken(null);
+            AppServices.PublicCloud.Logout();
             FrontendLogger.Log(ex, "LoginViewModel");
             Status = ex.Message;
             StatusTone = "danger";
@@ -144,8 +147,7 @@ public sealed class LoginViewModel : ObservableObject
     private void RaiseCommand() =>
         (LoginCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
 
-    private static string AppVersion =>
-        Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0";
+    private static string AppVersion => ReleaseIdentity.SemanticVersion;
 
     private static string EnsureDeviceId()
     {

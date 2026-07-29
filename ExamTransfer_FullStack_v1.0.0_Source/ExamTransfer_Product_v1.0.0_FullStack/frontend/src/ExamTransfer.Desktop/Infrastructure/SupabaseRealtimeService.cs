@@ -265,8 +265,11 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                 or RealtimeEvents.QuizGradeReopened)
             {
                 if (topic != deviceTopic
+                    || !outerPayload.TryGetProperty("meta", out var gradeMetadata)
+                    || gradeMetadata.ValueKind != JsonValueKind.Object
+                    || !TryGuid(gradeMetadata, "id", out var metadataId)
                     || !outerPayload.TryGetProperty("payload", out var gradePayload)
-                    || !HasExactGradeSignalKeys(gradePayload)
+                    || !HasExactGradeSignalKeys(gradePayload, metadataId)
                     || !gradePayload.TryGetProperty("eventType", out var eventType)
                     || eventType.GetString() != eventName
                     || !TryGuid(gradePayload, "attemptId", out var gradeAttemptId)
@@ -329,7 +332,9 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
         }
     }
 
-    private static bool HasExactGradeSignalKeys(JsonElement payload)
+    private static bool HasExactGradeSignalKeys(
+        JsonElement payload,
+        Guid metadataId)
     {
         if (payload.ValueKind != JsonValueKind.Object)
             return false;
@@ -337,10 +342,12 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
         foreach (var property in payload.EnumerateObject())
         {
             count++;
-            if (property.Name is not ("eventType" or "attemptId" or "sessionId"))
+            if (property.Name is not ("id" or "eventType" or "attemptId" or "sessionId"))
                 return false;
         }
-        return count == 3;
+        return count == 4
+            && TryGuid(payload, "id", out var payloadId)
+            && payloadId == metadataId;
     }
 
     private static bool TryGuid(JsonElement value, string name, out Guid parsed)

@@ -1,90 +1,114 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.0"
+  #define MyAppVersion "1.3.5"
 #endif
-
+#ifndef MyAppId
+  #define MyAppId "{{724D43BD-E4C5-4927-A3CF-8AC292F03D21}"
+#endif
+#ifndef MyDefaultDirName
+  #define MyDefaultDirName "{autopf}\ExamTransfer"
+#endif
+#ifndef MyClientShortcutName
+  #define MyClientShortcutName "ExamTransfer"
+#endif
+#ifndef MyOutputDir
+  #define MyOutputDir "..\artifacts\installer"
+#endif
+#ifndef MyReleaseRoot
+  #define MyReleaseRoot "..\artifacts\release"
+#endif
+#ifndef MyPrivilegesRequired
+  #define MyPrivilegesRequired "admin"
+#endif
+#ifndef MyRuntimeSettingsRoot
+  #define MyRuntimeSettingsRoot "{commonappdata}\ExamTransfer"
+#endif
+#ifndef MyCanonicalStorageRoot
+  #define MyCanonicalStorageRoot "%ProgramData%/ExamTransfer"
+#endif
+#ifndef MyLegacyDiscoveryPortPrimary
+  #define MyLegacyDiscoveryPortPrimary "5050"
+#endif
+#ifndef MyLegacyDiscoveryPortSecondary
+  #define MyLegacyDiscoveryPortSecondary "5051"
+#endif
 #define MyAppName "ExamTransfer"
 #define MyAppPublisher "ExamTransfer"
 #define MyClientExe "ExamTransfer.Desktop.exe"
 #define MyServerExe "ExamTransfer.LocalServer.exe"
 
 [Setup]
-AppId={{724D43BD-E4C5-4927-A3CF-8AC292F03D21}
+AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\ExamTransfer
+DefaultDirName={#MyDefaultDirName}
 DefaultGroupName=ExamTransfer
 DisableProgramGroupPage=yes
-OutputDir=..\artifacts\installer
+OutputDir={#MyOutputDir}
 OutputBaseFilename=ExamTransfer-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired={#MyPrivilegesRequired}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\Client\{#MyClientExe}
 SetupLogging=yes
 UsePreviousAppDir=yes
 UsePreviousGroup=yes
-UsePreviousSetupType=yes
 UsePreviousTasks=yes
 UsePreviousLanguage=yes
 UsePreviousPrivileges=yes
 CloseApplications=yes
 RestartApplications=no
 
-[Types]
-Name: "teacher"; Description: "Máy giáo viên - Giao diện và Local Server"
-Name: "student"; Description: "Máy học sinh - Chỉ cài giao diện"
-
-[Components]
-Name: "client"; Description: "Ứng dụng ExamTransfer"; Types: teacher student; Flags: fixed
-Name: "server"; Description: "Local Server dành cho máy giáo viên"; Types: teacher
-
 [Tasks]
 Name: "desktopicon"; Description: "Tạo biểu tượng ngoài màn hình"; Flags: unchecked
-Name: "startserver"; Description: "Tự mở Local Server khi đăng nhập Windows"; Components: server
 
 [Files]
-Source: "..\artifacts\release\Client\*"; DestDir: "{app}\Client"; Excludes: "publiccloud.runtime.json"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: client
-Source: "..\artifacts\release\Client\publiccloud.runtime.json"; DestDir: "{app}\Client"; Attribs: readonly; Flags: ignoreversion; Components: client
-Source: "..\artifacts\release\Server\*"; DestDir: "{app}\Server"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: server
-Source: "..\artifacts\release\release-manifest.json"; DestDir: "{app}"; Flags: ignoreversion; Components: client
-Source: "..\scripts\installer-localserver-guard.ps1"; DestDir: "{app}\Support"; Flags: ignoreversion; Components: server
+Source: "{#MyReleaseRoot}\Client\*"; DestDir: "{app}\Client"; Excludes: "publiccloud.runtime.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MyReleaseRoot}\Client\publiccloud.runtime.json"; DestDir: "{app}\Client"; Attribs: readonly; Flags: ignoreversion overwritereadonly uninsremovereadonly
+Source: "{#MyReleaseRoot}\Server\*"; DestDir: "{app}\Server"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MyReleaseRoot}\release-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\scripts\installer-localserver-guard.ps1"; DestDir: "{app}\Support"; Flags: ignoreversion
 Source: "..\scripts\installer-localserver-guard.ps1"; Flags: dontcopy
 
+[InstallDelete]
+Type: files; Name: "{app}\install-role.ini"
+Type: files; Name: "{autoprograms}\ExamTransfer Local Server.lnk"
+
 [Icons]
-Name: "{autoprograms}\ExamTransfer"; Filename: "{app}\Client\{#MyClientExe}"; Components: client
-Name: "{autodesktop}\ExamTransfer"; Filename: "{app}\Client\{#MyClientExe}"; Tasks: desktopicon; Components: client
-Name: "{autoprograms}\ExamTransfer Local Server"; Filename: "{app}\Server\{#MyServerExe}"; Components: server
-Name: "{userstartup}\ExamTransfer Local Server"; Filename: "{app}\Server\{#MyServerExe}"; Flags: runminimized; Tasks: startserver; Components: server
+Name: "{autoprograms}\{#MyClientShortcutName}"; Filename: "{app}\Client\{#MyClientExe}"
+Name: "{autodesktop}\{#MyClientShortcutName}"; Filename: "{app}\Client\{#MyClientExe}"; Tasks: desktopicon
 
 [Run]
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer.LocalServer"" program=""{app}\Server\{#MyServerExe}"""; Flags: runhidden; Components: server
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer TCP 5048"""; Flags: runhidden; Components: server
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ExamTransfer TCP 5048"" dir=in action=allow protocol=TCP localport=5048 profile=private,domain remoteip=LocalSubnet program=""{app}\Server\{#MyServerExe}"""; Flags: runhidden; Components: server
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer UDP 5050"""; Flags: runhidden; Components: server
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer UDP 40550"""; Flags: runhidden; Components: server
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ExamTransfer UDP 40550"" dir=in action=allow protocol=UDP localport=40550 profile=private,domain remoteip=LocalSubnet program=""{app}\Server\{#MyServerExe}"""; Flags: runhidden; Components: server
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer TCP 5048"""; Flags: runhidden; Components: client; Check: IsStudentOnlyInstall
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer UDP 5050"""; Flags: runhidden; Components: client; Check: IsStudentOnlyInstall
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer UDP 40550"""; Flags: runhidden; Components: client; Check: IsStudentOnlyInstall
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer.LocalServer"" program=""{app}\Server\{#MyServerExe}"""; Flags: runhidden; Components: client; Check: IsStudentOnlyInstall
-Filename: "{app}\Client\{#MyClientExe}"; Description: "Mở ExamTransfer"; Flags: nowait postinstall skipifsilent; Components: client
+#ifndef MyDisableFirewall
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer.LocalServer"" program=""{app}\Server\{#MyServerExe}"""; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer TCP 5048"""; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ExamTransfer TCP 5048"" dir=in action=allow protocol=TCP localport=5048 profile=private,domain remoteip=LocalSubnet program=""{app}\Server\{#MyServerExe}"""; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer UDP 5050"""; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer UDP 40550"""; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ExamTransfer UDP 40550"" dir=in action=allow protocol=UDP localport=40550 profile=private,domain remoteip=LocalSubnet program=""{app}\Server\{#MyServerExe}"""; Flags: runhidden
+#endif
+Filename: "{app}\Client\{#MyClientExe}"; Description: "Mở ExamTransfer"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: CanLaunchClient
 
 [UninstallRun]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Support\installer-localserver-guard.ps1"" -Mode StopOnly -InstalledServerPath ""{app}\Server\{#MyServerExe}"""; Flags: runhidden waituntilterminated; RunOnceId: "StopExactExamTransferServer"; Components: server
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Support\installer-localserver-guard.ps1"" -Mode StopOnly -InstalledServerPath ""{app}\Server\{#MyServerExe}"""; Flags: runhidden waituntilterminated; RunOnceId: "StopExactExamTransferServer"
+#ifndef MyDisableFirewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer TCP 5048"""; Flags: runhidden; RunOnceId: "RemoveExamTransferTcpRule"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer UDP 40550"""; Flags: runhidden; RunOnceId: "RemoveExamTransferUdpRule"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer UDP 5050"""; Flags: runhidden; RunOnceId: "RemoveLegacyExamTransferUdpRule"
+#endif
+
+[UninstallDelete]
+Type: files; Name: "{app}\install-role.ini"
+Type: dirifempty; Name: "{app}\Client"
+Type: dirifempty; Name: "{app}"
 
 [Code]
-function IsStudentOnlyInstall: Boolean;
-begin
-  Result := not WizardIsComponentSelected('server');
-end;
+var
+  InstallValidationExitCode: Integer;
 
 function RunLocalServerGuard(Mode: String; ManifestPath: String; var ResultCode: Integer): Boolean;
 var
@@ -96,7 +120,8 @@ begin
   Parameters :=
     '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath +
     '" -Mode ' + Mode +
-    ' -InstalledServerPath "' + ExpandConstant('{app}\Server\{#MyServerExe}') + '"';
+    ' -InstalledServerPath "' + ExpandConstant('{app}\Server\{#MyServerExe}') + '"' +
+    ' -DiagnosticLogPath "' + ExpandConstant('{#MyRuntimeSettingsRoot}\logs\installer-localserver-guard.log') + '"';
   if ManifestPath <> '' then
     Parameters := Parameters + ' -ManifestPath "' + ManifestPath + '"';
   Result := Exec(
@@ -108,27 +133,43 @@ begin
     ResultCode);
 end;
 
+function RunRuntimeSettingsUpgrade(var ResultCode: Integer): Boolean;
+var
+  ScriptPath: String;
+  Parameters: String;
+begin
+  ExtractTemporaryFile('installer-localserver-guard.ps1');
+  ScriptPath := ExpandConstant('{tmp}\installer-localserver-guard.ps1');
+  Parameters :=
+    '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath +
+    '" -Mode UpgradeRuntimeSettings' +
+    ' -InstalledServerPath "' + ExpandConstant('{app}\Server\{#MyServerExe}') + '"' +
+    ' -RuntimeSettingsPath "' + ExpandConstant('{#MyRuntimeSettingsRoot}\config\runtime-settings.json') + '"' +
+    ' -PublicConfigPath "' + ExpandConstant('{app}\Client\publiccloud.runtime.json') + '"' +
+    ' -CanonicalStorageRoot "{#MyCanonicalStorageRoot}"' +
+    ' -LegacyDiscoveryPorts "{#MyLegacyDiscoveryPortPrimary},{#MyLegacyDiscoveryPortSecondary}"' +
+    ' -MigrationLogPath "' + ExpandConstant('{#MyRuntimeSettingsRoot}\logs\installer-runtime-settings.log') + '"';
+  Result := Exec(
+    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    Parameters,
+    ExpandConstant('{app}\Client'),
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
   Result := '';
-  if not WizardIsComponentSelected('server') then
-    exit;
-
-  if not RunLocalServerGuard('StopAndPreflight', '', ResultCode) then
+  if not RunLocalServerGuard('StopOnly', '', ResultCode) then
   begin
-    Result := 'Không thể chạy kiểm tra Local Server trước khi cài đặt.';
+    Result := 'Không thể dừng Local Server cũ trước khi cập nhật.';
     exit;
   end;
-
-  case ResultCode of
-    0: Result := '';
-    41: Result := 'PORT_CONFLICT_TCP_5048: Cổng TCP 5048 đang bị tiến trình không thuộc ExamTransfer chiếm.';
-    42: Result := 'PORT_CONFLICT_UDP_40550: Cổng UDP 40550 đang bị tiến trình không thuộc ExamTransfer chiếm.';
-  else
+  if ResultCode <> 0 then
     Result := 'Không thể dừng đúng Local Server đã cài đặt hoặc kiểm tra cổng thất bại.';
-  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -137,26 +178,31 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    if WizardIsComponentSelected('server') then
-      SetIniString('Install', 'Role', 'Teacher', ExpandConstant('{app}\install-role.ini'))
-    else
-      SetIniString('Install', 'Role', 'Student', ExpandConstant('{app}\install-role.ini'));
-
-    if WizardIsComponentSelected('server') then
+    if (not RunRuntimeSettingsUpgrade(ResultCode)) or (ResultCode <> 0) then
     begin
-      if (not RunLocalServerGuard(
-          'StartAndVerify',
-          ExpandConstant('{app}\release-manifest.json'),
-          ResultCode)) or (ResultCode <> 0) then
-        RaiseException(
-          'Cài đặt Local Server thất bại xác minh BuildId/ExamTransfer/2/UDP 40550. Mã lỗi: ' +
-          IntToStr(ResultCode));
+      InstallValidationExitCode := 44;
+      if not WizardSilent then
+        MsgBox(
+          'RUNTIME_SETTINGS_UPGRADE_FAILED: Xem installer-runtime-settings.log.',
+          mbError,
+          MB_OK);
+      exit;
     end;
 
-    if WizardIsComponentSelected('server') and (not WizardSilent) then
-      MsgBox('Máy giáo viên phải đặt mạng Windows ở chế độ Private để học sinh trong cùng mạng có thể tìm thấy phòng.', mbInformation, MB_OK);
+    DeleteFile(ExpandConstant('{app}\install-role.ini'));
+    DeleteFile(ExpandConstant('{userstartup}\ExamTransfer Local Server.lnk'));
   end;
 end;
 
-// Không thêm [UninstallDelete] cho C:\ProgramData\ExamTransfer hoặc
-// %LocalAppData%\ExamTransfer. Dữ liệu phải được giữ khi cập nhật/gỡ cài đặt.
+function CanLaunchClient: Boolean;
+begin
+  Result := InstallValidationExitCode = 0;
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  Result := InstallValidationExitCode;
+end;
+
+// Không thêm [UninstallDelete] cho C:\ProgramData\ExamTransfer hoặc thư mục dữ
+// liệu runtime. Dữ liệu phải được giữ khi cập nhật/gỡ cài đặt.

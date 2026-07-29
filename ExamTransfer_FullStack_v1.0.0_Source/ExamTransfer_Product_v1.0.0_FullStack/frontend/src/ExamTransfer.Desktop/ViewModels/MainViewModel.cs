@@ -35,7 +35,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         CurrentPage = CreateLoginPage();
         FrontendLogger.SetContext("Login", "Auth");
         RestoreAuthAsync().SafeFireAndForget("MainViewModel.RestoreAuthAsync");
-        CheckAsync().SafeFireAndForget("MainViewModel.CheckAsync");
     }
 
     public ObservableCollection<NavigationItem> Navigation { get; } = new();
@@ -146,16 +145,48 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async Task RestoreAuthAsync()
     {
-        var token = authState.TryRestoreAccessToken();
-        if (string.IsNullOrWhiteSpace(token)) return;
-
-        api.SetAccountToken(token);
+        if (!authState.TryRestoreAuthenticatedSession(out var restored))
+            return;
         try
         {
-            var current = ApiGuard.Require(await api.GetAsync<CurrentAccountDto>("api/v1/auth/me"));
+            CurrentAccountDto current;
+            if (restored.Authority == AuthSessionAuthority.Supabase)
+            {
+                if (restored.Account.Role != UserRole.Student
+                    || string.IsNullOrWhiteSpace(restored.Account.ProviderUserId)
+                    || !AppServices.PublicCloud.TryRestoreAccessToken(
+                        restored.AccessToken,
+                        restored.Account.ProviderUserId,
+                        restored.Account.ExpiresAtUtc))
+                    throw new InvalidOperationException("OFFLINE_AUTH_CACHE_INVALID");
+                api.SetAccountToken(null);
+                current = restored.Account;
+            }
+            else
+            {
+                if (restored.Account.Role is not (UserRole.Teacher or UserRole.Admin))
+                    throw new InvalidOperationException(ErrorCodes.AuthenticatedRoleInvalid);
+                var lifecycle = await AppServices.LocalServerLifecycle.EnsureStartedAsync(
+                    restored.Account.Role);
+                if (lifecycle.Status is not ("SERVER_HEALTHY" or "SERVER_STARTED"))
+                    throw new InvalidOperationException(lifecycle.Status);
+                api.SetAccountToken(restored.AccessToken);
+                current = ApiGuard.Require(await api.GetAsync<CurrentAccountDto>("api/v1/auth/me"));
+                if (current.UserId != restored.Account.UserId
+                    || current.Role != restored.Account.Role
+                    || !string.Equals(
+                        current.ProviderUserId,
+                        restored.Account.ProviderUserId,
+                        StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("RESTORED_AUTH_PROFILE_MISMATCH");
+            }
+
             await RunOnUiAsync(() =>
             {
-                authState.SetAuthenticated(current, token);
+                authState.SetAuthenticated(
+                    current,
+                    restored.AccessToken,
+                    restored.Authority);
                 CompleteAuthenticatedShell();
             });
         }
@@ -181,7 +212,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void CompleteAuthenticatedShell()
     {
         RaiseAuthProperties();
-        var targetMode = authState.IsStudent ? AppMode.Student : AppMode.Teacher;
+        var targetMode = authState.CurrentAccount?.Role switch
+        {
+            UserRole.Student => AppMode.Student,
+            UserRole.Teacher or UserRole.Admin => AppMode.Teacher,
+            _ => throw new InvalidOperationException(ErrorCodes.AuthenticatedRoleInvalid)
+        };
         if (Mode != targetMode) Mode = targetMode;
         else BuildNavigation();
         StartAccountHeartbeat();
@@ -189,10 +225,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async Task LogoutAsync()
     {
+        var stopLocalServer = authState.IsTeacher;
         try
         {
             var deviceId = authState.CurrentAccount?.DeviceId;
-            if (!string.IsNullOrWhiteSpace(deviceId))
+            if (api.HasTrustedAccountToken && !string.IsNullOrWhiteSpace(deviceId))
             {
                 _ = await api.PostAsync<LogoutRequest, object>(
                     "api/v1/auth/logout",
@@ -205,6 +242,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            if (stopLocalServer)
+            {
+                try
+                {
+                    await AppServices.LocalServerLifecycle.StopAsync();
+                }
+                catch (Exception ex)
+                {
+                    FrontendLogger.Log(ex, "MainViewModel.StopLocalServer");
+                }
+            }
             ClearAuthToLogin();
         }
     }
@@ -213,7 +261,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         accountHeartbeatCts?.Cancel();
         accountHeartbeatCts?.Dispose();
-        if (!authState.IsAuthenticated || authState.CurrentAccount is null) return;
+        if (!authState.IsTeacher || authState.CurrentAccount is null) return;
 
         accountHeartbeatCts = new CancellationTokenSource();
         var token = accountHeartbeatCts.Token;
@@ -247,12 +295,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void ClearAuthToLogin()
     {
+        var stopLocalServer = authState.IsTeacher;
         accountHeartbeatCts?.Cancel();
         accountHeartbeatCts?.Dispose();
         accountHeartbeatCts = null;
         authState.Clear();
         AppServices.StudentRealtime.StopAsync().SafeFireAndForget("StudentRealtime.Logout");
         AppServices.PublicCloud.Logout();
+        if (stopLocalServer)
+            AppServices.LocalServerLifecycle.StopAsync().SafeFireAndForget("LocalServer.Logout");
         AppServices.StudentState.Reset();
         api.SetAccountToken(null);
         api.SetParticipantToken(null);
@@ -279,6 +330,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         try
         {
+            if (authState.IsStudent)
+            {
+                if (!AppServices.PublicCloud.Configured
+                    || !AppServices.PublicCloud.Authenticated)
+                    throw new InvalidOperationException("PublicCloud chưa có phiên xác thực.");
+                await AppServices.PublicCloud.EnsureSchemaCompatibleAsync(CancellationToken.None);
+                await RunOnUiAsync(() =>
+                {
+                    Connection = "PublicCloud sẵn sàng";
+                    ConnectionTone = "success";
+                });
+                return;
+            }
+
+            if (!authState.IsTeacher)
+                throw new InvalidOperationException("Chưa có tài khoản đã xác thực.");
             var response = await api.GetSystemStatusAsync();
             await RunOnUiAsync(() =>
             {
@@ -538,6 +605,8 @@ public static class AppServices
 
     public static IBackendClient Backend { get; } =
         new ExamTransfer.Desktop.Infrastructure.BackendClient(BaseUrl);
+    public static IUnifiedAuthenticationService Authentication { get; } =
+        new UnifiedAuthenticationService(Backend, PublicCloud, LocalServerLifecycle);
     public static IStudentExamFlowCoordinator StudentExamFlow { get; } =
         new StudentExamFlowCoordinator(Backend, PublicCloud, StudentState);
     public static IStudentHeartbeatService StudentHeartbeat { get; } =

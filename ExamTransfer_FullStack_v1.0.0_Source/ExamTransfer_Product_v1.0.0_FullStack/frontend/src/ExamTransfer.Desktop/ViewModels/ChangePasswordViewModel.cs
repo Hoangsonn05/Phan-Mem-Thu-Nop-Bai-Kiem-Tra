@@ -102,20 +102,49 @@ public sealed class ChangePasswordViewModel : ObservableObject
             StatusTone = "primary";
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            var result = ApiGuard.Require(await api.PostAsync<ChangePasswordRequest, PasswordChangeResultDto>(
-                "api/v1/auth/change-password",
-                new ChangePasswordRequest(CurrentPassword, NewPassword, ConfirmPassword),
-                cts.Token));
-
-            var current = ApiGuard.Require(await api.GetAsync<CurrentAccountDto>("api/v1/auth/me", cts.Token));
-            var token = authState.AccountAccessToken
-                ?? throw new InvalidOperationException("Phiên đăng nhập không còn access token.");
-
-            authState.SetAuthenticated(current, token);
+            string resultMessage;
+            if (authState.IsStudent && authState.CurrentAccount is { } student)
+            {
+                var account = student.Email ?? student.StudentCode ?? student.Username;
+                var changed = await AppServices.PublicCloud.ChangeOwnPasswordAsync(
+                    account,
+                    CurrentPassword,
+                    NewPassword,
+                    ConfirmPassword,
+                    student.DeviceId,
+                    cts.Token);
+                authState.SetAuthenticated(
+                    changed.Account,
+                    changed.AccessToken,
+                    AuthSessionAuthority.Supabase);
+                resultMessage = "Đổi mật khẩu thành công. Tài khoản đã sẵn sàng sử dụng.";
+            }
+            else
+            {
+                var result = ApiGuard.Require(await api.PostAsync<
+                    ChangePasswordRequest,
+                    PasswordChangeResultDto>(
+                    "api/v1/auth/change-password",
+                    new ChangePasswordRequest(
+                        CurrentPassword,
+                        NewPassword,
+                        ConfirmPassword),
+                    cts.Token));
+                var current = ApiGuard.Require(await api.GetAsync<CurrentAccountDto>(
+                    "api/v1/auth/me",
+                    cts.Token));
+                var token = authState.AccountAccessToken
+                    ?? throw new InvalidOperationException("Phiên đăng nhập không còn access token.");
+                authState.SetAuthenticated(
+                    current,
+                    token,
+                    AuthSessionAuthority.LocalServer);
+                resultMessage = result.Message;
+            }
             CurrentPassword = string.Empty;
             NewPassword = string.Empty;
             ConfirmPassword = string.Empty;
-            Status = result.Message;
+            Status = resultMessage;
             StatusTone = "success";
             await completed();
         }

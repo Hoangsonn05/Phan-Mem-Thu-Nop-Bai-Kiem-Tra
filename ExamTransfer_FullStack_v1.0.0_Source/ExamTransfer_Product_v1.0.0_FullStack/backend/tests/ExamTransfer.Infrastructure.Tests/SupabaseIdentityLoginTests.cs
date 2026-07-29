@@ -3,8 +3,10 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using ExamTransfer.Application;
+using ExamTransfer.Infrastructure.Cloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
+using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.LocalServer.Auth;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Authentication;
@@ -300,9 +302,160 @@ public sealed class SupabaseIdentityLoginTests
         Assert.Equal(403, error.StatusCode);
     }
 
-    private static AuthHarness CreateHarness(AppDbContext db, SupabaseHandler handler)
+    [Fact]
+    public async Task TeacherLogin_HandoffsEncryptedCloudSessionSignalsWorkerAndLogoutStopsIt()
     {
-        var options = Options.Create(new ExamTransferOptions
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "ExamTransfer.Phase3.Auth",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var database = await TestDatabase.CreateAsync();
+            var handler = new SupabaseHandler(Profile(UserRole.Teacher));
+            var paths = new TestStoragePaths(root);
+            var protection = DataProtectionProvider.Create(
+                new DirectoryInfo(Path.Combine(root, "keys")));
+            var cloudSession = new CloudSessionState(protection, paths);
+            var signal = new CloudSyncSignal();
+            var harness = CreateHarness(
+                database.Context,
+                handler,
+                protection,
+                cloudSession,
+                signal);
+
+            var result = await harness.Auth.LoginAsync(
+                LoginRequest(),
+                "127.0.0.1",
+                CancellationToken.None);
+
+            var snapshot = Assert.IsType<CloudSessionSnapshot>(
+                cloudSession.Snapshot);
+            Assert.Equal(UserAccessToken, snapshot.AccessToken);
+            Assert.Equal("test-refresh-token", snapshot.RefreshToken);
+            Assert.Equal(ProviderUserId, snapshot.UserId);
+            Assert.Equal(OrganizationId, snapshot.OrganizationId);
+            Assert.Equal(UserRole.Teacher.ToString(), snapshot.Role);
+            Assert.True(await signal.WaitAsync(
+                TimeSpan.FromMilliseconds(100),
+                CancellationToken.None));
+
+            var protectedPath = Path.Combine(
+                root,
+                "config",
+                "cloud-session.protected");
+            var protectedPayload = await File.ReadAllTextAsync(protectedPath);
+            Assert.DoesNotContain(UserAccessToken, protectedPayload, StringComparison.Ordinal);
+            Assert.DoesNotContain("test-refresh-token", protectedPayload, StringComparison.Ordinal);
+
+            var principal = harness.Tokens.ValidateAccountToken(result.AccessToken!);
+            Assert.NotNull(principal);
+            await harness.Auth.LogoutAsync(
+                principal!,
+                new LogoutRequest("device-1", "phase3-test"),
+                CancellationToken.None);
+
+            Assert.Null(cloudSession.Snapshot);
+            Assert.False(File.Exists(protectedPath));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task ExpiringCloudSession_RefreshesTokenAndRemainsSynchronizable()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "ExamTransfer.Phase3.Refresh",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var handler = new SupabaseHandler(Profile(UserRole.Teacher))
+            {
+                AuthBody = JsonSerializer.Serialize(new
+                {
+                    access_token = "refreshed-access-token",
+                    refresh_token = "refreshed-refresh-token",
+                    expires_in = 3600,
+                    user = new
+                    {
+                        id = ProviderUserId,
+                        email = "admin@example.test"
+                    }
+                })
+            };
+            var paths = new TestStoragePaths(root);
+            var protection = DataProtectionProvider.Create(
+                new DirectoryInfo(Path.Combine(root, "keys")));
+            var state = new CloudSessionState(protection, paths);
+            state.Save(new CloudSessionSnapshot(
+                "expiring-access-token",
+                "expiring-refresh-token",
+                DateTimeOffset.UtcNow.AddSeconds(-1),
+                ProviderUserId,
+                "admin@example.test",
+                OrganizationId,
+                UserRole.Teacher.ToString()));
+            var options = TestOptions();
+            var adapter = new SupabaseCloudAdapter(
+                new HttpClient(handler),
+                options,
+                state);
+
+            var result = await adapter.RefreshSessionAsync(CancellationToken.None);
+
+            Assert.NotNull(result);
+            Assert.Equal("refreshed-access-token", result!.AccessToken);
+            Assert.Equal("refreshed-refresh-token", result.RefreshToken);
+            Assert.Equal("refreshed-access-token", state.Snapshot!.AccessToken);
+            Assert.True(adapter.Authenticated);
+            Assert.True(adapter.CanSynchronize);
+            Assert.Equal(1, handler.PasswordGrantCalls);
+            Assert.Equal(1, handler.ProfileCalls);
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch (IOException) { }
+        }
+    }
+
+    private static AuthHarness CreateHarness(
+        AppDbContext db,
+        SupabaseHandler handler,
+        IDataProtectionProvider? dataProtection = null,
+        CloudSessionState? cloudSession = null,
+        ICloudSyncSignal? cloudSyncSignal = null)
+    {
+        var options = TestOptions();
+        var provider = new SupabaseIdentityClient(
+            new HttpClient(handler),
+            options,
+            NullLogger<SupabaseIdentityClient>.Instance);
+        var sessions = new AccountSessionService(db, options);
+        var tokens = new AccountTokenService(options);
+        var challenges = new LoginChallengeService(new MemoryCache(new MemoryCacheOptions()));
+        dataProtection ??= new EphemeralDataProtectionProvider();
+        var auth = new AccountAuthenticationService(
+            db,
+            provider,
+            sessions,
+            tokens,
+            challenges,
+            dataProtection,
+            options,
+            cloudSession,
+            cloudSyncSignal);
+        return new AuthHarness(auth, tokens, sessions, options);
+    }
+
+    private static IOptions<ExamTransferOptions> TestOptions() =>
+        Options.Create(new ExamTransferOptions
         {
             Security = new SecurityOptions { TokenSigningKey = "supabase-login-test-signing-key" },
             Auth = new AuthOptions
@@ -321,17 +474,6 @@ public sealed class SupabaseIdentityLoginTests
                 Schema = "public"
             }
         });
-        var provider = new SupabaseIdentityClient(
-            new HttpClient(handler),
-            options,
-            NullLogger<SupabaseIdentityClient>.Instance);
-        var sessions = new AccountSessionService(db, options);
-        var tokens = new AccountTokenService(options);
-        var challenges = new LoginChallengeService(new MemoryCache(new MemoryCacheOptions()));
-        var dataProtection = new EphemeralDataProtectionProvider();
-        var auth = new AccountAuthenticationService(db, provider, sessions, tokens, challenges, dataProtection, options);
-        return new AuthHarness(auth, tokens, sessions, options);
-    }
 
     private static async Task<AuthenticateResult> AuthenticateAsync(AuthHarness harness, string token)
     {
@@ -387,6 +529,24 @@ public sealed class SupabaseIdentityLoginTests
         public string ApplicationName { get; set; } = "ExamTransfer.Tests";
         public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
+    private sealed class TestStoragePaths(string root) : IStoragePaths
+    {
+        public string RootPath { get; } = root;
+        public string DatabasePath => Path.Combine(RootPath, "database", "exam-transfer.db");
+        public string BackupRoot => Path.Combine(RootPath, "backups");
+        public string ExportRoot => Path.Combine(RootPath, "exports");
+        public string TemporaryRoot => Path.Combine(RootPath, "temporary");
+        public string ExamVersionRoot(Guid examId, int version) =>
+            Path.Combine(RootPath, "exams", examId.ToString("N"), $"v{version}");
+        public string SessionRoot(Guid sessionId) =>
+            Path.Combine(RootPath, "sessions", sessionId.ToString("N"));
+        public string SubmissionRoot(Guid sessionId, string studentCode, Guid submissionId) =>
+            Path.Combine(SessionRoot(sessionId), studentCode, submissionId.ToString("N"));
+        public string ReceiptRoot(Guid sessionId) =>
+            Path.Combine(SessionRoot(sessionId), "receipts");
+        public void EnsureCreated() => Directory.CreateDirectory(RootPath);
     }
 
     private sealed class SupabaseHandler(string profileBody) : HttpMessageHandler

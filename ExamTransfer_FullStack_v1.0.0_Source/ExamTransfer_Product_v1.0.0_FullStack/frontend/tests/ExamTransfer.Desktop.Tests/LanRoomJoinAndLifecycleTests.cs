@@ -234,14 +234,16 @@ public sealed class LanRoomJoinAndLifecycleTests
     {
         using var layout = TeacherLayout();
         var runtime = new FakeRuntime { BecomeHealthyAfterStart = true };
-        var service = new LocalServerLifecycleService(runtime, layout.Client, () => "Teacher");
+        var service = new LocalServerLifecycleService(runtime, layout.Client);
 
-        var result = await service.EnsureStartedAsync();
+        var result = await service.EnsureStartedAsync(UserRole.Teacher);
 
         Assert.Equal("SERVER_STARTED", result.Status);
         Assert.True(result.Started);
         Assert.Equal(1, runtime.StartCount);
         Assert.Equal(Path.GetDirectoryName(layout.ServerExe), runtime.WorkingDirectory);
+        await service.StopAsync();
+        Assert.True(runtime.StartedProcess?.Stopped);
     }
 
     [Fact]
@@ -249,11 +251,13 @@ public sealed class LanRoomJoinAndLifecycleTests
     {
         using var layout = TeacherLayout();
         var runtime = new FakeRuntime { Healthy = true };
-        var result = await new LocalServerLifecycleService(runtime, layout.Client, () => "Teacher")
-            .EnsureStartedAsync();
+        var service = new LocalServerLifecycleService(runtime, layout.Client);
+        var result = await service.EnsureStartedAsync(UserRole.Teacher);
 
         Assert.Equal("SERVER_HEALTHY", result.Status);
         Assert.Equal(0, runtime.StartCount);
+        await service.StopAsync();
+        Assert.Equal(Path.GetFullPath(layout.ServerExe), runtime.StoppedExecutablePath);
     }
 
     [Fact]
@@ -261,8 +265,8 @@ public sealed class LanRoomJoinAndLifecycleTests
     {
         using var layout = TeacherLayout();
         var runtime = new FakeRuntime { PortOccupied = true };
-        var result = await new LocalServerLifecycleService(runtime, layout.Client, () => "Teacher")
-            .EnsureStartedAsync();
+        var result = await new LocalServerLifecycleService(runtime, layout.Client)
+            .EnsureStartedAsync(UserRole.Teacher);
 
         Assert.Equal("PORT_CONFLICT_TCP_5048", result.Status);
         Assert.Contains("tiến trình khác", result.Message, StringComparison.OrdinalIgnoreCase);
@@ -274,8 +278,8 @@ public sealed class LanRoomJoinAndLifecycleTests
     {
         using var layout = TeacherLayout();
         var runtime = new FakeRuntime { UdpPortOccupied = true };
-        var result = await new LocalServerLifecycleService(runtime, layout.Client, () => "Teacher")
-            .EnsureStartedAsync();
+        var result = await new LocalServerLifecycleService(runtime, layout.Client)
+            .EnsureStartedAsync(UserRole.Teacher);
 
         Assert.Equal("PORT_CONFLICT_UDP_40550", result.Status);
         Assert.Contains("UDP port 40550", result.Message, StringComparison.OrdinalIgnoreCase);
@@ -310,21 +314,21 @@ public sealed class LanRoomJoinAndLifecycleTests
                 "Update required.")
         };
 
-        var result = await new LocalServerLifecycleService(runtime, layout.Client, () => "Teacher")
-            .EnsureStartedAsync();
+        var result = await new LocalServerLifecycleService(runtime, layout.Client)
+            .EnsureStartedAsync(UserRole.Teacher);
 
         Assert.Equal(code, result.Status);
         Assert.Equal(0, runtime.StartCount);
     }
 
     [Fact]
-    public async Task Lifecycle_StudentInstall_DoesNotStart()
+    public async Task Lifecycle_StudentRole_DoesNotStart()
     {
         var runtime = new FakeRuntime();
-        var result = await new LocalServerLifecycleService(runtime, AppContext.BaseDirectory, () => "Student")
-            .EnsureStartedAsync();
+        var result = await new LocalServerLifecycleService(runtime, AppContext.BaseDirectory)
+            .EnsureStartedAsync(UserRole.Student);
 
-        Assert.Equal("STUDENT_INSTALL", result.Status);
+        Assert.Equal("ROLE_NOT_AUTHORIZED", result.Status);
         Assert.Equal(0, runtime.StartCount);
     }
 
@@ -332,8 +336,8 @@ public sealed class LanRoomJoinAndLifecycleTests
     public async Task Lifecycle_TeacherExeMissing_ReturnsActionableError()
     {
         var runtime = new FakeRuntime();
-        var result = await new LocalServerLifecycleService(runtime, AppContext.BaseDirectory, () => "Teacher")
-            .EnsureStartedAsync();
+        var result = await new LocalServerLifecycleService(runtime, AppContext.BaseDirectory)
+            .EnsureStartedAsync(UserRole.Teacher);
 
         Assert.Equal("SERVER_EXE_MISSING", result.Status);
         Assert.Contains("chạy lại bộ cài", result.Message, StringComparison.OrdinalIgnoreCase);
@@ -341,7 +345,7 @@ public sealed class LanRoomJoinAndLifecycleTests
     }
 
     [Fact]
-    public void InstallerFirewallRules_AreTeacherOnlyStableAndDomainPrivate()
+    public void Installer_IsUnifiedAndDoesNotStartServerBeforeAuthentication()
     {
         var source = File.ReadAllText(FindFile("installer", "ExamTransfer.iss"));
 
@@ -355,12 +359,16 @@ public sealed class LanRoomJoinAndLifecycleTests
             source,
             StringComparison.Ordinal);
         Assert.Contains("profile=private,domain", source, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Components: server", source, StringComparison.Ordinal);
         Assert.Contains("ExamTransfer.LocalServer", source, StringComparison.Ordinal);
-        Assert.Contains("IsStudentOnlyInstall", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("[Types]", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("[Components]", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsStudentOnlyInstall", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("WizardIsComponentSelected", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("StartAndVerify", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SetIniString('Install', 'Role'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExamTransfer Local Server\"; Filename:", source, StringComparison.Ordinal);
         Assert.DoesNotContain("/IM {#MyServerExe}", source, StringComparison.Ordinal);
-        Assert.Contains("StopAndPreflight", source, StringComparison.Ordinal);
-        Assert.Contains("StartAndVerify", source, StringComparison.Ordinal);
+        Assert.Contains("RunLocalServerGuard('StopOnly'", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -434,9 +442,10 @@ public sealed class LanRoomJoinAndLifecycleTests
     private static AppAuthSessionState StudentAuth()
     {
         var auth = new AppAuthSessionState();
+        var providerUserId = Guid.NewGuid();
         auth.SetAuthenticated(
             new CurrentAccountDto(
-                Guid.NewGuid(),
+                providerUserId,
                 "student01",
                 null,
                 "Học sinh",
@@ -446,7 +455,8 @@ public sealed class LanRoomJoinAndLifecycleTests
                 Guid.NewGuid(),
                 "device-1",
                 DateTimeOffset.UtcNow.AddHours(1),
-                new DateOnly(2010, 1, 1)),
+                new DateOnly(2010, 1, 1),
+                ProviderUserId: providerUserId.ToString("D")),
             "server-account-token");
         return auth;
     }
@@ -648,6 +658,8 @@ public sealed class LanRoomJoinAndLifecycleTests
         public LocalServerProbeResult? ProbeResult { get; set; }
         public int StartCount { get; private set; }
         public string? WorkingDirectory { get; private set; }
+        public string? StoppedExecutablePath { get; private set; }
+        public FakeProcess? StartedProcess { get; private set; }
 
         public Task<LocalServerProbeResult> ProbeAsync(CancellationToken cancellationToken) =>
             Task.FromResult(
@@ -677,14 +689,31 @@ public sealed class LanRoomJoinAndLifecycleTests
             StartCount++;
             WorkingDirectory = workingDirectory;
             if (BecomeHealthyAfterStart) Healthy = true;
-            return new FakeProcess();
+            StartedProcess = new FakeProcess();
+            return StartedProcess;
+        }
+
+        public Task StopExactAsync(
+            string executablePath,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            StoppedExecutablePath = Path.GetFullPath(executablePath);
+            Healthy = false;
+            return Task.CompletedTask;
         }
     }
 
     private sealed class FakeProcess : ILocalServerProcess
     {
-        public bool HasExited => false;
-        public int? ExitCode => null;
+        public bool Stopped { get; private set; }
+        public bool HasExited => Stopped;
+        public int? ExitCode => Stopped ? 0 : null;
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            Stopped = true;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed record TestLayout(string Root, string Client, string ServerExe) : IDisposable

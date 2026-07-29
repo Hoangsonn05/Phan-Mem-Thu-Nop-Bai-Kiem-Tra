@@ -419,7 +419,7 @@ public sealed class StudentConnectViewModel : ProductPageBase
                     password,
                     authState.CurrentAccount?.DeviceId ?? Environment.MachineName + "-" + Environment.UserName,
                     Environment.MachineName,
-                    "1.0.0"),
+                    ReleaseIdentity.SemanticVersion),
                 ct));
             if (login.RequiresStudentConfirmation || string.IsNullOrWhiteSpace(login.AccessToken))
                 throw new LanJoinException("AUTH_REQUIRED", "Máy giáo viên yêu cầu xác thực tài khoản học sinh.");
@@ -427,6 +427,11 @@ public sealed class StudentConnectViewModel : ProductPageBase
             var current = ApiGuard.Require(await api.GetAsync<CurrentAccountDto>("api/v1/auth/me", ct));
             if (current.Role != UserRole.Student
                 || authState.CurrentAccount is not { } original
+                || string.IsNullOrWhiteSpace(current.ProviderUserId)
+                || !string.Equals(
+                    current.ProviderUserId,
+                    original.ProviderUserId,
+                    StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(current.Username, original.Username, StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(current.StudentCode, original.StudentCode, StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(current.OrganizationId, original.OrganizationId, StringComparison.OrdinalIgnoreCase))
@@ -436,7 +441,6 @@ public sealed class StudentConnectViewModel : ProductPageBase
                     "TOKEN_SERVER_MISMATCH",
                     "Tài khoản trên máy giáo viên không khớp tài khoản học sinh đang đăng nhập.");
             }
-            authState.SetAuthenticated(current, login.AccessToken);
             FrontendLogger.LogMessage(
                 $"server_id={expectedServerId}; phase=local_account_reauthenticated",
                 "StudentConnect.Join");
@@ -559,7 +563,7 @@ public sealed class StudentConnectViewModel : ProductPageBase
         "PUBLICCLOUD_NOT_CONFIGURED" => "PublicCloud chưa được cấu hình trên bản cài đặt này.",
         "PUBLICCLOUD_INVALID_URL" => "Địa chỉ PublicCloud không hợp lệ hoặc không dùng HTTPS.",
         "PUBLICCLOUD_INVALID_PUBLISHABLE_KEY" => "Publishable key PublicCloud không hợp lệ.",
-        "PUBLICCLOUD_SCHEMA_INCOMPATIBLE" => "PublicCloud chưa đạt schema capability 22.",
+        "PUBLICCLOUD_SCHEMA_INCOMPATIBLE" => "PublicCloud chưa đạt schema capability 23.",
         "OPEN_PUBLIC_SESSION_NOT_FOUND" => "Không tìm thấy phòng PublicCloud sau thời gian chờ đồng bộ.",
         "PUBLICCLOUD_AUTH_EXPIRED" or "PUBLICCLOUD_AUTH_INVALID" =>
             "Phiên đăng nhập PublicCloud đã hết hạn; hãy đăng nhập lại.",

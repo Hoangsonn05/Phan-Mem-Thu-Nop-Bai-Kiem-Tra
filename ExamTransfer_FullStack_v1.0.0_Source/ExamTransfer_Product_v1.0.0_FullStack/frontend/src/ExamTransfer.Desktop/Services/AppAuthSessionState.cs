@@ -6,6 +6,17 @@ using ExamTransfer.Shared.Contracts;
 
 namespace ExamTransfer.Desktop.Services;
 
+public enum AuthSessionAuthority
+{
+    LocalServer,
+    Supabase
+}
+
+public sealed record RestoredAuthSession(
+    CurrentAccountDto Account,
+    string AccessToken,
+    AuthSessionAuthority Authority);
+
 public sealed class AppAuthSessionState : ObservableObject
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -13,6 +24,13 @@ public sealed class AppAuthSessionState : ObservableObject
     private string? accountAccessToken;
     private string? transientAccount;
     private byte[]? protectedTransientPassword;
+    private readonly string storePath;
+
+    public AppAuthSessionState(string? storePath = null)
+    {
+        this.storePath = storePath
+            ?? Path.Combine(AppProfile.LocalDataRoot, "auth-session.bin");
+    }
 
     public CurrentAccountDto? CurrentAccount
     {
@@ -67,30 +85,62 @@ public sealed class AppAuthSessionState : ObservableObject
         _ => "Khách"
     };
 
-    public string? TryRestoreAccessToken()
+    public string? TryRestoreAccessToken() =>
+        TryRestoreAuthenticatedSession(out var session)
+            ? session.AccessToken
+            : null;
+
+    public bool TryRestoreAuthenticatedSession(out RestoredAuthSession session)
     {
+        session = default!;
         try
         {
-            if (!File.Exists(StorePath)) return null;
+            if (!File.Exists(storePath)) return false;
 
-            var protectedBytes = File.ReadAllBytes(StorePath);
+            var protectedBytes = File.ReadAllBytes(storePath);
             var bytes = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
             var stored = JsonSerializer.Deserialize<StoredAuthSession>(bytes, Json);
-            return string.IsNullOrWhiteSpace(stored?.AccessToken) ? null : stored.AccessToken;
+            if (stored?.Account is null
+                || string.IsNullOrWhiteSpace(stored.AccessToken)
+                || stored.Account.ExpiresAtUtc <= DateTimeOffset.UtcNow
+                || !ValidAuthorityBinding(stored))
+            {
+                Clear();
+                return false;
+            }
+
+            session = new(stored.Account, stored.AccessToken, stored.Authority);
+            return true;
         }
         catch (Exception ex)
         {
             FrontendLogger.Log(ex, "AppAuthSessionState.Restore");
             Clear();
-            return null;
+            return false;
         }
     }
 
-    public void SetAuthenticated(CurrentAccountDto account, string accessToken)
+    public void SetAuthenticated(
+        CurrentAccountDto account,
+        string accessToken,
+        AuthSessionAuthority? authority = null)
     {
+        if (account.Role is not (UserRole.Admin or UserRole.Teacher or UserRole.Student))
+            throw new InvalidOperationException(ErrorCodes.AuthenticatedRoleInvalid);
+        var effectiveAuthority = authority
+            ?? (account.Role == UserRole.Student
+                ? AuthSessionAuthority.Supabase
+                : AuthSessionAuthority.LocalServer);
+        if (effectiveAuthority == AuthSessionAuthority.Supabase
+            && account.Role != UserRole.Student)
+            throw new InvalidOperationException("Only Student sessions remain client-side Supabase sessions.");
+        if (effectiveAuthority == AuthSessionAuthority.LocalServer
+            && account.Role == UserRole.Student)
+            throw new InvalidOperationException("Student Local Server sessions must not replace the authoritative Supabase login.");
+
         CurrentAccount = account;
         AccountAccessToken = accessToken;
-        Save(accessToken);
+        Save(account, accessToken, effectiveAuthority);
     }
 
     public void SetTransientCredentials(string account, string password)
@@ -162,8 +212,8 @@ public sealed class AppAuthSessionState : ObservableObject
 
         try
         {
-            if (File.Exists(StorePath))
-                File.Delete(StorePath);
+            if (File.Exists(storePath))
+                File.Delete(storePath);
         }
         catch (Exception ex)
         {
@@ -171,14 +221,19 @@ public sealed class AppAuthSessionState : ObservableObject
         }
     }
 
-    private static void Save(string accessToken)
+    private void Save(
+        CurrentAccountDto account,
+        string accessToken,
+        AuthSessionAuthority authority)
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(StorePath)!);
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(new StoredAuthSession(accessToken), Json);
+            Directory.CreateDirectory(Path.GetDirectoryName(storePath)!);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(
+                new StoredAuthSession(accessToken, account, authority),
+                Json);
             var protectedBytes = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
-            File.WriteAllBytes(StorePath, protectedBytes);
+            File.WriteAllBytes(storePath, protectedBytes);
         }
         catch (Exception ex)
         {
@@ -186,8 +241,50 @@ public sealed class AppAuthSessionState : ObservableObject
         }
     }
 
-    private static string StorePath =>
-        Path.Combine(AppProfile.LocalDataRoot, "auth-session.bin");
+    private static bool ValidAuthorityBinding(StoredAuthSession stored)
+    {
+        if (stored.Authority == AuthSessionAuthority.LocalServer)
+            return stored.Account!.Role is UserRole.Admin or UserRole.Teacher;
+        if (stored.Authority != AuthSessionAuthority.Supabase
+            || stored.Account!.Role != UserRole.Student
+            || string.IsNullOrWhiteSpace(stored.Account.ProviderUserId)
+            || !Guid.TryParse(stored.Account.ProviderUserId, out var providerId)
+            || providerId != stored.Account.UserId)
+            return false;
 
-    private sealed record StoredAuthSession(string AccessToken);
+        try
+        {
+            var segments = stored.AccessToken.Split('.');
+            if (segments.Length != 3) return false;
+            var payload = segments[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + ((4 - payload.Length % 4) % 4), '=');
+            using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
+            var subject = document.RootElement.TryGetProperty("sub", out var sub)
+                ? sub.GetString()
+                : null;
+            var expiresAt = document.RootElement.TryGetProperty("exp", out var exp)
+                && exp.TryGetInt64(out var unix)
+                    ? DateTimeOffset.FromUnixTimeSeconds(unix)
+                    : default;
+            var sessionMatches = stored.Account.LoginSessionId == Guid.Empty
+                || (document.RootElement.TryGetProperty("session_id", out var session)
+                    && Guid.TryParse(session.GetString(), out var sessionId)
+                    && sessionId == stored.Account.LoginSessionId);
+            return string.Equals(
+                    subject,
+                    stored.Account.ProviderUserId,
+                    StringComparison.OrdinalIgnoreCase)
+                && expiresAt > DateTimeOffset.UtcNow
+                && sessionMatches;
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
+
+    private sealed record StoredAuthSession(
+        string AccessToken,
+        CurrentAccountDto? Account = null,
+        AuthSessionAuthority Authority = AuthSessionAuthority.LocalServer);
 }

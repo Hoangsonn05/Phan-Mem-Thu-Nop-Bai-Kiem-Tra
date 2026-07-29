@@ -1,12 +1,24 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('StopOnly', 'StopAndPreflight', 'StartAndVerify')]
+    [ValidateSet('StopOnly', 'StopAndPreflight', 'StartAndVerify', 'UpgradeRuntimeSettings')]
     [string]$Mode,
 
     [Parameter(Mandatory = $true)]
     [string]$InstalledServerPath,
 
-    [string]$ManifestPath
+    [string]$ManifestPath,
+
+    [string]$RuntimeSettingsPath,
+
+    [string]$PublicConfigPath,
+
+    [string]$CanonicalStorageRoot = '%ProgramData%/ExamTransfer',
+
+    [string]$LegacyDiscoveryPorts,
+
+    [string]$MigrationLogPath,
+
+    [string]$DiagnosticLogPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,11 +29,390 @@ $discoveryPort = 40550
 $protocol = 'ExamTransfer/2'
 $expectedServerName = 'ExamTransfer.LocalServer.exe'
 
+function Write-MigrationLog([string]$Code, [string]$Message) {
+    $line = '{0} {1} {2}' -f [DateTime]::UtcNow.ToString('o'), $Code, $Message
+    Write-Host $line
+    if ([string]::IsNullOrWhiteSpace($MigrationLogPath)) {
+        return
+    }
+
+    $logDirectory = Split-Path -Parent $MigrationLogPath
+    if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {
+        [IO.Directory]::CreateDirectory($logDirectory) | Out-Null
+    }
+    [IO.File]::AppendAllText(
+        $MigrationLogPath,
+        $line + [Environment]::NewLine,
+        (New-Object Text.UTF8Encoding($false)))
+}
+
+function Protect-DiagnosticText([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return '<no diagnostic>'
+    }
+    $protected = $Text -replace '(?i)\b(sb_secret_)[A-Za-z0-9_-]+', '$1[REDACTED]'
+    $protected = $protected -replace '(?i)\b(Bearer\s+)[A-Za-z0-9._-]+', '$1[REDACTED]'
+    $protected = $protected -replace '(?i)\b(password|secret|access_token|refresh_token)\s*[:=]\s*\S+', '$1=[REDACTED]'
+    if ($protected.Length -gt 2000) {
+        return $protected.Substring(0, 2000) + '...[truncated]'
+    }
+    return $protected
+}
+
+function Write-GuardLog([string]$Code, [string]$Message) {
+    $safeMessage = Protect-DiagnosticText $Message
+    $line = '{0} {1} {2}' -f [DateTime]::UtcNow.ToString('o'), $Code, $safeMessage
+    if ([string]::IsNullOrWhiteSpace($DiagnosticLogPath)) {
+        return
+    }
+
+    $logDirectory = Split-Path -Parent $DiagnosticLogPath
+    if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {
+        [IO.Directory]::CreateDirectory($logDirectory) | Out-Null
+    }
+    [IO.File]::AppendAllText(
+        $DiagnosticLogPath,
+        $line + [Environment]::NewLine,
+        (New-Object Text.UTF8Encoding($false)))
+}
+
 function Resolve-ExactPath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) {
         throw 'Installed server path is required.'
     }
     return [IO.Path]::GetFullPath($Path)
+}
+
+function Test-PublishableKey([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value) -or
+        $Value -match '(?i)service_role|sb_secret_|placeholder|change[-_ ]?me|example') {
+        return $false
+    }
+    if ($Value.StartsWith('sb_publishable_', [StringComparison]::Ordinal)) {
+        return $Value.Length -gt 31
+    }
+
+    $segments = $Value.Split('.')
+    if ($segments.Count -ne 3) {
+        return $false
+    }
+    try {
+        $payload = $segments[1].Replace('-', '+').Replace('_', '/')
+        $payload = $payload.PadRight(
+            $payload.Length + ((4 - ($payload.Length % 4)) % 4),
+            '=')
+        $json = [Text.Encoding]::UTF8.GetString(
+            [Convert]::FromBase64String($payload)) | ConvertFrom-Json
+        return [string]$json.role -ceq 'anon'
+    }
+    catch {
+        return $false
+    }
+}
+
+function Read-PublicConfig([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or
+        -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw 'PUBLIC_CONFIG_MISSING: publiccloud.runtime.json was not found.'
+    }
+
+    try {
+        $config = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw 'PUBLIC_CONFIG_INVALID_JSON: publiccloud.runtime.json is not valid JSON.'
+    }
+    if ($null -eq $config -or $config -isnot [pscustomobject]) {
+        throw 'PUBLIC_CONFIG_INVALID_ROOT: publiccloud.runtime.json must contain an object.'
+    }
+
+    $allowed = @('supabaseUrl', 'publishableKey', 'organizationId')
+    foreach ($property in $config.PSObject.Properties) {
+        if ($allowed -cnotcontains $property.Name) {
+            throw "PUBLIC_CONFIG_FORBIDDEN_FIELD: $($property.Name)"
+        }
+    }
+    foreach ($required in $allowed) {
+        if ($null -eq $config.PSObject.Properties[$required] -or
+            [string]::IsNullOrWhiteSpace([string]$config.$required)) {
+            throw "PUBLIC_CONFIG_REQUIRED_FIELD_MISSING: $required"
+        }
+    }
+
+    $uri = $null
+    if (-not [Uri]::TryCreate(
+            ([string]$config.supabaseUrl).Trim(),
+            [UriKind]::Absolute,
+            [ref]$uri) -or
+        $uri.Scheme -cne 'https') {
+        throw 'PUBLIC_CONFIG_INVALID_URL: SupabaseUrl must use HTTPS.'
+    }
+    if (-not (Test-PublishableKey ([string]$config.publishableKey).Trim())) {
+        throw 'PUBLIC_CONFIG_INVALID_PUBLISHABLE_KEY: secret and service-role keys are rejected.'
+    }
+    $organizationId = [guid]::Empty
+    if (-not [guid]::TryParse(
+            ([string]$config.organizationId).Trim(),
+            [ref]$organizationId) -or
+        $organizationId -eq [guid]::Empty) {
+        throw 'PUBLIC_CONFIG_INVALID_ORGANIZATION_ID: OrganizationId must be a non-empty UUID.'
+    }
+
+    return [pscustomobject]@{
+        SupabaseUrl = $uri.AbsoluteUri.TrimEnd('/')
+        PublishableKey = ([string]$config.publishableKey).Trim()
+        OrganizationId = $organizationId.ToString('D')
+    }
+}
+
+function Assert-NoEmbeddedSecrets($Node, [string]$JsonPath = '$') {
+    if ($null -eq $Node) {
+        return
+    }
+    if ($Node -is [pscustomobject]) {
+        foreach ($property in $Node.PSObject.Properties) {
+            $name = [string]$property.Name
+            if ($name -notmatch '(?i)EnvironmentVariable$' -and
+                $name -match '(?i)^(ServiceRoleKey|SecretKey|DatabasePassword|AccessToken|RefreshToken|Jwt)$') {
+                throw "RUNTIME_CONFIG_FORBIDDEN_SECRET_FIELD: $JsonPath.$name"
+            }
+            Assert-NoEmbeddedSecrets $property.Value "$JsonPath.$name"
+        }
+        return
+    }
+    if ($Node -is [Collections.IDictionary]) {
+        foreach ($key in $Node.Keys) {
+            Assert-NoEmbeddedSecrets $Node[$key] "$JsonPath.$key"
+        }
+        return
+    }
+    if ($Node -is [Collections.IEnumerable] -and $Node -isnot [string]) {
+        $index = 0
+        foreach ($item in $Node) {
+            Assert-NoEmbeddedSecrets $item "$JsonPath[$index]"
+            $index++
+        }
+        return
+    }
+    if ($Node -is [string] -and $Node.StartsWith('sb_secret_', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "RUNTIME_CONFIG_FORBIDDEN_SECRET_VALUE: $JsonPath"
+    }
+}
+
+function Ensure-ObjectProperty($Parent, [string]$Name, [ref]$Changed) {
+    $property = $Parent.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        $value = [pscustomobject]@{}
+        if ($null -eq $property) {
+            $Parent | Add-Member -NotePropertyName $Name -NotePropertyValue $value
+        }
+        else {
+            $property.Value = $value
+        }
+        $Changed.Value = $true
+        return $value
+    }
+    if ($property.Value -isnot [pscustomobject]) {
+        throw "RUNTIME_CONFIG_INVALID_SECTION: $Name must be an object."
+    }
+    return $property.Value
+}
+
+function Set-MissingProperty(
+    $Parent,
+    [string]$Name,
+    $Value,
+    [ref]$Changed) {
+    $property = $Parent.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        $Parent | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+        $Changed.Value = $true
+        return
+    }
+    if ($null -eq $property.Value -or
+        ($property.Value -is [string] -and
+            [string]::IsNullOrWhiteSpace([string]$property.Value))) {
+        $property.Value = $Value
+        $Changed.Value = $true
+    }
+}
+
+function Test-SourceBoundStoragePath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $true
+    }
+    if ([string]::Equals(
+            $Path.Trim().TrimEnd('\', '/'),
+            $CanonicalStorageRoot.Trim().TrimEnd('\', '/'),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    $normalized = $Path.Trim().Replace('/', '\')
+    return $normalized -match '(?i)(\\backend\\src\\ExamTransfer\.LocalServer(?:\\|$)|\\ExamTransfer\.LocalServer\\bin\\(?:Debug|Release)(?:\\|$)|\\artifacts\\(?:release|[^\\]+-audit|[^\\]+-fix)(?:\\|$)|\\ExamTransfer_(?:FullStack|Product)[^\\]*(?:\\|$))'
+}
+
+function Resolve-LegacyDiscoveryPorts {
+    if ([string]::IsNullOrWhiteSpace($LegacyDiscoveryPorts)) {
+        throw 'RUNTIME_CONFIG_LEGACY_PORTS_MISSING: LegacyDiscoveryPorts is required.'
+    }
+
+    $ports = @()
+    foreach ($token in $LegacyDiscoveryPorts.Split(',')) {
+        $port = 0
+        if (-not [int]::TryParse($token.Trim(), [ref]$port) -or
+            $port -lt 1 -or
+            $port -gt 65535 -or
+            $port -eq $discoveryPort) {
+            throw "RUNTIME_CONFIG_LEGACY_PORT_INVALID: $token"
+        }
+        $ports += $port
+    }
+    if ($ports.Count -eq 0 -or @($ports | Select-Object -Unique).Count -ne $ports.Count) {
+        throw 'RUNTIME_CONFIG_LEGACY_PORTS_INVALID: ports must be non-empty and unique.'
+    }
+    return $ports
+}
+
+function Write-RuntimeSettingsAtomically(
+    [string]$Path,
+    $Document,
+    [bool]$ExistingFile) {
+    $directory = Split-Path -Parent $Path
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    $temporaryPath = Join-Path $directory (
+        '.runtime-settings.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $replacementBackupPath = Join-Path $directory (
+        '.runtime-settings.' + [Guid]::NewGuid().ToString('N') + '.replaced')
+    try {
+        $json = $Document | ConvertTo-Json -Depth 100
+        [IO.File]::WriteAllText(
+            $temporaryPath,
+            $json + [Environment]::NewLine,
+            (New-Object Text.UTF8Encoding($false)))
+        if ($ExistingFile) {
+            [IO.File]::Replace(
+                $temporaryPath,
+                $Path,
+                $replacementBackupPath,
+                $true)
+        }
+        else {
+            [IO.File]::Move($temporaryPath, $Path)
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $replacementBackupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $replacementBackupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Upgrade-RuntimeSettings {
+    if ([string]::IsNullOrWhiteSpace($RuntimeSettingsPath)) {
+        throw 'RUNTIME_CONFIG_PATH_MISSING: RuntimeSettingsPath is required.'
+    }
+    if ([string]::IsNullOrWhiteSpace($CanonicalStorageRoot)) {
+        throw 'RUNTIME_CONFIG_STORAGE_TARGET_MISSING: CanonicalStorageRoot is required.'
+    }
+
+    $publicConfig = Read-PublicConfig $PublicConfigPath
+    $existingFile = Test-Path -LiteralPath $RuntimeSettingsPath -PathType Leaf
+    if ($existingFile) {
+        try {
+            $document = Get-Content -LiteralPath $RuntimeSettingsPath -Raw |
+                ConvertFrom-Json
+        }
+        catch {
+            throw 'RUNTIME_CONFIG_INVALID_JSON: runtime-settings.json is not valid JSON.'
+        }
+        if ($null -eq $document -or $document -isnot [pscustomobject]) {
+            throw 'RUNTIME_CONFIG_INVALID_ROOT: runtime-settings.json must contain an object.'
+        }
+    }
+    else {
+        $document = [pscustomobject]@{}
+    }
+
+    Assert-NoEmbeddedSecrets $document
+    $changed = -not $existingFile
+    $legacyPorts = @(Resolve-LegacyDiscoveryPorts)
+
+    $discovery = Ensure-ObjectProperty $document 'Discovery' ([ref]$changed)
+    $portProperty = $discovery.PSObject.Properties['Port']
+    if ($null -eq $portProperty -or $null -eq $portProperty.Value) {
+        Set-MissingProperty $discovery 'Port' $discoveryPort ([ref]$changed)
+    }
+    else {
+        $configuredPort = 0
+        if (-not [int]::TryParse([string]$portProperty.Value, [ref]$configuredPort)) {
+            throw 'RUNTIME_CONFIG_DISCOVERY_PORT_INVALID: Discovery.Port must be numeric.'
+        }
+        if ($configuredPort -in $legacyPorts) {
+            $portProperty.Value = $discoveryPort
+            $changed = $true
+        }
+        elseif ($configuredPort -ne $discoveryPort) {
+            throw "RUNTIME_CONFIG_DISCOVERY_PORT_UNSUPPORTED: $configuredPort"
+        }
+    }
+
+    $storage = Ensure-ObjectProperty $document 'Storage' ([ref]$changed)
+    $rootPathProperty = $storage.PSObject.Properties['RootPath']
+    if ($null -eq $rootPathProperty) {
+        $storage | Add-Member -NotePropertyName 'RootPath' -NotePropertyValue $CanonicalStorageRoot
+        $changed = $true
+    }
+    elseif (Test-SourceBoundStoragePath ([string]$rootPathProperty.Value)) {
+        $rootPathProperty.Value = $CanonicalStorageRoot
+        $changed = $true
+    }
+
+    $cloud = Ensure-ObjectProperty $document 'Cloud' ([ref]$changed)
+    foreach ($publicKeyName in @('PublishableKey', 'AnonKey')) {
+        $publicKeyProperty = $cloud.PSObject.Properties[$publicKeyName]
+        $publicKeyValid = $null -eq $publicKeyProperty -or
+            [string]::IsNullOrWhiteSpace([string]$publicKeyProperty.Value) -or
+            (Test-PublishableKey ([string]$publicKeyProperty.Value))
+        if ($null -ne $publicKeyProperty -and
+            -not [string]::IsNullOrWhiteSpace([string]$publicKeyProperty.Value) -and
+            -not $publicKeyValid) {
+            throw "RUNTIME_CONFIG_INVALID_PUBLIC_KEY: Cloud.$publicKeyName is not publishable."
+        }
+    }
+    Set-MissingProperty $cloud 'Enabled' $true ([ref]$changed)
+    Set-MissingProperty $cloud 'SupabaseUrl' $publicConfig.SupabaseUrl ([ref]$changed)
+    Set-MissingProperty $cloud 'PublishableKey' $publicConfig.PublishableKey ([ref]$changed)
+    Set-MissingProperty $cloud 'OrganizationId' $publicConfig.OrganizationId ([ref]$changed)
+    Set-MissingProperty $cloud 'Environment' 'Production' ([ref]$changed)
+    Set-MissingProperty $cloud 'AccessMode' 'UserSession' ([ref]$changed)
+    Assert-NoEmbeddedSecrets $document
+
+    if (-not $changed) {
+        Write-MigrationLog 'RUNTIME_SETTINGS_UNCHANGED' 'No migration was required.'
+        return
+    }
+
+    $backupPath = $null
+    if ($existingFile) {
+        $timestamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+        $backupPath = Join-Path (
+            Split-Path -Parent $RuntimeSettingsPath) (
+            'runtime-settings.backup-' + $timestamp + '.json')
+        Copy-Item -LiteralPath $RuntimeSettingsPath -Destination $backupPath
+    }
+
+    Write-RuntimeSettingsAtomically $RuntimeSettingsPath $document $existingFile
+    $backupMessage = if ($null -eq $backupPath) {
+        'clean-config-created'
+    }
+    else {
+        'backup=' + [IO.Path]::GetFileName($backupPath)
+    }
+    Write-MigrationLog 'RUNTIME_SETTINGS_UPGRADED' $backupMessage
 }
 
 function Get-ExactInstalledServerProcess([string]$ExactPath) {
@@ -139,15 +530,34 @@ function Start-AndVerify(
     Assert-InstalledHashes $manifest $ReleaseManifestPath
     Assert-PortsAvailable
 
+    $serverErrorPath = if ([string]::IsNullOrWhiteSpace($DiagnosticLogPath)) {
+        Join-Path ([IO.Path]::GetTempPath()) (
+            'ExamTransfer-InstallerGuard-' + [Guid]::NewGuid().ToString('N') + '.stderr.log')
+    }
+    else {
+        $diagnosticDirectory = Split-Path -Parent $DiagnosticLogPath
+        [IO.Directory]::CreateDirectory($diagnosticDirectory) | Out-Null
+        Join-Path $diagnosticDirectory 'installer-localserver.stderr.log'
+    }
     $started = Start-Process `
         -FilePath $ExactPath `
         -WorkingDirectory (Split-Path -Parent $ExactPath) `
         -WindowStyle Hidden `
+        -RedirectStandardError $serverErrorPath `
         -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(25)
+    $attempt = 0
+    $lastDiagnostic = 'health and identity endpoints did not become ready'
     while ([DateTime]::UtcNow -lt $deadline) {
+        $attempt++
         if ($started.HasExited) {
-            throw "Installed Local Server exited before verification (exit $($started.ExitCode))."
+            $serverDiagnostic = if (Test-Path -LiteralPath $serverErrorPath -PathType Leaf) {
+                (Get-Content -LiteralPath $serverErrorPath -Tail 20 | Out-String).Trim()
+            }
+            else {
+                '<stderr unavailable>'
+            }
+            throw "LOCAL_SERVER_EXITED_BEFORE_VERIFICATION: exit=$($started.ExitCode); stderr=$(Protect-DiagnosticText $serverDiagnostic)"
         }
         try {
             $health = Invoke-RestMethod `
@@ -165,15 +575,21 @@ function Start-AndVerify(
                 $identity.buildId -eq $manifest.buildId -and
                 $identity.protocol -eq $protocol -and
                 [int]$identity.discoveryPort -eq $discoveryPort) {
+                Write-GuardLog `
+                    'INSTALLER_GUARD_VERIFIED' `
+                    "BuildId=$($manifest.buildId); Protocol=$protocol; UDP=$discoveryPort"
                 Write-Host "ExamTransfer Local Server verified. BuildId=$($manifest.buildId); Protocol=$protocol; UDP=$discoveryPort"
                 return
             }
+            $lastDiagnostic =
+                "identity mismatch healthBuild=$($health.buildId) identityBuild=$($identity.buildId) healthProtocol=$($health.protocol) identityProtocol=$($identity.protocol)"
         }
         catch {
+            $lastDiagnostic = $_.Exception.Message
         }
         Start-Sleep -Milliseconds 500
     }
-    throw 'Installed Local Server identity did not match release-manifest.json.'
+    throw "LOCAL_SERVER_IDENTITY_TIMEOUT: attempts=$attempt; last=$lastDiagnostic"
 }
 
 $exactServerPath = Resolve-ExactPath $InstalledServerPath
@@ -190,10 +606,27 @@ try {
         'StartAndVerify' {
             Start-AndVerify $exactServerPath ([IO.Path]::GetFullPath($ManifestPath))
         }
+        'UpgradeRuntimeSettings' {
+            Upgrade-RuntimeSettings
+        }
     }
 }
 catch {
-    Write-Error $_.Exception.Message
+    $message = $_.Exception.Message
+    [Console]::Error.WriteLine("INSTALLER_GUARD_FAILED: $message")
+    if ($Mode -eq 'UpgradeRuntimeSettings') {
+        try {
+            Write-MigrationLog 'RUNTIME_SETTINGS_FAILED' $message
+        }
+        catch {
+        }
+        exit 44
+    }
+    try {
+        Write-GuardLog 'INSTALLER_GUARD_FAILED' $message
+    }
+    catch {
+    }
     exit 43
 }
 

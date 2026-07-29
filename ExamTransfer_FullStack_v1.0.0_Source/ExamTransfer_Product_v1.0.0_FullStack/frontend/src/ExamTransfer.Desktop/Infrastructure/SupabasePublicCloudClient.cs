@@ -14,7 +14,8 @@ public sealed record PublicCloudRuntimeOptions(
     Uri? ProjectUri,
     string? PublishableKey,
     string? ErrorCode,
-    string Source)
+    string Source,
+    Guid? OrganizationId = null)
 {
     public bool Configured => ErrorCode is null
         && ProjectUri is not null
@@ -40,9 +41,15 @@ public sealed class PublicCloudRuntimeOptionsProvider(
     {
         var environmentUrl = getEnvironment("EXAMTRANSFER_SUPABASE_URL");
         var environmentKey = getEnvironment("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY");
+        var environmentOrganizationId = getEnvironment("EXAMTRANSFER_ORGANIZATION_ID");
         if (!string.IsNullOrWhiteSpace(environmentUrl)
             || !string.IsNullOrWhiteSpace(environmentKey))
-            return Validate(environmentUrl, environmentKey, "Environment", allowLoopbackHttp: true);
+            return Validate(
+                environmentUrl,
+                environmentKey,
+                "Environment",
+                allowLoopbackHttp: true,
+                organizationId: environmentOrganizationId);
 
         if (!File.Exists(path))
             return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", "Missing");
@@ -56,7 +63,15 @@ public sealed class PublicCloudRuntimeOptionsProvider(
             var key = root.TryGetProperty("publishableKey", out var keyElement)
                 ? keyElement.GetString()
                 : null;
-            return Validate(url, key, "InstalledFile", allowLoopbackHttp: false);
+            var organizationId = root.TryGetProperty("organizationId", out var organizationElement)
+                ? organizationElement.GetString()
+                : null;
+            return Validate(
+                url,
+                key,
+                "InstalledFile",
+                allowLoopbackHttp: false,
+                organizationId: organizationId);
         }
         catch (JsonException)
         {
@@ -73,7 +88,8 @@ public sealed class PublicCloudRuntimeOptionsProvider(
         string? key,
         string source,
         bool allowLoopbackHttp = false,
-        bool allowExplicitTestKey = false)
+        bool allowExplicitTestKey = false,
+        string? organizationId = null)
     {
         if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(key))
             return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", source);
@@ -87,7 +103,15 @@ public sealed class PublicCloudRuntimeOptionsProvider(
         var normalizedKey = key.Trim();
         if (!IsPublishableKey(normalizedKey, allowExplicitTestKey))
             return new(projectUri, null, "PUBLICCLOUD_INVALID_PUBLISHABLE_KEY", source);
-        return new(projectUri, normalizedKey, null, source);
+        Guid? parsedOrganizationId = null;
+        if (!string.IsNullOrWhiteSpace(organizationId))
+        {
+            if (!Guid.TryParse(organizationId.Trim(), out var organizationGuid)
+                || organizationGuid == Guid.Empty)
+                return new(projectUri, normalizedKey, "PUBLICCLOUD_INVALID_ORGANIZATION_ID", source);
+            parsedOrganizationId = organizationGuid;
+        }
+        return new(projectUri, normalizedKey, null, source, parsedOrganizationId);
     }
 
     private static bool IsPublishableKey(string key, bool allowExplicitTestKey)
@@ -147,6 +171,10 @@ public sealed class PublicCloudApiException(
     public string Code { get; } = code;
 }
 
+public sealed record SupabaseAuthenticatedAccount(
+    CurrentAccountDto Account,
+    string AccessToken);
+
 public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -158,6 +186,8 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
     private CancellationTokenSource authLifetime = new();
     private string? accessToken;
     private string? refreshToken;
+    private string? providerUserId;
+    private string? authenticatedEmail;
     private DateTimeOffset expiresAtUtc;
 
     public SupabasePublicCloudClient(
@@ -187,10 +217,12 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
     public bool Configured => RuntimeOptions.Configured;
     public bool Authenticated => !string.IsNullOrWhiteSpace(accessToken);
     public string? AccessToken => accessToken;
+    public DateTimeOffset ExpiresAtUtc => expiresAtUtc;
     public string? ConfigurationErrorCode => RuntimeOptions.ErrorCode;
 
     public async Task LoginAsync(string account, string password, CancellationToken cancellationToken)
     {
+        Logout();
         EnsureConfigured();
         var domain = Environment.GetEnvironmentVariable("EXAMTRANSFER_STUDENT_EMAIL_DOMAIN")
             ?? "students.examtransfer.local";
@@ -673,12 +705,115 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         }
     }
 
+    public async Task<SupabaseAuthenticatedAccount> AuthenticateAccountAsync(
+        string account,
+        string password,
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        await LoginAsync(account, password, cancellationToken);
+        try
+        {
+            var current = await ReadAuthoritativeAccountAsync(deviceId, cancellationToken);
+            return new(
+                current,
+                accessToken
+                    ?? throw new PublicCloudApiException(
+                        "PUBLICCLOUD_AUTH_INVALID",
+                        "Supabase authentication returned no access token.",
+                        HttpStatusCode.Unauthorized));
+        }
+        catch
+        {
+            Logout();
+            throw;
+        }
+    }
+
+    public async Task<SupabaseAuthenticatedAccount> ChangeOwnPasswordAsync(
+        string account,
+        string currentPassword,
+        string newPassword,
+        string confirmPassword,
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(newPassword, confirmPassword, StringComparison.Ordinal)
+            || string.Equals(currentPassword, newPassword, StringComparison.Ordinal)
+            || newPassword.Length is < 8 or > 72
+            || !newPassword.Any(char.IsUpper)
+            || !newPassword.Any(char.IsLower)
+            || !newPassword.Any(char.IsDigit)
+            || !newPassword.Any(ch => !char.IsLetterOrDigit(ch)))
+        {
+            throw new PublicCloudApiException(
+                "PASSWORD_POLICY_REJECTED",
+                "Mật khẩu mới không hợp lệ hoặc xác nhận không khớp.",
+                HttpStatusCode.UnprocessableEntity);
+        }
+
+        await LoginAsync(account, currentPassword, cancellationToken);
+        using var update = ProjectRequest(HttpMethod.Put, "/auth/v1/user");
+        update.Content = JsonContent.Create(new { password = newPassword });
+        using var updateResponse = await SendAsync(update, cancellationToken);
+        await EnsureSuccessAsync(
+            updateResponse,
+            "Supabase password change",
+            cancellationToken);
+
+        var completed = await RpcAsync<bool>(
+            "complete_own_password_change",
+            new { },
+            cancellationToken);
+        if (!completed)
+        {
+            Logout();
+            throw new PublicCloudApiException(
+                "PASSWORD_CHANGE_FAILED",
+                "Supabase profile did not confirm the password change.",
+                HttpStatusCode.ServiceUnavailable);
+        }
+
+        var current = await ReadAuthoritativeAccountAsync(
+            deviceId,
+            cancellationToken);
+        return new(
+            current,
+            accessToken
+                ?? throw new PublicCloudApiException(
+                    "PUBLICCLOUD_AUTH_INVALID",
+                    "Supabase password change returned no access token.",
+                    HttpStatusCode.Unauthorized));
+    }
+
+    public bool TryRestoreAccessToken(
+        string token,
+        string expectedProviderUserId,
+        DateTimeOffset expiresAt)
+    {
+        if (string.IsNullOrWhiteSpace(token)
+            || string.IsNullOrWhiteSpace(expectedProviderUserId)
+            || expiresAt <= DateTimeOffset.UtcNow
+            || !TryReadJwtIdentity(token, out var subject, out var jwtExpiresAt)
+            || !string.Equals(subject, expectedProviderUserId, StringComparison.OrdinalIgnoreCase)
+            || jwtExpiresAt <= DateTimeOffset.UtcNow)
+            return false;
+
+        Logout();
+        accessToken = token;
+        providerUserId = subject;
+        expiresAtUtc = expiresAt < jwtExpiresAt ? expiresAt : jwtExpiresAt;
+        return true;
+    }
+
     public void Logout()
     {
         authLifetime.Cancel();
         authLifetime = new();
         accessToken = null;
         refreshToken = null;
+        providerUserId = null;
+        authenticatedEmail = null;
         expiresAtUtc = default;
     }
 
@@ -695,10 +830,179 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             throw new InvalidDataException("Supabase authentication returned an empty access token.");
         accessToken = nextAccessToken;
         refreshToken = nextRefreshToken;
+        if (root.TryGetProperty("user", out var user)
+            && user.ValueKind == JsonValueKind.Object)
+        {
+            providerUserId = user.TryGetProperty("id", out var userId)
+                && userId.ValueKind == JsonValueKind.String
+                    ? userId.GetString()
+                    : providerUserId;
+            authenticatedEmail = user.TryGetProperty("email", out var email)
+                && email.ValueKind == JsonValueKind.String
+                    ? email.GetString()
+                    : authenticatedEmail;
+        }
         expiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(
             root.TryGetProperty("expires_in", out var expiry)
                 ? expiry.GetInt32()
                 : 3600);
+    }
+
+    private async Task<CurrentAccountDto> ReadAuthoritativeAccountAsync(
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(providerUserId, out var userId) || userId == Guid.Empty)
+            throw InvalidAuthenticatedRole("Supabase user id is invalid.");
+
+        var options = RuntimeOptions;
+        if (options.OrganizationId is null)
+        {
+            throw new PublicCloudApiException(
+                "PUBLICCLOUD_INVALID_ORGANIZATION_ID",
+                "PublicCloud organization id is required for account authorization.",
+                HttpStatusCode.ServiceUnavailable);
+        }
+
+        var encodedId = Uri.EscapeDataString(providerUserId);
+        using var request = ProjectRequest(
+            HttpMethod.Get,
+            $"/rest/v1/profiles?select=id,organization_id,username,display_name,student_code,date_of_birth,must_change_password,role,is_active&id=eq.{encodedId}&limit=2");
+        using var response = await SendAsync(request, cancellationToken);
+        await EnsureSuccessAsync(response, "Supabase application profile", cancellationToken);
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(cancellationToken));
+        if (document.RootElement.ValueKind != JsonValueKind.Array
+            || document.RootElement.GetArrayLength() != 1)
+            throw InvalidAuthenticatedRole("Authenticated account has no unique application profile.");
+
+        var row = document.RootElement[0];
+        var profileId = RequiredString(row, "id");
+        var organizationId = RequiredString(row, "organization_id");
+        var username = RequiredString(row, "username");
+        var displayName = RequiredString(row, "display_name");
+        var roleValue = RequiredString(row, "role");
+        if (!string.Equals(profileId, providerUserId, StringComparison.OrdinalIgnoreCase)
+            || !Guid.TryParse(organizationId, out var profileOrganizationId)
+            || profileOrganizationId != options.OrganizationId.Value
+            || !Enum.TryParse<UserRole>(roleValue, true, out var role)
+            || !Enum.IsDefined(role)
+            || role is not (UserRole.Admin or UserRole.Teacher or UserRole.Student)
+            || !row.TryGetProperty("is_active", out var active)
+            || active.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+            || !active.GetBoolean()
+            || !row.TryGetProperty("must_change_password", out var mustChange)
+            || mustChange.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            throw InvalidAuthenticatedRole("Authenticated application profile is inactive or malformed.");
+
+        var studentCode = OptionalString(row, "student_code");
+        var dateOfBirth = OptionalDateOnly(row, "date_of_birth");
+        if (role == UserRole.Student
+            && (string.IsNullOrWhiteSpace(studentCode) || dateOfBirth is null))
+            throw InvalidAuthenticatedRole("Authenticated student profile is incomplete.");
+
+        var loginSessionId = TryReadJwtSessionId(accessToken, out var sessionId)
+            ? sessionId
+            : Guid.Empty;
+        return new CurrentAccountDto(
+            userId,
+            username,
+            authenticatedEmail,
+            displayName,
+            studentCode,
+            role,
+            profileOrganizationId.ToString("D"),
+            loginSessionId,
+            deviceId,
+            expiresAtUtc,
+            dateOfBirth,
+            mustChange.GetBoolean(),
+            providerUserId);
+    }
+
+    private static PublicCloudApiException InvalidAuthenticatedRole(string message) =>
+        new(
+            ErrorCodes.AuthenticatedRoleInvalid,
+            $"{ErrorCodes.AuthenticatedRoleInvalid}: {message}",
+            HttpStatusCode.Forbidden);
+
+    private static string RequiredString(JsonElement element, string name)
+    {
+        var value = OptionalString(element, name);
+        if (string.IsNullOrWhiteSpace(value))
+            throw InvalidAuthenticatedRole($"Profile field {name} is missing.");
+        return value;
+    }
+
+    private static string? OptionalString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var property)
+        && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
+
+    private static DateOnly? OptionalDateOnly(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var property)
+            || property.ValueKind == JsonValueKind.Null)
+            return null;
+        if (property.ValueKind != JsonValueKind.String
+            || !DateOnly.TryParseExact(
+                property.GetString(),
+                "yyyy-MM-dd",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None,
+                out var value))
+            throw InvalidAuthenticatedRole($"Profile field {name} is invalid.");
+        return value;
+    }
+
+    private static bool TryReadJwtIdentity(
+        string token,
+        out string? subject,
+        out DateTimeOffset expiresAt)
+    {
+        subject = null;
+        expiresAt = default;
+        try
+        {
+            var parts = token.Split('.');
+            if (parts.Length != 3) return false;
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + ((4 - payload.Length % 4) % 4), '=');
+            using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
+            subject = document.RootElement.TryGetProperty("sub", out var sub)
+                ? sub.GetString()
+                : null;
+            expiresAt = document.RootElement.TryGetProperty("exp", out var exp)
+                && exp.TryGetInt64(out var unix)
+                    ? DateTimeOffset.FromUnixTimeSeconds(unix)
+                    : default;
+            return !string.IsNullOrWhiteSpace(subject) && expiresAt != default;
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadJwtSessionId(string? token, out Guid sessionId)
+    {
+        sessionId = Guid.Empty;
+        if (string.IsNullOrWhiteSpace(token)) return false;
+        try
+        {
+            var parts = token.Split('.');
+            if (parts.Length != 3) return false;
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + ((4 - payload.Length % 4) % 4), '=');
+            using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
+            return document.RootElement.TryGetProperty("session_id", out var session)
+                && Guid.TryParse(session.GetString(), out sessionId);
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException)
+        {
+            return false;
+        }
     }
 
     private HttpRequestMessage ProjectRequest(HttpMethod method, string path, bool userToken = true)

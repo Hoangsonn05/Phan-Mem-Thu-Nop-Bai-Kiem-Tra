@@ -30,12 +30,14 @@ public interface ILocalServerRuntime
     Task<bool> IsTcpPortOccupiedAsync(CancellationToken cancellationToken);
     Task<bool> IsUdpPortOccupiedAsync(CancellationToken cancellationToken);
     ILocalServerProcess Start(string executablePath, string workingDirectory);
+    Task StopExactAsync(string executablePath, CancellationToken cancellationToken);
 }
 
 public interface ILocalServerProcess
 {
     bool HasExited { get; }
     int? ExitCode { get; }
+    Task StopAsync(CancellationToken cancellationToken);
 }
 
 public sealed class LocalServerLifecycleService
@@ -44,36 +46,34 @@ public sealed class LocalServerLifecycleService
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(20);
     private readonly ILocalServerRuntime runtime;
     private readonly string baseDirectory;
-    private readonly Func<string?> roleProvider;
+    private readonly object processGate = new();
+    private ILocalServerProcess? ownedProcess;
 
     public LocalServerLifecycleService(
         ILocalServerRuntime? runtime = null,
-        string? baseDirectory = null,
-        Func<string?>? roleProvider = null)
+        string? baseDirectory = null)
     {
         this.runtime = runtime ?? new LocalServerRuntime(ServerPort);
         this.baseDirectory = Path.GetFullPath(baseDirectory ?? AppContext.BaseDirectory);
-        this.roleProvider = roleProvider ?? ReadInstallRole;
     }
 
     public async Task<LocalServerLifecycleResult> EnsureStartedAsync(
+        UserRole authenticatedRole,
         CancellationToken cancellationToken = default)
     {
-        var role = roleProvider()?.Trim();
-        if (role?.Equals("Student", StringComparison.OrdinalIgnoreCase) == true)
-            return new("STUDENT_INSTALL", false, "Student-only install does not start Local Server.");
+        if (authenticatedRole is not (UserRole.Teacher or UserRole.Admin))
+            return new(
+                "ROLE_NOT_AUTHORIZED",
+                false,
+                "Only an authenticated Teacher or Admin may start Local Server.");
 
         var executablePath = FindServerExecutable();
         if (executablePath is null)
-        {
-            if (role?.Equals("Teacher", StringComparison.OrdinalIgnoreCase) == true)
-                return new(
-                    "SERVER_EXE_MISSING",
-                    false,
-                    "Bản cài giáo viên thiếu ExamTransfer.LocalServer.exe. Hãy chạy lại bộ cài đặt.",
-                    ExpectedServerExecutable());
-            return new("NOT_TEACHER_INSTALL", false, "No bundled Local Server was found; lifecycle start is not applicable.");
-        }
+            return new(
+                "SERVER_EXE_MISSING",
+                false,
+                "Bộ cài ExamTransfer thiếu ExamTransfer.LocalServer.exe. Hãy chạy lại bộ cài đặt.",
+                ExpectedServerExecutable());
 
         using var launchGate = new Semaphore(
             1,
@@ -112,6 +112,8 @@ public sealed class LocalServerLifecycleService
             try
             {
                 process = runtime.Start(executablePath, workingDirectory);
+                lock (processGate)
+                    ownedProcess = process;
                 FrontendLogger.LogMessage(
                     $"executable={executablePath}; working_directory={workingDirectory}; phase=started",
                     "LocalServerLifecycle");
@@ -169,6 +171,24 @@ public sealed class LocalServerLifecycleService
         }
     }
 
+    public async Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        ILocalServerProcess? process;
+        lock (processGate)
+        {
+            process = ownedProcess;
+            ownedProcess = null;
+        }
+        if (process is not null && !process.HasExited)
+            await process.StopAsync(cancellationToken);
+
+        // A verified server can predate this client process (for example after an
+        // upgrade or client restart). Stop only the packaged executable so logout
+        // cannot leave Teacher/Admin listeners running or terminate an unrelated
+        // process that happens to use the same ports.
+        await runtime.StopExactAsync(ExpectedServerExecutable(), cancellationToken);
+    }
+
     private static bool IsPackageMismatch(LocalServerProbeResult probe) =>
         probe.Code is DiscoveryProtocol.ProtocolMismatch
             or DiscoveryProtocol.PortMismatch
@@ -209,16 +229,6 @@ public sealed class LocalServerLifecycleService
     private string ExpectedServerExecutable() =>
         Path.GetFullPath(Path.Combine(baseDirectory, "..", "Server", "ExamTransfer.LocalServer.exe"));
 
-    private string? ReadInstallRole()
-    {
-        var path = Path.GetFullPath(Path.Combine(baseDirectory, "..", "install-role.ini"));
-        if (!File.Exists(path)) return null;
-        return File.ReadLines(path)
-            .Select(x => x.Trim())
-            .FirstOrDefault(x => x.StartsWith("Role=", StringComparison.OrdinalIgnoreCase))
-            ?.Split('=', 2)[1]
-            .Trim();
-    }
 }
 
 public sealed class LocalServerRuntime(int port) : ILocalServerRuntime
@@ -329,9 +339,52 @@ public sealed class LocalServerRuntime(int port) : ILocalServerRuntime
         return new LocalServerProcess(process);
     }
 
+    public async Task StopExactAsync(
+        string executablePath,
+        CancellationToken cancellationToken)
+    {
+        var expectedPath = Path.GetFullPath(executablePath);
+        var processName = Path.GetFileNameWithoutExtension(expectedPath);
+        foreach (var process in Process.GetProcessesByName(processName))
+        {
+            using (process)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    if (process.HasExited
+                        || !Path.GetFullPath(process.MainModule?.FileName ?? string.Empty)
+                            .Equals(expectedPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync(cancellationToken);
+                }
+                catch (InvalidOperationException)
+                {
+                    // The process exited between enumeration and inspection.
+                }
+                catch (System.ComponentModel.Win32Exception ex)
+                {
+                    FrontendLogger.Log(ex, "LocalServerLifecycle.StopExact");
+                    throw;
+                }
+            }
+        }
+    }
+
     private sealed class LocalServerProcess(Process process) : ILocalServerProcess
     {
         public bool HasExited => process.HasExited;
         public int? ExitCode => process.HasExited ? process.ExitCode : null;
+
+        public async Task StopAsync(CancellationToken cancellationToken)
+        {
+            if (process.HasExited) return;
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync(cancellationToken);
+        }
     }
 }

@@ -88,6 +88,43 @@ public sealed class OpenSessionDiscoveryTests
         Assert.Equal(403, error.StatusCode);
     }
 
+    [Fact]
+    public async Task Identity_LocalLifecycleProbeReturnsAdvertisedLanIdentity()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new AppDbContext(
+            new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite(connection)
+                .Options);
+        await db.Database.EnsureCreatedAsync();
+        var options = new ExamTransferOptions();
+        options.Server.PreferredIp = LanNetworkConfiguration.RunningInContainer
+            ? "192.168.10.1"
+            : LanNetworkConfiguration.GetActivePhysicalAddresses().First().ToString();
+        var controller = new DiscoveryController(
+            db,
+            new AllowLanPolicy(),
+            Options.Create(options))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext()
+            }
+        };
+        controller.HttpContext.Connection.RemoteIpAddress = IPAddress.Loopback;
+
+        var action = controller.Identity();
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        var response = Assert.IsType<ApiResponse<LocalServerIdentityDto>>(ok.Value);
+        Assert.NotNull(response.Data);
+        Assert.Equal("ExamTransfer.LocalServer", response.Data!.Product);
+        Assert.Equal(DiscoveryProtocol.ProtocolVersion, response.Data.Protocol);
+        Assert.Equal(DiscoveryProtocol.DefaultPort, response.Data.DiscoveryPort);
+        Assert.Equal(options.Server.PreferredIp, response.Data.AdvertisedAddress);
+    }
+
     private sealed class AllowLanPolicy : ILanAccessPolicy { public bool IsAllowed(string? remoteAddress) => true; }
     private sealed class DenyLanPolicy : ILanAccessPolicy { public bool IsAllowed(string? remoteAddress) => false; }
 }
