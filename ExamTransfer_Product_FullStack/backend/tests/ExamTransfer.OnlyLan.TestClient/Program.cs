@@ -5,7 +5,7 @@ var options = Arguments.Parse(args);
 await using var connection = new HubConnectionBuilder()
     .WithUrl(options.BaseUrl.TrimEnd('/') + ContractInfo.HubPath, http =>
     {
-        http.AccessTokenProvider = () => Task.FromResult<string?>(options.ParticipantToken);
+        http.Headers["X-Exam-Session-Token"] = options.ParticipantToken;
     })
     .Build();
 

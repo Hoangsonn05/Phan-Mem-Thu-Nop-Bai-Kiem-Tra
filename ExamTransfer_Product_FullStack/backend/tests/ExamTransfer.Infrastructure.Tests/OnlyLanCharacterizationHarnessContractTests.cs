@@ -67,6 +67,8 @@ public sealed class OnlyLanCharacterizationHarnessContractTests
         Assert.Contains("PolicyApplyAck", client, StringComparison.Ordinal);
         Assert.Contains("PolicyApplyStatus.Applied", client, StringComparison.Ordinal);
         Assert.Contains("ONLYLAN_POLICY_ACK_OK", client, StringComparison.Ordinal);
+        Assert.Contains("X-Exam-Session-Token", client, StringComparison.Ordinal);
+        Assert.DoesNotContain("AccessTokenProvider", client, StringComparison.Ordinal);
         Assert.Contains("ExamTransfer.OnlyLan.TestClient.csproj", solution, StringComparison.Ordinal);
         Assert.Contains("Microsoft.AspNetCore.SignalR.Client", packages, StringComparison.Ordinal);
     }
