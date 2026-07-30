@@ -12,6 +12,23 @@ public interface ISessionParticipantMutationHandler
         SessionParticipant participant,
         Guid mutationRequestId,
         CancellationToken cancellationToken);
+
+    Task RejectAsync(
+        SessionParticipant participant,
+        string? reason,
+        Guid mutationRequestId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<ParticipantDto>> BulkApproveAsync(
+        ExamSession session,
+        IReadOnlyList<Guid> requestedIds,
+        Guid mutationRequestId,
+        CancellationToken cancellationToken);
+
+    Task<ParticipantDto> AddExtraTimeAsync(
+        SessionParticipant participant,
+        ExtraTimeRequest request,
+        CancellationToken cancellationToken);
 }
 
 internal static class SessionParticipantMutationRules

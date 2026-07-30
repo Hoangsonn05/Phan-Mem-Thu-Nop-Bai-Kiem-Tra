@@ -29,7 +29,10 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
                     outbox,
                     realtime,
                     options),
-                new PublicCloudSessionParticipantMutationHandler(options, cloud)
+                new PublicCloudSessionParticipantMutationHandler(
+                    options,
+                    realtime,
+                    cloud)
             ]);
 
     public async Task<PagedResult<SessionSummaryDto>> ListAsync(SessionStatus? status, int page, int pageSize, CancellationToken cancellationToken)
@@ -441,200 +444,29 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
 
     public async Task RejectAsync(Guid sessionId, Guid participantId, string? reason, Guid mutationRequestId, CancellationToken cancellationToken)
     {
-        var participant = await db.SessionParticipantsSet.Include(x => x.Session).FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
-        if (participant.Session.AccessMode == SessionAccessMode.PublicCloud)
-        {
-            if (mutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
-            _ = await RequireCloud().RejectPublicParticipantAsync(
-                sessionId,
-                participantId,
-                reason,
-                mutationRequestId,
-                cancellationToken);
-            return;
-        }
-        participant.Status = ParticipantStatus.Rejected; participant.Session.Sequence++;
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ParticipantRejected", nameof(SessionParticipant), participant.Id.ToString(), sessionId, null, new { participant = ToCloud(participant), reason }, cancellationToken);
-        await outbox.EnqueueAsync(
-            "session_participants",
-            participant.Id.ToString(),
-            "upsert",
-            ToCloud(participant),
-            cancellationToken: cancellationToken);
+        await _participantMutations.RejectAsync(
+            sessionId,
+            participantId,
+            reason,
+            mutationRequestId,
+            cancellationToken);
     }
 
     public async Task<IReadOnlyList<ParticipantDto>> BulkApproveAsync(Guid sessionId, BulkApproveRequest request, CancellationToken cancellationToken)
     {
-        var requestedIds = request.ParticipantIds.Distinct().ToList();
-        if (requestedIds.Count == 0)
-            throw new ApiException(ErrorCodes.ValidationFailed, "Cần chọn ít nhất một học sinh để duyệt.");
-
-        var session = await db.ExamSessionsSet
-            .Include(x => x.Exam)
-            .Include(x => x.Participants)
-            .FirstOrDefaultAsync(x => x.Id == sessionId, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
-
-        if (session.AccessMode == SessionAccessMode.PublicCloud)
-        {
-            if (request.MutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
-            var result = await RequireCloud().BulkApprovePublicParticipantsAsync(
-                sessionId,
-                requestedIds,
-                request.MutationRequestId,
-                cancellationToken);
-            var localById = session.Participants.ToDictionary(x => x.Id);
-            return result.Participants
-                .Where(x => localById.ContainsKey(x.ParticipantId))
-                .Select(x => ToMutationDto(localById[x.ParticipantId], x))
-                .ToList();
-        }
-
-        if (session.Status != SessionStatus.Waiting)
-            throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ duyệt học sinh trong phòng chờ.", 409);
-
-        var participants = session.Participants
-            .Where(x => requestedIds.Contains(x.Id))
-            .ToList();
-
-        if (participants.Count != requestedIds.Count)
-        {
-            var found = participants.Select(x => x.Id).ToHashSet();
-            var missing = requestedIds.Where(x => !found.Contains(x)).ToList();
-            throw new ApiException(
-                ErrorCodes.NotFound,
-                "Một hoặc nhiều học sinh không còn tồn tại trong phòng chờ.",
-                404,
-                details: new { missingParticipantIds = missing });
-        }
-
-        var invalid = participants
-            .Where(x => x.Status == ParticipantStatus.Rejected)
-            .Select(x => x.Id)
-            .ToList();
-        if (invalid.Count > 0)
-            throw new ApiException(
-                ErrorCodes.InvalidStateTransition,
-                "Không thể duyệt hàng loạt học sinh đã bị từ chối.",
-                409,
-                details: new { participantIds = invalid });
-
-        var events = new List<(SessionParticipant Participant, long Sequence, IssuedToken Token)>();
-        foreach (var participant in participants)
-        {
-            if (participant.Status == ParticipantStatus.Approved)
-                continue;
-
-            participant.Status = ParticipantStatus.Approved;
-            participant.ApprovedAtUtc = DateTimeOffset.UtcNow;
-            session.Sequence++;
-            var issued = tokens.IssueParticipantToken(
-                sessionId,
-                participant.Id,
-                participant.UserId ?? Guid.Empty,
-                participant.DeviceId,
-                participant.Status,
-                ParticipantTokenLifetime(session));
-            events.Add((participant, session.Sequence, issued));
-        }
-
-        await db.SaveChangesAsync(cancellationToken);
-
-        foreach (var item in events)
-        {
-            await outbox.EnqueueAsync(
-                "session_participants",
-                item.Participant.Id.ToString(),
-                "upsert",
-                ToCloud(item.Participant),
-                cancellationToken: cancellationToken);
-            await realtime.PublishParticipantAsync(
-                sessionId,
-                item.Participant.Id,
-                RealtimeEvents.ParticipantApproved,
-                item.Sequence,
-                new ParticipantApprovedEvent(item.Participant.Id, item.Token.ExpiresAtUtc),
-                cancellationToken);
-        }
-
-        await audit.WriteAsync(
-            "ParticipantsBulkApproved",
-            nameof(SessionParticipant),
-            null,
+        return await _participantMutations.BulkApproveAsync(
             sessionId,
-            null,
-            new { ids = requestedIds, approvedCount = events.Count },
+            request,
             cancellationToken);
-
-        return participants
-            .Select(x => x.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds))
-            .ToList();
     }
 
     public async Task<ParticipantDto> AddExtraTimeAsync(Guid sessionId, Guid participantId, ExtraTimeRequest request, CancellationToken cancellationToken)
     {
-        if (request.Minutes <= 0 || string.IsNullOrWhiteSpace(request.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Số phút và lý do là bắt buộc.");
-        var participant = await db.SessionParticipantsSet.Include(x => x.Session).ThenInclude(x => x.Exam).FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
-        if (participant.Session.AccessMode == SessionAccessMode.PublicCloud)
-        {
-            if (request.MutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
-            var result = await RequireCloud().AddPublicParticipantExtraTimeAsync(
-                sessionId,
-                participantId,
-                request.Minutes,
-                request.Reason,
-                request.MutationRequestId,
-                cancellationToken);
-            if (!result.EffectiveDeadlineUtc.HasValue
-                || !result.ServerNowUtc.HasValue
-                || !result.Revision.HasValue)
-            {
-                throw new ApiException(
-                    ErrorCodes.CloudUploadFailed,
-                    "Supabase không trả đủ contract thời gian PublicCloud.",
-                    502);
-            }
-            await realtime.PublishSessionAsync(
-                sessionId,
-                RealtimeEvents.TimeExtended,
-                result.Revision.Value,
-                new TimeExtendedEvent(
-                    participantId,
-                    request.Minutes,
-                    result.EffectiveDeadlineUtc.Value,
-                    result.AttemptId,
-                    result.ServerNowUtc,
-                    result.Revision,
-                    result.RequestId ?? request.MutationRequestId),
-                cancellationToken);
-            return ToMutationDto(participant, result);
-        }
-        if (participant.Session.Status is not (SessionStatus.InProgress or SessionStatus.Paused)) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ cộng giờ khi phòng đang thi hoặc tạm dừng.", 409);
-        participant.ExtraTimeMinutes += request.Minutes; participant.Session.Sequence++;
-        var deadline = participant.Session.StartedAtUtc!.Value.AddMinutes(participant.Session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
-        var activeQuizAttempts = await db.QuizAttemptsSet
-            .Where(x => x.SessionId == sessionId
-                && x.ParticipantId == participantId
-                && x.Status == QuizAttemptStatus.InProgress)
-            .ToListAsync(cancellationToken);
-        foreach (var attempt in activeQuizAttempts)
-        {
-            attempt.DeadlineUtc = deadline;
-        }
-        db.ParticipantExtraTimesSet.Add(new ParticipantExtraTime { ParticipantId = participantId, Minutes = request.Minutes, Reason = request.Reason });
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("ParticipantExtraTimeAdded", nameof(SessionParticipant), participant.Id.ToString(), sessionId, null, request, cancellationToken);
-        await outbox.EnqueueAsync(
-            "session_participants",
-            participant.Id.ToString(),
-            "upsert",
-            ToCloud(participant),
-            cancellationToken: cancellationToken);
-        await realtime.PublishSessionAsync(sessionId, RealtimeEvents.TimeExtended, participant.Session.Sequence, new TimeExtendedEvent(participantId, request.Minutes, deadline), cancellationToken);
-        return participant.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds, deadline);
+        return await _participantMutations.AddExtraTimeAsync(
+            sessionId,
+            participantId,
+            request,
+            cancellationToken);
     }
 
     public async Task<MessageDto> SendMessageAsync(Guid sessionId, SendMessageRequest request, CancellationToken cancellationToken)

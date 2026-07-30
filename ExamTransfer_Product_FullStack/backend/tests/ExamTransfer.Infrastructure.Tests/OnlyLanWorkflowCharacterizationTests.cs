@@ -336,6 +336,169 @@ public sealed class OnlyLanWorkflowCharacterizationTests
     }
 
     [Fact]
+    public async Task Reject_LanOnly_persists_status_sequence_audit_and_outbox_without_cloud()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var seeded = await fixture.SeedPublishedQuizAsync();
+        var session = SessionEntity(
+            seeded.Exam,
+            "LANREJ",
+            SessionAccessMode.LanOnly,
+            SessionStatus.Waiting,
+            true);
+        var participant = ParticipantEntity(session, "REJECT-1");
+        fixture.Db.AddRange(session, participant);
+        await fixture.Db.SaveChangesAsync();
+        var sequenceBefore = session.Sequence;
+        var outboxBefore = fixture.OutboxCalls.Count;
+        var realtimeBefore = fixture.RealtimeEvents.Count;
+
+        await fixture.Sessions.RejectAsync(
+            session.Id,
+            participant.Id,
+            "Identity mismatch",
+            Guid.Empty,
+            CancellationToken.None);
+
+        fixture.Db.ChangeTracker.Clear();
+        var persistedSession = await fixture.Db.ExamSessionsSet
+            .SingleAsync(x => x.Id == session.Id);
+        var persistedParticipant = await fixture.Db.SessionParticipantsSet
+            .SingleAsync(x => x.Id == participant.Id);
+        Assert.Equal(ParticipantStatus.Rejected, persistedParticipant.Status);
+        Assert.Equal(sequenceBefore + 1, persistedSession.Sequence);
+        Assert.Equal(outboxBefore + 1, fixture.OutboxCalls.Count);
+        Assert.Equal(realtimeBefore, fixture.RealtimeEvents.Count);
+        Assert.Contains(
+            await fixture.Db.AuditLogsSet.ToListAsync(),
+            x => x.Action == "ParticipantRejected"
+                && x.EntityId == participant.Id.ToString());
+        Assert.Equal(0, fixture.Cloud.CallCount);
+    }
+
+    [Fact]
+    public async Task BulkApprove_LanOnly_persists_then_outboxes_broadcasts_and_audits()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var seeded = await fixture.SeedPublishedQuizAsync();
+        var session = SessionEntity(
+            seeded.Exam,
+            "LANBULK",
+            SessionAccessMode.LanOnly,
+            SessionStatus.Waiting,
+            true);
+        var first = ParticipantEntity(session, "BULK-1");
+        var second = ParticipantEntity(session, "BULK-2");
+        fixture.Db.AddRange(session, first, second);
+        await fixture.Db.SaveChangesAsync();
+        var sequenceBefore = session.Sequence;
+        var outboxBefore = fixture.OutboxCalls.Count;
+        var realtimeBefore = fixture.RealtimeEvents.Count;
+
+        var result = await fixture.Sessions.BulkApproveAsync(
+            session.Id,
+            new BulkApproveRequest(
+                [first.Id, second.Id, first.Id],
+                Guid.Empty),
+            CancellationToken.None);
+
+        fixture.Db.ChangeTracker.Clear();
+        var persistedSession = await fixture.Db.ExamSessionsSet
+            .SingleAsync(x => x.Id == session.Id);
+        var statuses = await fixture.Db.SessionParticipantsSet
+            .Where(x => x.SessionId == session.Id)
+            .Select(x => x.Status)
+            .ToListAsync();
+        Assert.Equal(2, result.Count);
+        Assert.All(result, x => Assert.Equal(ParticipantStatus.Approved, x.Status));
+        Assert.All(statuses, x => Assert.Equal(ParticipantStatus.Approved, x));
+        Assert.Equal(sequenceBefore + 2, persistedSession.Sequence);
+        Assert.Equal(outboxBefore + 2, fixture.OutboxCalls.Count);
+        Assert.Equal(realtimeBefore + 2, fixture.RealtimeEvents.Count);
+        Assert.Equal(
+            2,
+            fixture.RealtimeEvents
+                .Skip(realtimeBefore)
+                .Count(x => x == RealtimeEvents.ParticipantApproved));
+        Assert.Contains(
+            await fixture.Db.AuditLogsSet.ToListAsync(),
+            x => x.Action == "ParticipantsBulkApproved"
+                && x.SessionId == session.Id);
+        Assert.Equal(0, fixture.Cloud.CallCount);
+    }
+
+    [Fact]
+    public async Task AddExtraTime_LanOnly_updates_attempt_history_and_absolute_deadline()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var seeded = await fixture.SeedPublishedQuizAsync();
+        var startedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var session = SessionEntity(
+            seeded.Exam,
+            "LANEXTRA",
+            SessionAccessMode.LanOnly,
+            SessionStatus.InProgress,
+            false);
+        session.StartedAtUtc = startedAtUtc;
+        var participant = ParticipantEntity(
+            session,
+            "EXTRA-1",
+            ParticipantStatus.Approved);
+        participant.ApprovedAtUtc = startedAtUtc;
+        var attempt = new QuizAttempt
+        {
+            Session = session,
+            SessionId = session.Id,
+            Participant = participant,
+            ParticipantId = participant.Id,
+            Status = QuizAttemptStatus.InProgress,
+            StartedAtUtc = startedAtUtc,
+            DeadlineUtc = startedAtUtc.AddMinutes(seeded.Exam.DurationMinutes),
+            SnapshotJson = "[]"
+        };
+        fixture.Db.AddRange(session, participant, attempt);
+        await fixture.Db.SaveChangesAsync();
+        var sequenceBefore = session.Sequence;
+        var outboxBefore = fixture.OutboxCalls.Count;
+        var realtimeBefore = fixture.RealtimeEvents.Count;
+
+        var result = await fixture.Sessions.AddExtraTimeAsync(
+            session.Id,
+            participant.Id,
+            new ExtraTimeRequest(10, "Approved accommodation", Guid.Empty),
+            CancellationToken.None);
+
+        var expectedDeadline = startedAtUtc.AddMinutes(
+            seeded.Exam.DurationMinutes + 10);
+        fixture.Db.ChangeTracker.Clear();
+        var persistedSession = await fixture.Db.ExamSessionsSet
+            .SingleAsync(x => x.Id == session.Id);
+        var persistedParticipant = await fixture.Db.SessionParticipantsSet
+            .SingleAsync(x => x.Id == participant.Id);
+        var persistedAttempt = await fixture.Db.QuizAttemptsSet
+            .SingleAsync(x => x.Id == attempt.Id);
+        var history = await fixture.Db.ParticipantExtraTimesSet
+            .SingleAsync(x => x.ParticipantId == participant.Id);
+        Assert.Equal(10, result.ExtraTimeMinutes);
+        Assert.Equal(expectedDeadline, result.EffectiveDeadlineUtc);
+        Assert.Equal(10, persistedParticipant.ExtraTimeMinutes);
+        Assert.Equal(sequenceBefore + 1, persistedSession.Sequence);
+        Assert.Equal(expectedDeadline, persistedAttempt.DeadlineUtc);
+        Assert.Equal(10, history.Minutes);
+        Assert.Equal("Approved accommodation", history.Reason);
+        Assert.Equal(outboxBefore + 1, fixture.OutboxCalls.Count);
+        Assert.Equal(realtimeBefore + 1, fixture.RealtimeEvents.Count);
+        Assert.Equal(
+            RealtimeEvents.TimeExtended,
+            fixture.RealtimeEvents[^1]);
+        Assert.Contains(
+            await fixture.Db.AuditLogsSet.ToListAsync(),
+            x => x.Action == "ParticipantExtraTimeAdded"
+                && x.EntityId == participant.Id.ToString());
+        Assert.Equal(0, fixture.Cloud.CallCount);
+    }
+
+    [Fact]
     public async Task Discovery_ExposesOnlyPublishedWaitingAcceptingLanSessions()
     {
         await using var fixture = await OnlyLanFixture.CreateAsync();
@@ -455,6 +618,23 @@ public sealed class OnlyLanWorkflowCharacterizationTests
             ExamVersionSnapshot = exam.Version
         };
 
+    private static SessionParticipant ParticipantEntity(
+        ExamSession session,
+        string studentCode,
+        ParticipantStatus status = ParticipantStatus.PendingApproval) =>
+        new()
+        {
+            Session = session,
+            SessionId = session.Id,
+            StudentCode = studentCode,
+            DisplayName = studentCode,
+            DeviceId = $"{studentCode}-device",
+            MachineName = $"{studentCode}-machine",
+            AppVersion = "characterization",
+            Status = status,
+            SourceMode = "Lan"
+        };
+
     private sealed class OnlyLanFixture : IAsyncDisposable
     {
         private readonly string root;
@@ -488,6 +668,9 @@ public sealed class OnlyLanWorkflowCharacterizationTests
         public ControlService Controls { get; }
         public QuizService Quiz { get; }
         public CountingThrowingCloudAdapter Cloud { get; }
+        public IReadOnlyList<(string EntityType, string EntityId, string Operation)>
+            OutboxCalls => outbox.Calls;
+        public IReadOnlyList<string> RealtimeEvents => realtime.Events;
 
         public static async Task<OnlyLanFixture> CreateAsync()
         {
@@ -522,7 +705,10 @@ public sealed class OnlyLanWorkflowCharacterizationTests
                         outbox,
                         realtime,
                         Options),
-                    new PublicCloudSessionParticipantMutationHandler(Options, Cloud)
+                    new PublicCloudSessionParticipantMutationHandler(
+                        Options,
+                        realtime,
+                        Cloud)
                 });
             return new SessionService(
                 Db,

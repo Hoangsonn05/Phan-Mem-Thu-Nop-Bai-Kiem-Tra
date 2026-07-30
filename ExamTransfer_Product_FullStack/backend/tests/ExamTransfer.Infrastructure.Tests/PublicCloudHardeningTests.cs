@@ -401,6 +401,145 @@ public sealed class PublicCloudTeacherMutationRoutingTests
     }
 
     [Fact]
+    public async Task Reject_PublicCloud_calls_rpc_without_local_mutation_or_outbox()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        var cloud = new RecordingCloudAdapter();
+        var service = PublicCloudTestHarness.CreateSessionService(database.Context, cloud);
+        var requestId = Guid.NewGuid();
+
+        await service.RejectAsync(
+            participant.SessionId,
+            participant.Id,
+            "Identity mismatch",
+            requestId,
+            CancellationToken.None);
+
+        Assert.Equal(1, cloud.RejectParticipantCalls);
+        Assert.Equal(requestId, cloud.LastRejectParticipantRequestId);
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(
+            ParticipantStatus.PendingApproval,
+            (await database.Context.SessionParticipantsSet
+                .SingleAsync(x => x.Id == participant.Id))
+                .Status);
+        Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+    }
+
+    [Fact]
+    public async Task BulkApprove_PublicCloud_calls_rpc_without_local_mutation_or_outbox()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        var cloud = new RecordingCloudAdapter();
+        var service = PublicCloudTestHarness.CreateSessionService(database.Context, cloud);
+        var requestId = Guid.NewGuid();
+
+        var result = await service.BulkApproveAsync(
+            participant.SessionId,
+            new BulkApproveRequest([participant.Id, participant.Id], requestId),
+            CancellationToken.None);
+
+        Assert.Equal(1, cloud.BulkApproveCalls);
+        Assert.Equal(requestId, cloud.LastBulkApproveRequestId);
+        Assert.Equal([participant.Id], cloud.LastBulkApproveParticipantIds);
+        Assert.Equal(ParticipantStatus.Approved, Assert.Single(result).Status);
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(
+            ParticipantStatus.PendingApproval,
+            (await database.Context.SessionParticipantsSet
+                .SingleAsync(x => x.Id == participant.Id))
+                .Status);
+        Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+    }
+
+    [Fact]
+    public async Task PublicCloud_participant_mutations_require_request_id_before_rpc()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        var cloud = new RecordingCloudAdapter();
+        var service = PublicCloudTestHarness.CreateSessionService(database.Context, cloud);
+
+        var rejectError = await Assert.ThrowsAsync<ApiException>(() =>
+            service.RejectAsync(
+                participant.SessionId,
+                participant.Id,
+                null,
+                Guid.Empty,
+                CancellationToken.None));
+        var bulkError = await Assert.ThrowsAsync<ApiException>(() =>
+            service.BulkApproveAsync(
+                participant.SessionId,
+                new BulkApproveRequest([participant.Id], Guid.Empty),
+                CancellationToken.None));
+        var extraTimeError = await Assert.ThrowsAsync<ApiException>(() =>
+            service.AddExtraTimeAsync(
+                participant.SessionId,
+                participant.Id,
+                new ExtraTimeRequest(10, "Accommodation", Guid.Empty),
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.ValidationFailed, rejectError.Code);
+        Assert.Equal(ErrorCodes.ValidationFailed, bulkError.Code);
+        Assert.Equal(ErrorCodes.ValidationFailed, extraTimeError.Code);
+        Assert.Equal(0, cloud.RejectParticipantCalls);
+        Assert.Equal(0, cloud.BulkApproveCalls);
+        Assert.Equal(0, cloud.ExtraTimeCalls);
+    }
+
+    [Fact]
+    public async Task PublicCloud_rpc_failures_do_not_fallback_to_Lan_or_write_local_state()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        var cloud = new RecordingCloudAdapter
+        {
+            FailRejectParticipant = true,
+            FailBulkApprove = true,
+            FailExtraTime = true
+        };
+        var realtime = new RecordingRealtimePublisher();
+        var service = PublicCloudTestHarness.CreateSessionService(
+            database.Context,
+            cloud,
+            realtime);
+
+        await Assert.ThrowsAsync<ApiException>(() => service.RejectAsync(
+            participant.SessionId,
+            participant.Id,
+            "Rejected upstream",
+            Guid.NewGuid(),
+            CancellationToken.None));
+        await Assert.ThrowsAsync<ApiException>(() => service.BulkApproveAsync(
+            participant.SessionId,
+            new BulkApproveRequest([participant.Id], Guid.NewGuid()),
+            CancellationToken.None));
+        await Assert.ThrowsAsync<ApiException>(() => service.AddExtraTimeAsync(
+            participant.SessionId,
+            participant.Id,
+            new ExtraTimeRequest(10, "Upstream failure", Guid.NewGuid()),
+            CancellationToken.None));
+
+        database.Context.ChangeTracker.Clear();
+        var persisted = await database.Context.SessionParticipantsSet
+            .SingleAsync(x => x.Id == participant.Id);
+        Assert.Equal(ParticipantStatus.PendingApproval, persisted.Status);
+        Assert.Equal(0, persisted.ExtraTimeMinutes);
+        Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+        Assert.Empty(realtime.SessionEvents);
+    }
+
+    [Fact]
     public async Task PublicCloud_extra_time_maps_absolute_contract_and_broadcasts_once_without_local_mutation()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
@@ -919,7 +1058,10 @@ internal static class PublicCloudTestHarness
                     outbox,
                     publisher,
                     options),
-                new PublicCloudSessionParticipantMutationHandler(options, cloud)
+                new PublicCloudSessionParticipantMutationHandler(
+                    options,
+                    publisher,
+                    cloud)
             });
         return new SessionService(
             db,
@@ -985,14 +1127,22 @@ internal static class PublicCloudTestHarness
 internal class RecordingCloudAdapter : ICloudAdapter
 {
     public int ApproveCalls { get; private set; }
+    public int RejectParticipantCalls { get; private set; }
+    public int BulkApproveCalls { get; private set; }
     public int ResubmitCalls { get; private set; }
     public int RejectSubmissionCalls { get; private set; }
     public int ExtraTimeCalls { get; private set; }
     public Guid? LastApproveRequestId { get; private set; }
+    public Guid? LastRejectParticipantRequestId { get; private set; }
+    public Guid? LastBulkApproveRequestId { get; private set; }
+    public IReadOnlyList<Guid>? LastBulkApproveParticipantIds { get; private set; }
     public Guid? LastResubmitRequestId { get; private set; }
     public Guid? LastRejectSubmissionRequestId { get; private set; }
     public Guid? LastExtraTimeRequestId { get; private set; }
     public bool FailApprove { get; init; }
+    public bool FailRejectParticipant { get; init; }
+    public bool FailBulkApprove { get; init; }
+    public bool FailExtraTime { get; init; }
     public bool ExtraTimeMissingContract { get; init; }
     public CloudParticipantMutationResult? ExtraTimeResult { get; private set; }
     public bool Enabled => true;
@@ -1015,6 +1165,63 @@ internal class RecordingCloudAdapter : ICloudAdapter
         return Task.FromResult(new CloudParticipantMutationResult(
             participantId, sessionId, ParticipantStatus.Approved, now, 0, false, null, 42, now));
     }
+    public Task<CloudParticipantMutationResult> RejectPublicParticipantAsync(
+        Guid sessionId,
+        Guid participantId,
+        string? reason,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        RejectParticipantCalls++;
+        LastRejectParticipantRequestId = requestId;
+        if (FailRejectParticipant)
+            throw new ApiException(
+                ErrorCodes.CloudUploadFailed,
+                "Simulated reject RPC failure",
+                502);
+        var now = DateTimeOffset.UtcNow;
+        return Task.FromResult(new CloudParticipantMutationResult(
+            participantId,
+            sessionId,
+            ParticipantStatus.Rejected,
+            null,
+            0,
+            false,
+            reason,
+            43,
+            now));
+    }
+    public Task<CloudBulkParticipantMutationResult> BulkApprovePublicParticipantsAsync(
+        Guid sessionId,
+        IReadOnlyList<Guid> participantIds,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        BulkApproveCalls++;
+        LastBulkApproveRequestId = requestId;
+        LastBulkApproveParticipantIds = participantIds.ToList();
+        if (FailBulkApprove)
+            throw new ApiException(
+                ErrorCodes.CloudUploadFailed,
+                "Simulated bulk approve RPC failure",
+                502);
+        var now = DateTimeOffset.UtcNow;
+        return Task.FromResult(new CloudBulkParticipantMutationResult(
+            participantIds.Count,
+            0,
+            participantIds
+                .Select(id => new CloudParticipantMutationResult(
+                    id,
+                    sessionId,
+                    ParticipantStatus.Approved,
+                    now,
+                    0,
+                    false,
+                    null,
+                    44,
+                    now))
+                .ToList()));
+    }
     public Task<CloudParticipantMutationResult> AllowPublicResubmissionAsync(
         Guid participantId, string reason, Guid requestId, CancellationToken cancellationToken)
     {
@@ -1034,6 +1241,11 @@ internal class RecordingCloudAdapter : ICloudAdapter
     {
         ExtraTimeCalls++;
         LastExtraTimeRequestId = requestId;
+        if (FailExtraTime)
+            throw new ApiException(
+                ErrorCodes.CloudUploadFailed,
+                "Simulated extra-time RPC failure",
+                502);
         var now = DateTimeOffset.UtcNow;
         ExtraTimeResult = new(
             participantId,
