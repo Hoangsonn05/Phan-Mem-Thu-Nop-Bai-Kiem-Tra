@@ -432,21 +432,59 @@ public sealed class AccountAuthFlowTests
     }
 
     [Fact]
-    public async Task StudentAccount_WithMisassignedTeacherRole_IsOverriddenToStudentRole()
+    public async Task StudentProfile_WithTeacherRoleMismatch_IsRejected()
     {
         var misassignedProviderId = "99999999-9999-4999-8999-999999999999";
         var mockProvider = new MisassignedRoleIdentityProvider(misassignedProviderId, "23174800117");
         await using var database = await TestDatabase.CreateAsync();
         var harness = CreateHarness(database.Context, mockProvider);
 
-        var result = await harness.Auth.LoginAsync(
+        var ex = await Assert.ThrowsAsync<ApiException>(() => harness.Auth.LoginAsync(
             LoginRequest("23174800117"),
+            "127.0.0.1",
+            CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.ProfileResponseInvalid, ex.Code);
+        Assert.Equal(403, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task ValidProfile_SyncsRole_WhenLocalUserHasDifferentRole()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        // Local user is Teacher
+        var user = new User
+        {
+            Username = "23174800120",
+            DisplayName = "Test User",
+            Email = "23174800120@students.examtransfer.local",
+            Role = UserRole.Teacher,
+            SupabaseAuthUserId = "88888888-8888-4888-8888-888888888888",
+            OrganizationId = TestOrganizationId
+        };
+        database.Context.UsersSet.Add(user);
+        await database.Context.SaveChangesAsync();
+
+        // But Supabase says Student (which is authoritative)
+        var harness = CreateHarness(
+            database.Context,
+            new StaticIdentityProvider(
+                "88888888-8888-4888-8888-888888888888",
+                "23174800120",
+                "23174800120@students.examtransfer.local",
+                UserRole.Student));
+
+        var result = await harness.Auth.LoginAsync(
+            LoginRequest("23174800120"),
             "127.0.0.1",
             CancellationToken.None);
 
         Assert.True(result.Authenticated);
         Assert.Equal(UserRole.Student, result.Role);
-        Assert.Equal("23174800117", result.StudentCode);
+
+        // Verify local user was updated
+        var updatedUser = await database.Context.UsersSet.SingleAsync();
+        Assert.Equal(UserRole.Student, updatedUser.Role);
     }
 
     private sealed class MisassignedRoleIdentityProvider(string providerUserId, string studentCode) : IExternalIdentityProvider

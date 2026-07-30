@@ -346,10 +346,19 @@ public sealed class AccountAuthenticationService(
                 throw InvalidProfileForRole(
                     "Student profile fields are missing or inconsistent.");
         }
-        else if (string.IsNullOrWhiteSpace(external.Email))
+        else
         {
-            throw InvalidProfileForRole(
-                "Supabase Auth returned no verified login email.");
+            if (!string.IsNullOrWhiteSpace(profile.StudentCode))
+            {
+                throw InvalidProfileForRole(
+                    "Non-student profiles must not contain a student code.");
+            }
+
+            if (string.IsNullOrWhiteSpace(external.Email))
+            {
+                throw InvalidProfileForRole(
+                    "Supabase Auth returned no verified login email.");
+            }
         }
 
         var normalizedAccount = NormalizeCode(suppliedAccount)!;

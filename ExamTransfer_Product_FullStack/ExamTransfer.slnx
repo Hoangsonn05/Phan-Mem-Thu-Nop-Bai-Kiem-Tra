@@ -7,6 +7,7 @@
     <Project Path="backend/src/ExamTransfer.LocalServer/ExamTransfer.LocalServer.csproj" />
     <Project Path="backend/src/ExamTransfer.DbMigrator/ExamTransfer.DbMigrator.csproj" />
     <Project Path="backend/src/ExamTransfer.Agent/ExamTransfer.Agent.csproj" />
+    <Project Path="backend/tests/ExamTransfer.OnlyLan.TestClient/ExamTransfer.OnlyLan.TestClient.csproj" />
   </Folder>
   <Folder Name="/frontend/">
     <Project Path="frontend/src/ExamTransfer.Desktop/ExamTransfer.Desktop.csproj" />
