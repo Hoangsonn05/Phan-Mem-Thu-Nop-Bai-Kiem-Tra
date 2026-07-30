@@ -239,7 +239,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async Task LogoutAsync()
     {
-        var stopLocalServer = authState.IsTeacher;
+        var localServerRole = authState.IsTeacher
+            ? authState.CurrentAccount!.Role
+            : (UserRole?)null;
         try
         {
             var deviceId = authState.CurrentAccount?.DeviceId;
@@ -256,11 +258,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            if (stopLocalServer)
+            if (localServerRole.HasValue)
             {
                 try
                 {
-                    await AppServices.LocalServerLifecycle.StopAsync();
+                    await AppServices.LocalServerLifecycle
+                        .StopExistingPackagedServerAsync(localServerRole.Value);
                 }
                 catch (Exception ex)
                 {
@@ -309,15 +312,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void ClearAuthToLogin()
     {
-        var stopLocalServer = authState.IsTeacher;
         accountHeartbeatCts?.Cancel();
         accountHeartbeatCts?.Dispose();
         accountHeartbeatCts = null;
         authState.Clear();
         AppServices.StudentRealtime.StopAsync().SafeFireAndForget("StudentRealtime.Logout");
         AppServices.PublicCloud.Logout();
-        if (stopLocalServer)
-            AppServices.LocalServerLifecycle.StopAsync().SafeFireAndForget("LocalServer.Logout");
+        AppServices.LocalServerLifecycle
+            .StopOwnedAsync()
+            .SafeFireAndForget("LocalServer.StopOwned");
         AppServices.StudentState.Reset();
         api.SetAccountToken(null);
         api.SetParticipantToken(null);

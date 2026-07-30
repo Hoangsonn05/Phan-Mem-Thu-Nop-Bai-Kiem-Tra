@@ -100,12 +100,17 @@ $passwordSecure = Read-Host 'Password' -AsSecureString
 $password = ConvertFrom-SecureStringPlain $passwordSecure
 $token = $null
 $deviceId = 'ACCEPTANCE-' + [Guid]::NewGuid().ToString('N')
+$machineName = if ([string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+    [Environment]::MachineName
+} else {
+    $env:COMPUTERNAME
+}
 try {
     $login = Invoke-ExamApi -Method POST -Path 'api/v1/auth/login' -Body @{
         account = $Account
         password = $password
         deviceId = $deviceId
-        machineName = $env:COMPUTERNAME
+        machineName = $machineName
         appVersion = 'acceptance-script-1.0'
     }
     $token = $login.data.accessToken

@@ -1,3 +1,4 @@
+using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -7,6 +8,7 @@ namespace ExamTransfer.Desktop.Infrastructure;
 
 public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDisposable
 {
+    private readonly RealtimeSessionSubscriptions subscriptions = new();
     private HubConnection? hub;
 
     public bool IsConnected => hub?.State == HubConnectionState.Connected;
@@ -26,7 +28,7 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
             await hub.DisposeAsync();
         }
 
-        hub = new HubConnectionBuilder()
+        var connection = new HubConnectionBuilder()
             .WithUrl(baseUrl.TrimEnd('/') + ContractInfo.HubPath, options =>
             {
                 options.AccessTokenProvider = () => Task.FromResult(token);
@@ -39,8 +41,9 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
                 TimeSpan.FromSeconds(10)
             })
             .Build();
+        hub = connection;
 
-        hub.On<RealtimeEnvelope<TimeExtendedEvent>>(
+        connection.On<RealtimeEnvelope<TimeExtendedEvent>>(
             RealtimeEvents.TimeExtended,
             envelope =>
             {
@@ -64,7 +67,7 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
                      .Where(value => !string.IsNullOrWhiteSpace(value)
                          && value != RealtimeEvents.TimeExtended))
         {
-            hub.On<JsonElement>(eventName!, envelope =>
+            connection.On<JsonElement>(eventName!, envelope =>
             {
                 var sessionId = envelope.TryGetProperty("sessionId", out var sessionElement)
                     && sessionElement.TryGetGuid(out var parsedSessionId)
@@ -91,24 +94,75 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
             });
         }
 
-        hub.Reconnecting += _ =>
+        connection.Reconnecting += _ =>
         {
             EventReceived?.Invoke(this, "Reconnecting");
             return Task.CompletedTask;
         };
-        hub.Reconnected += _ =>
+        connection.Reconnected += async _ =>
         {
-            EventReceived?.Invoke(this, "Reconnected");
-            return Task.CompletedTask;
+            try
+            {
+                await subscriptions.RestoreAsync(
+                    (sessionId, cancellationToken) => connection.InvokeAsync(
+                        "SubscribeSession",
+                        sessionId,
+                        cancellationToken),
+                    CancellationToken.None);
+                EventReceived?.Invoke(this, "Reconnected");
+            }
+            catch (Exception ex)
+            {
+                FrontendLogger.Log(ex, "RealtimeService.Resubscribe");
+                EventReceived?.Invoke(this, "ResubscribeFailed");
+            }
         };
-        hub.Closed += _ =>
+        connection.Closed += _ =>
         {
             EventReceived?.Invoke(this, "Disconnected");
             return Task.CompletedTask;
         };
 
-        await hub.StartAsync(ct);
+        await connection.StartAsync(ct);
+        await subscriptions.RestoreAsync(
+            (sessionId, cancellationToken) => connection.InvokeAsync(
+                "SubscribeSession",
+                sessionId,
+                cancellationToken),
+            ct);
         EventReceived?.Invoke(this, "Connected");
+    }
+
+    public async Task SubscribeSessionAsync(
+        Guid sessionId,
+        CancellationToken ct = default)
+    {
+        if (sessionId == Guid.Empty)
+            throw new ArgumentException("Session id is required.", nameof(sessionId));
+        var connection = hub;
+        await subscriptions.SubscribeAsync(
+            sessionId,
+            connection?.State == HubConnectionState.Connected,
+            (id, cancellationToken) => connection!.InvokeAsync(
+                "SubscribeSession",
+                id,
+                cancellationToken),
+            ct);
+    }
+
+    public async Task UnsubscribeSessionAsync(
+        Guid sessionId,
+        CancellationToken ct = default)
+    {
+        var connection = hub;
+        await subscriptions.UnsubscribeAsync(
+            sessionId,
+            connection?.State == HubConnectionState.Connected,
+            (id, cancellationToken) => connection!.InvokeAsync(
+                "UnsubscribeSession",
+                id,
+                cancellationToken),
+            ct);
     }
 
     public async Task DisconnectAsync(CancellationToken ct = default)
@@ -128,5 +182,57 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
             await hub.DisposeAsync();
             hub = null;
         }
+    }
+}
+
+internal sealed class RealtimeSessionSubscriptions
+{
+    private readonly object gate = new();
+    private readonly HashSet<Guid> sessionIds = [];
+
+    public bool Add(Guid sessionId)
+    {
+        lock (gate)
+            return sessionIds.Add(sessionId);
+    }
+
+    public bool Remove(Guid sessionId)
+    {
+        lock (gate)
+            return sessionIds.Remove(sessionId);
+    }
+
+    public async Task SubscribeAsync(
+        Guid sessionId,
+        bool isConnected,
+        Func<Guid, CancellationToken, Task> subscribe,
+        CancellationToken cancellationToken)
+    {
+        Add(sessionId);
+        if (isConnected)
+            await subscribe(sessionId, cancellationToken);
+    }
+
+    public async Task UnsubscribeAsync(
+        Guid sessionId,
+        bool isConnected,
+        Func<Guid, CancellationToken, Task> unsubscribe,
+        CancellationToken cancellationToken)
+    {
+        Remove(sessionId);
+        if (isConnected)
+            await unsubscribe(sessionId, cancellationToken);
+    }
+
+    public async Task RestoreAsync(
+        Func<Guid, CancellationToken, Task> subscribe,
+        CancellationToken cancellationToken)
+    {
+        Guid[] snapshot;
+        lock (gate)
+            snapshot = [.. sessionIds];
+
+        foreach (var sessionId in snapshot)
+            await subscribe(sessionId, cancellationToken);
     }
 }

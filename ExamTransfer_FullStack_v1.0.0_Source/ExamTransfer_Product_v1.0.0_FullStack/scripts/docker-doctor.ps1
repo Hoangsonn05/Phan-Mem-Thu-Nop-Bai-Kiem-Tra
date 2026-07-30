@@ -58,13 +58,14 @@ if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
 & docker info *> $null
 if ($LASTEXITCODE -ne 0 -and $StartDockerDesktop) {
     $desktopCandidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop\Docker Desktop.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Docker\Docker\Docker Desktop.exe'),
         (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe')
     ) | Where-Object { Test-Path -LiteralPath $_ }
 
     if ($desktopCandidates.Count -gt 0) {
         Write-Host "`nStarting Docker Desktop..." -ForegroundColor Yellow
-        Start-Process -FilePath $desktopCandidates[0] | Out-Null
+        Start-Process -FilePath $desktopCandidates[0] -WindowStyle Hidden | Out-Null
         for ($attempt = 1; $attempt -le 60; $attempt++) {
             Start-Sleep -Seconds 2
             & docker info *> $null

@@ -18,6 +18,7 @@ function Refresh-CurrentProcessPath {
 
 function Get-KnownDockerCliPath {
     $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop\resources\bin\docker.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Docker\Docker\resources\bin\docker.exe'),
         (Join-Path $env:ProgramFiles 'Docker\Docker\resources\bin\docker.exe')
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }

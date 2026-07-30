@@ -175,6 +175,86 @@ public sealed class FinalCloudSourceCompatibilityTests
 public sealed class PublicCloudTeacherMutationTests
 {
     [Fact]
+    public void Projection_roundtrip_sends_non_empty_teacher_mutation_request_id()
+    {
+        var script = PublicCloudTestHarness.ReadRepositoryFile(
+            "backend/scripts/test-public-cloud-projection-roundtrip.ps1");
+
+        Assert.Contains(
+            "$mutationRequestId = [Guid]::NewGuid()",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "mutationRequestId = $mutationRequestId",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-Body $approveBody",
+            script,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "-Body '{}'",
+            script,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Teacher_mutation_acceptance_sends_a_non_empty_request_id_for_every_call()
+    {
+        var script = PublicCloudTestHarness.ReadRepositoryFile(
+            "backend/scripts/test-public-cloud-teacher-mutations.ps1");
+        var calls = new[]
+        {
+            (
+                Variable: "approveMutationRequestId",
+                Path: "api/v1/sessions/$SessionId/participants/$ApproveParticipantId/approve"),
+            (
+                Variable: "rejectMutationRequestId",
+                Path: "api/v1/sessions/$SessionId/participants/$RejectParticipantId/reject"),
+            (
+                Variable: "extraTimeMutationRequestId",
+                Path: "api/v1/sessions/$SessionId/participants/$ExtraTimeParticipantId/extra-time"),
+            (
+                Variable: "resubmitMutationRequestId",
+                Path: "api/v1/participants/$ResubmitParticipantId/allow-resubmit"),
+            (
+                Variable: "submissionRejectMutationRequestId",
+                Path: "api/v1/submissions/$SubmissionId/reject")
+        };
+
+        foreach (var call in calls)
+        {
+            Assert.Contains(
+                $"${call.Variable} = [Guid]::NewGuid()",
+                script,
+                StringComparison.Ordinal);
+            var invocationIndex = script.IndexOf(
+                $"Invoke-LocalMutation \"{call.Path}\" @{{",
+                StringComparison.Ordinal);
+            Assert.True(invocationIndex >= 0, $"Missing mutation call for {call.Path}.");
+            var bodyEndIndex = script.IndexOf(
+                "} | Out-Null",
+                invocationIndex,
+                StringComparison.Ordinal);
+            Assert.True(bodyEndIndex > invocationIndex, $"Missing request body end for {call.Path}.");
+            var requestIdIndex = script.IndexOf(
+                $"mutationRequestId = ${call.Variable}",
+                invocationIndex,
+                StringComparison.Ordinal);
+            Assert.True(
+                requestIdIndex > invocationIndex && requestIdIndex < bodyEndIndex,
+                $"Mutation request ID is outside the request body for {call.Path}.");
+        }
+
+        Assert.Equal(
+            calls.Length,
+            script.Split("MutationRequestId = [Guid]::NewGuid()", StringSplitOptions.None).Length - 1);
+        Assert.Equal(
+            calls.Length,
+            script.Split("mutationRequestId =", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
     public void Migration_exposes_narrow_security_definer_rpcs_with_authenticated_only_grants()
     {
         var sql = PublicCloudTestHarness.ReadRepositoryFile(

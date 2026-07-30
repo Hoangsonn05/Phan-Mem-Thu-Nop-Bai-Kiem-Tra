@@ -45,6 +45,20 @@ public sealed class UnifiedAuthenticationService(
             cancellationToken);
         var authoritative = cloudIdentity.Account;
 
+        // -----------------------------------------------------------------------------
+        // GUARD CLAUSE: Tự động khôi phục role cho Học sinh nếu xảy ra Data Drift trên Cloud
+        // -----------------------------------------------------------------------------
+        if (authoritative.Role == UserRole.Teacher &&
+            !string.IsNullOrWhiteSpace(authoritative.StudentCode))
+        {
+            FrontendLogger.LogWarning(
+                $"[RoleGuard] Phát hiện Data Drift: Tài khoản {authoritative.Username} (Mã SV: {authoritative.StudentCode}) " +
+                "mang role 'Teacher' trên Cloud profile. Tiến hành override tạm thời về 'Student' để ngăn crash.");
+
+            authoritative = authoritative with { Role = UserRole.Student };
+        }
+        // -----------------------------------------------------------------------------
+
         if (authoritative.Role == UserRole.Student)
         {
             return new(
@@ -61,7 +75,7 @@ public sealed class UnifiedAuthenticationService(
             cancellationToken);
         if (lifecycle.Status is not ("SERVER_HEALTHY" or "SERVER_STARTED"))
         {
-            await localServer.StopAsync(CancellationToken.None);
+            await localServer.StopOwnedAsync(CancellationToken.None);
             throw new InvalidOperationException(
                 $"{lifecycle.Status}: {lifecycle.Message}");
         }
@@ -101,7 +115,7 @@ public sealed class UnifiedAuthenticationService(
         {
             backend.SetAccountToken(null);
             publicCloud.Logout();
-            await localServer.StopAsync(CancellationToken.None);
+            await localServer.StopOwnedAsync(CancellationToken.None);
             throw;
         }
     }

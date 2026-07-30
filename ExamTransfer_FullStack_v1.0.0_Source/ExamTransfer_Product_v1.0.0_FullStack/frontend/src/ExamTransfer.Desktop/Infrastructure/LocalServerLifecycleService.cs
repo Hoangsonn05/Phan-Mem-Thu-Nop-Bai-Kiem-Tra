@@ -171,7 +171,7 @@ public sealed class LocalServerLifecycleService
         }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken = default)
+    public async Task StopOwnedAsync(CancellationToken cancellationToken = default)
     {
         ILocalServerProcess? process;
         lock (processGate)
@@ -181,11 +181,20 @@ public sealed class LocalServerLifecycleService
         }
         if (process is not null && !process.HasExited)
             await process.StopAsync(cancellationToken);
+    }
 
-        // A verified server can predate this client process (for example after an
-        // upgrade or client restart). Stop only the packaged executable so logout
-        // cannot leave Teacher/Admin listeners running or terminate an unrelated
-        // process that happens to use the same ports.
+    public async Task StopExistingPackagedServerAsync(
+        UserRole authenticatedRole,
+        CancellationToken cancellationToken = default)
+    {
+        if (authenticatedRole is not (UserRole.Teacher or UserRole.Admin))
+            throw new UnauthorizedAccessException(
+                "Only an authenticated Teacher or Admin may stop Local Server.");
+
+        await StopOwnedAsync(cancellationToken);
+
+        // This explicit, role-authorized path also handles a verified packaged
+        // server that predates the current Teacher/Admin desktop process.
         await runtime.StopExactAsync(ExpectedServerExecutable(), cancellationToken);
     }
 

@@ -21,7 +21,7 @@ public partial class App : Application
     {
         ViewModels.AppServices.SubmissionRecovery.Dispose();
         ViewModels.AppServices.PublicRealtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        ViewModels.AppServices.LocalServerLifecycle.StopAsync().GetAwaiter().GetResult();
+        ViewModels.AppServices.LocalServerLifecycle.StopOwnedAsync().GetAwaiter().GetResult();
         base.OnExit(e);
     }
 

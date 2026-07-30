@@ -23,6 +23,7 @@ $releaseManifest = Join-Path $releaseRoot 'release-manifest.json'
 $installerOutput = Join-Path $root 'artifacts\installer'
 $publicConfigPackaging = Join-Path $root 'scripts\public-config-packaging.ps1'
 $publicConfigPackagingTests = Join-Path $root 'scripts\test-public-config-packaging.ps1'
+$dockerPackagingContractTests = Join-Path $root 'scripts\test-docker-packaging-contract.ps1'
 $installerGuardTests = Join-Path $root 'scripts\test-installer-localserver-guard.ps1'
 $installerCleanInstallTest = Join-Path $root 'scripts\test-installer-public-config-clean-install.ps1'
 
@@ -35,7 +36,8 @@ function Require-File([string]$Path) {
 function Find-InnoCompiler {
     $candidates = @(@(
             (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
-            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:LocalAppData 'Programs\Inno Setup 6\ISCC.exe')
         ) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) })
 
     if ($candidates.Count -eq 0) {
@@ -52,6 +54,7 @@ Require-File $frontendVerify
 Require-File $installerScript
 Require-File $publicConfigPackaging
 Require-File $publicConfigPackagingTests
+Require-File $dockerPackagingContractTests
 Require-File $installerGuardTests
 Require-File $installerCleanInstallTest
 . $publicConfigPackaging
@@ -72,6 +75,14 @@ $expectedPublicCloudConfig = New-PublicCloudConfig `
     -File $publicConfigPackagingTests
 if ($LASTEXITCODE -ne 0) {
     throw 'Public-config packaging preflight tests failed before release creation.'
+}
+
+& powershell `
+    -NoProfile `
+    -ExecutionPolicy Bypass `
+    -File $dockerPackagingContractTests
+if ($LASTEXITCODE -ne 0) {
+    throw 'Docker packaging contract tests failed before release creation.'
 }
 
 $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue

@@ -455,7 +455,8 @@ public sealed class UnifiedAuthenticationTests
                 default));
 
         Assert.Equal(1, runtime.StartCount);
-        Assert.Equal(1, runtime.StopCount);
+        Assert.Equal(1, runtime.OwnedStopCount);
+        Assert.Equal(0, runtime.StopExactCount);
         Assert.False(runtime.Healthy);
     }
 
@@ -779,7 +780,8 @@ public sealed class UnifiedAuthenticationTests
         private bool healthy;
         public bool BecomeHealthyAfterStart { get; init; }
         public int StartCount { get; private set; }
-        public int StopCount { get; private set; }
+        public int OwnedStopCount { get; private set; }
+        public int StopExactCount { get; private set; }
         public bool Healthy => healthy;
 
         public Task<LocalServerProbeResult> ProbeAsync(
@@ -810,7 +812,11 @@ public sealed class UnifiedAuthenticationTests
         {
             StartCount++;
             healthy = BecomeHealthyAfterStart;
-            return new Process();
+            return new Process(() =>
+            {
+                OwnedStopCount++;
+                healthy = false;
+            });
         }
 
         public Task StopExactAsync(
@@ -818,18 +824,22 @@ public sealed class UnifiedAuthenticationTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            StopCount++;
+            StopExactCount++;
             healthy = false;
             return Task.CompletedTask;
         }
 
-        private sealed class Process : ILocalServerProcess
+        private sealed class Process(Action onStop) : ILocalServerProcess
         {
             public bool HasExited { get; private set; }
             public int? ExitCode => HasExited ? 0 : null;
             public Task StopAsync(CancellationToken cancellationToken)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (HasExited)
+                    return Task.CompletedTask;
                 HasExited = true;
+                onStop();
                 return Task.CompletedTask;
             }
         }

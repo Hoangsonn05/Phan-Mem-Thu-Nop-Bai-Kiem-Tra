@@ -17,6 +17,15 @@ public sealed class AccountAuthFlowTests
 {
     private const string TestOrganizationId = "516543f3-ca00-480e-87ca-683243ffdc0b";
 
+    // Supabase Auth always issues UUID user ids. ProvisionUserAsync enforces this
+    // (Guid.TryParse), so test doubles must use valid GUIDs, not string labels.
+    private const string TeacherProviderId = "11111111-1111-4111-8111-111111111111";
+    private const string StudentProviderId = "22222222-2222-4222-8222-222222222222";
+    private const string Teacher2ProviderId = "12121212-1212-4121-8121-121212121212";
+    private const string Teacher3ProviderId = "33333333-3333-4333-8333-333333333333";
+    private const string InactiveProviderId = "44444444-4444-4444-8444-444444444444";
+    private const string PasswordStudentProviderId = "55555555-5555-4555-8555-555555555555";
+
     [Fact]
     public async Task TeacherLogin_IssuesAccountTokenAndSession()
     {
@@ -27,13 +36,13 @@ public sealed class AccountAuthFlowTests
             DisplayName = "Teacher One",
             Email = "teacher@example.test",
             Role = UserRole.Teacher,
-            SupabaseAuthUserId = "provider-teacher",
+            SupabaseAuthUserId = TeacherProviderId,
             OrganizationId = "org-1"
         };
         database.Context.UsersSet.Add(teacher);
         await database.Context.SaveChangesAsync();
 
-        var harness = CreateHarness(database.Context, new StaticIdentityProvider("provider-teacher", "teacher1", "teacher@example.test"));
+        var harness = CreateHarness(database.Context, new StaticIdentityProvider(TeacherProviderId, "teacher1", "teacher@example.test"));
         var result = await harness.Auth.LoginAsync(LoginRequest("teacher1"), "127.0.0.1", CancellationToken.None);
 
         Assert.True(result.Authenticated);
@@ -59,7 +68,7 @@ public sealed class AccountAuthFlowTests
         var harness = CreateHarness(
             database.Context,
             new StaticIdentityProvider(
-                "provider-student",
+                StudentProviderId,
                 "23174800110",
                 "23174800110@students.examtransfer.local",
                 UserRole.Student));
@@ -143,7 +152,7 @@ public sealed class AccountAuthFlowTests
             Username = "teacher2",
             DisplayName = "Teacher Two",
             Role = UserRole.Teacher,
-            SupabaseAuthUserId = "provider-teacher-2",
+            SupabaseAuthUserId = Teacher2ProviderId,
             OrganizationId = "org-1"
         };
         database.Context.UsersSet.Add(user);
@@ -171,13 +180,13 @@ public sealed class AccountAuthFlowTests
             Username = "teacher3",
             DisplayName = "Teacher Three",
             Role = UserRole.Teacher,
-            SupabaseAuthUserId = "provider-teacher-3",
+            SupabaseAuthUserId = Teacher3ProviderId,
             OrganizationId = "org-1"
         };
         database.Context.UsersSet.Add(teacher);
         await database.Context.SaveChangesAsync();
 
-        var harness = CreateHarness(database.Context, new StaticIdentityProvider("provider-teacher-3", "teacher3", null));
+        var harness = CreateHarness(database.Context, new StaticIdentityProvider(Teacher3ProviderId, "teacher3", null));
         var login = await harness.Auth.LoginAsync(LoginRequest("teacher3"), null, CancellationToken.None);
         var principal = harness.Tokens.ValidateAccountToken(login.AccessToken!);
         Assert.NotNull(principal);
@@ -301,12 +310,12 @@ public sealed class AccountAuthFlowTests
             Username = "inactive",
             DisplayName = "Inactive User",
             Role = UserRole.Teacher,
-            SupabaseAuthUserId = "provider-inactive",
+            SupabaseAuthUserId = InactiveProviderId,
             IsActive = false
         });
         await database.Context.SaveChangesAsync();
 
-        var harness = CreateHarness(database.Context, new StaticIdentityProvider("provider-inactive", "inactive", null, UserRole.Teacher, false));
+        var harness = CreateHarness(database.Context, new StaticIdentityProvider(InactiveProviderId, "inactive", null, UserRole.Teacher, false));
         var ex = await Assert.ThrowsAsync<ApiException>(() => harness.Auth.LoginAsync(LoginRequest("inactive"), null, CancellationToken.None));
 
         Assert.Equal(ErrorCodes.AccountInactive, ex.Code);
@@ -352,17 +361,25 @@ public sealed class AccountAuthFlowTests
             if (!string.Equals(request.Password, "correct-password", StringComparison.Ordinal))
                 throw new ApiException(ErrorCodes.InvalidCredentials, "Invalid credentials.", 401);
 
+            // Real Supabase Auth always returns a verified email; teacher/admin
+            // provisioning requires one. Synthesize a default when a caller omits it.
+            var resolvedEmail = string.IsNullOrWhiteSpace(email)
+                ? $"{account}@teachers.examtransfer.local"
+                : email;
+
             return Task.FromResult(new ExternalIdentityResult(
                 providerUserId,
                 account,
-                email,
+                resolvedEmail,
                 "refresh-token",
                 DateTimeOffset.UtcNow.AddHours(1),
                 new ExternalApplicationProfile(
                     providerUserId,
                     TestOrganizationId,
                     account,
-                    role == UserRole.Student ? "Nguyen Tuan Anh" : null,
+                    // Supabase profiles always carry a display name regardless of
+                    // role; ProvisionUserAsync rejects a blank one for every role.
+                    role == UserRole.Student ? "Nguyen Tuan Anh" : account,
                     role == UserRole.Student ? account : null,
                     role.ToString(),
                     isActive,
@@ -384,13 +401,13 @@ public sealed class AccountAuthFlowTests
                 throw new ApiException(ErrorCodes.InvalidCredentials, "Invalid credentials.", 401);
 
             return Task.FromResult(new ExternalIdentityResult(
-                "provider-password-student",
+                PasswordStudentProviderId,
                 "23174800110",
                 "23174800110@students.examtransfer.local",
                 "refresh-token",
                 DateTimeOffset.UtcNow.AddHours(1),
                 new ExternalApplicationProfile(
-                    "provider-password-student",
+                    PasswordStudentProviderId,
                     TestOrganizationId,
                     "23174800110",
                     "Nguyen Tuan Anh",
@@ -411,6 +428,49 @@ public sealed class AccountAuthFlowTests
             ChangeCalls++;
             LastNewPassword = request.NewPassword;
             return Task.CompletedTask;
+        }
+    }
+
+    [Fact]
+    public async Task StudentAccount_WithMisassignedTeacherRole_IsOverriddenToStudentRole()
+    {
+        var misassignedProviderId = "99999999-9999-4999-8999-999999999999";
+        var mockProvider = new MisassignedRoleIdentityProvider(misassignedProviderId, "23174800117");
+        await using var database = await TestDatabase.CreateAsync();
+        var harness = CreateHarness(database.Context, mockProvider);
+
+        var result = await harness.Auth.LoginAsync(
+            LoginRequest("23174800117"),
+            "127.0.0.1",
+            CancellationToken.None);
+
+        Assert.True(result.Authenticated);
+        Assert.Equal(UserRole.Student, result.Role);
+        Assert.Equal("23174800117", result.StudentCode);
+    }
+
+    private sealed class MisassignedRoleIdentityProvider(string providerUserId, string studentCode) : IExternalIdentityProvider
+    {
+        public Task<ExternalIdentityResult> AuthenticateAsync(AccountLoginRequest request, CancellationToken cancellationToken)
+        {
+            var profile = new ExternalApplicationProfile(
+                providerUserId,
+                TestOrganizationId,
+                studentCode,
+                "Hoc Sinh Test",
+                studentCode,
+                "Teacher",
+                true,
+                new DateOnly(2005, 5, 9),
+                false);
+            return Task.FromResult(new ExternalIdentityResult(
+                providerUserId,
+                studentCode,
+                $"{studentCode}@students.examtransfer.local",
+                "refresh-token",
+                DateTimeOffset.UtcNow.AddHours(1),
+                profile,
+                "mock-access-token"));
         }
     }
 

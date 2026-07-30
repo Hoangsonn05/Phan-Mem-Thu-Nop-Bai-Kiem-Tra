@@ -25,6 +25,25 @@ public sealed class ExamHub(ISessionService sessions, IControlService control, A
         await base.OnConnectedAsync();
     }
 
+    public async Task SubscribeSession(Guid sessionId)
+    {
+        EnsureTeacherOrAdmin();
+        await EnsureSessionExistsAsync(sessionId);
+        await Groups.AddToGroupAsync(
+            Context.ConnectionId,
+            SessionGroup(sessionId),
+            Context.ConnectionAborted);
+    }
+
+    public async Task UnsubscribeSession(Guid sessionId)
+    {
+        EnsureTeacherOrAdmin();
+        await Groups.RemoveFromGroupAsync(
+            Context.ConnectionId,
+            SessionGroup(sessionId),
+            Context.ConnectionAborted);
+    }
+
     public async Task Heartbeat(HeartbeatRequest request)
     {
         EnsureIds(out var sid, out var pid, out var deviceId);
@@ -69,6 +88,29 @@ public sealed class ExamHub(ISessionService sessions, IControlService control, A
 
         return sessionValid && participantValid;
     }
+
+    private void EnsureTeacherOrAdmin()
+    {
+        var accountIdentity = Context.User?.Identities.FirstOrDefault(identity =>
+            identity.IsAuthenticated
+            && string.Equals(
+                identity.AuthenticationType,
+                ExamTransferAuthSchemes.Account,
+                StringComparison.Ordinal));
+        var role = accountIdentity?.FindFirst(ClaimTypes.Role)?.Value;
+        if (role is not (nameof(UserRole.Teacher) or nameof(UserRole.Admin)))
+            throw new HubException(ErrorCodes.Unauthorized);
+    }
+
+    private async Task EnsureSessionExistsAsync(Guid sessionId)
+    {
+        if (sessionId == Guid.Empty
+            || !await db.ExamSessionsSet
+                .AsNoTracking()
+                .AnyAsync(x => x.Id == sessionId, Context.ConnectionAborted))
+            throw new HubException(ErrorCodes.NotFound);
+    }
+
     private void EnsureIds(out Guid sessionId, out Guid participantId, out string deviceId)
     {
         if (!TryIds(out sessionId, out participantId)) throw new HubException(ErrorCodes.Unauthorized);

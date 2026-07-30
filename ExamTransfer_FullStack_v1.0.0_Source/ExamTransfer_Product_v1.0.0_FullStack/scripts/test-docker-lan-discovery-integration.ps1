@@ -10,6 +10,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'docker-common.ps1')
 Assert-DockerEngine
+$containerDiscoveryPort = 40550
+if ($UseHostNetwork -and $HostUdpPort -ne $containerDiscoveryPort) {
+    throw "Host networking requires fixed UDP $containerDiscoveryPort; omit -UseHostNetwork when using an isolated host port."
+}
 
 function Get-EnvironmentValue([string]$Path, [string]$Name) {
     $line = Get-Content -LiteralPath $Path |
@@ -103,7 +107,7 @@ $testKey = [Convert]::ToBase64String($keyBytes)
     "Server__PreferredIp=$ExpectedHostIp",
     'Discovery__Enabled=true',
     'Discovery__Protocol=UdpBroadcast',
-    "Discovery__Port=$HostUdpPort",
+    "Discovery__Port=$containerDiscoveryPort",
     "LanAccess__AllowedCidrs__0=$allowedCidr",
     'Storage__RootPath=/data/ExamTransfer',
     'Storage__MinFreeBytes=1',
@@ -123,15 +127,17 @@ if ($trustDockerNat) {
 
 $previous = @{
     DOTNET_ENVIRONMENT = $env:DOTNET_ENVIRONMENT
+    Logging__LogLevel__Microsoft = $env:Logging__LogLevel__Microsoft
     EXAMTRANSFER_ALLOW_TEST_FIXTURE = $env:EXAMTRANSFER_ALLOW_TEST_FIXTURE
     EXAMTRANSFER_Storage__RootPath = $env:EXAMTRANSFER_Storage__RootPath
 }
 try {
     $env:DOTNET_ENVIRONMENT = 'Testing'
+    $env:Logging__LogLevel__Microsoft = 'Warning'
     $env:EXAMTRANSFER_ALLOW_TEST_FIXTURE = '1'
     $env:EXAMTRANSFER_Storage__RootPath = $storageRoot
     & dotnet run --project (Join-Path $projectRoot 'backend\src\ExamTransfer.DbMigrator\ExamTransfer.DbMigrator.csproj') `
-        --configuration Debug --no-build
+        --configuration Debug
     if ($LASTEXITCODE -ne 0) { throw 'Could not create the empty isolated LAN discovery database.' }
 
     $mount = "$($storageRoot):/data/ExamTransfer"
@@ -144,7 +150,7 @@ try {
         }
         $dockerArguments += @(
             '--publish', "${HostTcpPort}:${HostTcpPort}/tcp",
-            '--publish', "${HostUdpPort}:${HostUdpPort}/udp")
+            '--publish', "${HostUdpPort}:${containerDiscoveryPort}/udp")
     }
     $dockerArguments += @(
         '--volume', $mount,
@@ -223,8 +229,22 @@ try {
         [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process')
     }
     if ($containerName.StartsWith('examtransfer-discovery-', [StringComparison]::Ordinal)) {
-        & docker rm --force $containerName *> $null
-        & docker volume rm $runtimeVolume *> $null
+        try {
+            $containers = @(& docker ps --all --format '{{.Names}}' 2>$null)
+            if ($containers -contains $containerName) {
+                & docker rm --force $containerName *> $null
+            }
+        } catch {
+            Write-Warning "Could not remove isolated container $containerName during cleanup."
+        }
+        try {
+            $volumes = @(& docker volume ls --format '{{.Name}}' 2>$null)
+            if ($volumes -contains $runtimeVolume) {
+                & docker volume rm $runtimeVolume *> $null
+            }
+        } catch {
+            Write-Warning "Could not remove isolated volume $runtimeVolume during cleanup."
+        }
     }
     $resolvedTemp = Resolve-Path -LiteralPath $tempRoot -ErrorAction SilentlyContinue
     if ($resolvedTemp -and $resolvedTemp.Path.StartsWith(

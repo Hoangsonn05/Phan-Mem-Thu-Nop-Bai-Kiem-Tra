@@ -30,9 +30,9 @@ thử nghiệm khi có `-Cleanup`.
      Docker `172.16.x`–`172.18.x`, loopback hoặc public IP.
    - `LanAccess__AllowedCidrs__N`: một hoặc nhiều CIDR private, không dùng
      `0.0.0.0/0`.
-   - TCP `5048` và UDP `5050` không bị tiến trình khác chiếm.
+   - TCP `5048` và UDP `40550` không bị tiến trình khác chiếm.
 
-Container bind UDP trên `0.0.0.0:5050`, nhưng response discovery chỉ được phát
+Container bind UDP trên `0.0.0.0:40550`, nhưng response discovery chỉ được phát
 khi có phòng LanOnly đang mở và `PreferredIp` hợp lệ. Backend không tự chọn IP
 bridge làm fallback.
 
@@ -59,7 +59,7 @@ LanAccess__TrustDockerDesktopNat=false
 
 Nếu kiểm thử thực tế chứng minh Docker Desktop thay source IP:
 
-1. Giới hạn Windows Firewall cho TCP 5048 và UDP 5050 bằng profile `Private`
+1. Giới hạn Windows Firewall cho TCP 5048 và UDP 40550 bằng profile `Private`
    và `LocalSubnet`.
 2. Thêm đúng CIDR gateway Docker vào
    `LanAccess__TrustedDockerGatewayCidrs__N`.
@@ -77,7 +77,7 @@ Administrator và chạy lệnh sau khi backend container đã được khởi �
 .\scripts\setup-docker-firewall.ps1 -ConfigureDockerDesktopNat
 ```
 
-Script tạo/cập nhật đúng hai rule TCP 5048 và UDP 5050, chỉ cho phép
+Script tạo/cập nhật đúng hai rule TCP 5048 và UDP 40550, chỉ cho phép
 `Private` + `LocalSubnet`, đọc gateway từ chính container đang chạy, rồi chỉ
 ghi CIDR `/32` vào `.env.docker`. Script không in secret. Sau đó restart backend
 và chạy:

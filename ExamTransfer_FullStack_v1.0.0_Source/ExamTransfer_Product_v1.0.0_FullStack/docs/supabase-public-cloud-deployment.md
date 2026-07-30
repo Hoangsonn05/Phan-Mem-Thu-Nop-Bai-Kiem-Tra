@@ -2,9 +2,9 @@
 
 ## Release gate
 
-PublicCloud schema compatibility is `19`. LAN remains usable when cloud is
+PublicCloud schema compatibility is `23`. LAN remains usable when cloud is
 unconfigured, offline, or incompatible. Both cloud workers stop when the
-capability RPC does not report schema 15, all critical RPCs, `exam-archives`,
+capability RPC does not report schema 23, all critical RPCs, `exam-archives`,
 and `public-submission-archives`.
 
 Do not label a build production-ready until the staging roundtrip scripts have
@@ -65,6 +65,11 @@ fields.
 `20260727122721_session_first_open_request.sql` reaches schema 19 with
 classless OpenRequest admission, atomic room-code joining, and guarded
 manifest/download access.
+`20260727133120_open_request_supervision_completion.sql` reaches schema 20,
+`20260727140650_open_request_tenant_compatibility_final.sql` reaches schema 21,
+`20260728113000_quiz_grading_and_score10.sql` reaches schema 22, and
+`20260729002024_public_cloud_quiz_grading_privacy.sql` reaches the required
+schema 23 with the final grading/privacy capability contract.
 
 Authorized staging deployment commands (not run by this implementation turn):
 
@@ -114,6 +119,10 @@ Never place a service-role or secret key on a student/teacher desktop.
 | `20260722161450` | 14 | Ownership completion, archive validation, private Realtime, capability RPC | Forward-fixes global indexes; trigger ignores Lan rows | Determine with `migration list` |
 | `20260723043859` | 15 | Teacher mutation RPCs/idempotency and projection completion | Depends on schema 14 and existing PublicCloud ownership columns | Determine with `migration list` |
 | `20260727122721` | 19 | OpenRequest admission and room-first PublicCloud joining | Forward-only; requires all schema 18 migrations | Determine with `migration list` |
+| `20260727133120` | 20 | OpenRequest supervision and device controls | Requires schema 19 | Determine with `migration list` |
+| `20260727140650` | 21 | Tenant-compatible OpenRequest contract | Requires schema 20 | Determine with `migration list` |
+| `20260728113000` | 22 | Quiz grading and score normalization | Requires schema 21 | Determine with `migration list` |
+| `20260729002024` | 23 | Quiz grading privacy and final capability contract | Required by ExamTransfer v1.2.0 | Determine with `migration list` |
 
 If `20260722141147` is pending remotely, use the corrected source migration.
 If it is already applied, do not rewrite remote history or use migration

@@ -1,8 +1,9 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Windows.Input;
 using ExamTransfer.Desktop.Core;
+using ExamTransfer.Desktop.Infrastructure;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Shared.Contracts;
 
@@ -1297,13 +1298,22 @@ public sealed record CloudProjectionReadinessView(
 public sealed class LobbyViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
+    private readonly IRealtimeService realtime;
+    private readonly TeacherRealtimeSessionBinding realtimeBinding;
+    private readonly RealtimeRefreshDebouncer realtimeRefresh =
+        new(TimeSpan.FromMilliseconds(150), "Lobby.RealtimeRefresh");
     private SessionSummaryDto? selectedSession;
     private ParticipantDto? selectedParticipant;
     private string message = "Kỳ thi sẽ bắt đầu trong 5 phút. Vui lòng kiểm tra thiết bị.";
 
-    public LobbyViewModel(IBackendClient api)
+    public LobbyViewModel(
+        IBackendClient api,
+        IRealtimeService? realtime = null)
     {
         this.api = api;
+        this.realtime = realtime ?? new RealtimeService(AppServices.BaseUrl);
+        realtimeBinding = new TeacherRealtimeSessionBinding(this.realtime);
+        this.realtime.NotificationReceived += OnRealtimeNotification;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadSessionCommand = new AsyncRelayCommand(LoadSessionAsync, () => !IsBusy && SelectedSession is not null);
         ApproveCommand = new AsyncRelayCommand(ApproveAsync, () => !IsBusy && SelectedParticipant is not null);
@@ -1315,7 +1325,19 @@ public sealed class LobbyViewModel : ProductPageBase
 
     public ObservableCollection<SessionSummaryDto> Sessions { get; } = new();
     public ObservableCollection<ParticipantDto> Participants { get; } = new();
-    public SessionSummaryDto? SelectedSession { get => selectedSession; set { if (Set(ref selectedSession, value)) RaiseCommands(); } }
+    public SessionSummaryDto? SelectedSession
+    {
+        get => selectedSession;
+        set
+        {
+            if (!Set(ref selectedSession, value))
+                return;
+            realtimeBinding
+                .SelectAsync(value?.Id, DisposeToken)
+                .SafeFireAndForget("Lobby.SelectRealtimeSession");
+            RaiseCommands();
+        }
+    }
     public ParticipantDto? SelectedParticipant { get => selectedParticipant; set { if (Set(ref selectedParticipant, value)) RaiseCommands(); } }
     public string Message { get => message; set => Set(ref message, value); }
     public ICommand RefreshCommand { get; }
@@ -1333,7 +1355,12 @@ public sealed class LobbyViewModel : ProductPageBase
             var data = ApiGuard.Require(await api.GetSessionsAsync(token));
             Sessions.ReplaceWith(data.Items.Where(x => x.Status is SessionStatus.Waiting or SessionStatus.Draft or SessionStatus.Distributing));
             SelectedSession ??= Sessions.FirstOrDefault();
-            if (SelectedSession is not null) await LoadSessionCoreAsync(token);
+            await realtimeBinding.EnsureAsync(
+                AppServices.AuthState.AccountAccessToken,
+                SelectedSession?.Id,
+                token);
+            if (SelectedSession is not null)
+                await LoadSessionCoreAsync(token);
         });
     }
 
@@ -1401,6 +1428,40 @@ public sealed class LobbyViewModel : ProductPageBase
         SelectedParticipant = updated;
     }
 
+    private void OnRealtimeNotification(
+        object? sender,
+        StudentRealtimeNotification notification)
+    {
+        if (IsDisposed
+            || SelectedSession is not { } session
+            || notification.SessionId != session.Id
+            || notification.EventName is not (
+                RealtimeEvents.ParticipantJoined
+                or RealtimeEvents.ParticipantApproved
+                or RealtimeEvents.ParticipantConnectionChanged))
+            return;
+
+        void ScheduleRefresh() =>
+            realtimeRefresh.Schedule(LoadSessionAsync);
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+            ScheduleRefresh();
+        else
+            dispatcher.InvokeAsync(ScheduleRefresh);
+    }
+
+    public override void Dispose()
+    {
+        if (IsDisposed)
+            return;
+        realtime.NotificationReceived -= OnRealtimeNotification;
+        realtimeRefresh.Dispose();
+        realtimeBinding
+            .StopAsync()
+            .SafeFireAndForget("Lobby.DisconnectRealtime");
+        base.Dispose();
+    }
+
     protected override void RaiseCommands()
     {
         foreach (var command in new[] { RefreshCommand, LoadSessionCommand, ApproveCommand, RejectCommand, BulkApproveCommand, MessageCommand, StartCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
@@ -1410,13 +1471,22 @@ public sealed class LobbyViewModel : ProductPageBase
 public sealed class SubmissionCenterViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
+    private readonly IRealtimeService realtime;
+    private readonly TeacherRealtimeSessionBinding realtimeBinding;
+    private readonly RealtimeRefreshDebouncer realtimeRefresh =
+        new(TimeSpan.FromMilliseconds(150), "SubmissionCenter.RealtimeRefresh");
     private SessionSummaryDto? selectedSession;
     private SubmissionSummaryDto? selectedSubmission;
     private string reason = "File nộp chưa đúng quy định.";
 
-    public SubmissionCenterViewModel(IBackendClient api)
+    public SubmissionCenterViewModel(
+        IBackendClient api,
+        IRealtimeService? realtime = null)
     {
         this.api = api;
+        this.realtime = realtime ?? new RealtimeService(AppServices.BaseUrl);
+        realtimeBinding = new TeacherRealtimeSessionBinding(this.realtime);
+        this.realtime.NotificationReceived += OnRealtimeNotification;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSubmissionsAsync, () => !IsBusy && SelectedSession is not null);
         RejectCommand = new AsyncRelayCommand(RejectAsync, () => !IsBusy && SelectedSubmission is not null);
@@ -1427,7 +1497,19 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
 
     public ObservableCollection<SessionSummaryDto> Sessions { get; } = new();
     public ObservableCollection<SubmissionSummaryDto> Submissions { get; } = new();
-    public SessionSummaryDto? SelectedSession { get => selectedSession; set { if (Set(ref selectedSession, value)) RaiseCommands(); } }
+    public SessionSummaryDto? SelectedSession
+    {
+        get => selectedSession;
+        set
+        {
+            if (!Set(ref selectedSession, value))
+                return;
+            realtimeBinding
+                .SelectAsync(value?.Id, DisposeToken)
+                .SafeFireAndForget("SubmissionCenter.SelectRealtimeSession");
+            RaiseCommands();
+        }
+    }
     public SubmissionSummaryDto? SelectedSubmission { get => selectedSubmission; set { if (Set(ref selectedSubmission, value)) RaiseCommands(); } }
     public string Reason { get => reason; set => Set(ref reason, value); }
     public ICommand RefreshCommand { get; }
@@ -1444,7 +1526,12 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             var sessions = ApiGuard.Require(await api.GetSessionsAsync(token));
             Sessions.ReplaceWith(sessions.Items);
             SelectedSession ??= Sessions.FirstOrDefault();
-            if (SelectedSession is not null) await LoadSubmissionsCoreAsync(token);
+            await realtimeBinding.EnsureAsync(
+                AppServices.AuthState.AccountAccessToken,
+                SelectedSession?.Id,
+                token);
+            if (SelectedSession is not null)
+                await LoadSubmissionsCoreAsync(token);
         });
     }
 
@@ -1495,6 +1582,40 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             Status = "Mã biên nhận đã được sao chép";
             StatusTone = "success";
         }
+    }
+
+    private void OnRealtimeNotification(
+        object? sender,
+        StudentRealtimeNotification notification)
+    {
+        if (IsDisposed
+            || SelectedSession is not { } session
+            || notification.SessionId != session.Id
+            || notification.EventName is not (
+                RealtimeEvents.SubmissionStarted
+                or RealtimeEvents.SubmissionAccepted
+                or RealtimeEvents.SubmissionRejected))
+            return;
+
+        void ScheduleRefresh() =>
+            realtimeRefresh.Schedule(LoadSubmissionsAsync);
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+            ScheduleRefresh();
+        else
+            dispatcher.InvokeAsync(ScheduleRefresh);
+    }
+
+    public override void Dispose()
+    {
+        if (IsDisposed)
+            return;
+        realtime.NotificationReceived -= OnRealtimeNotification;
+        realtimeRefresh.Dispose();
+        realtimeBinding
+            .StopAsync()
+            .SafeFireAndForget("SubmissionCenter.DisconnectRealtime");
+        base.Dispose();
     }
 
     protected override void RaiseCommands()
@@ -2983,6 +3104,19 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
         this.authState = authState;
         PickCommand = new AsyncRelayCommand(PickAsync, () => !IsBusy);
         SubmitCommand = new AsyncRelayCommand(SubmitAsync, () => !IsBusy && IsFileValid && !string.IsNullOrWhiteSpace(SelectedPath) && state.HasSession);
+        
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!DisposeToken.IsCancellationRequested)
+                {
+                    await Task.Delay(500, DisposeToken);
+                    System.Windows.Application.Current.Dispatcher.InvokeAsync(() => PollQueueAsync().SafeFireAndForget());
+                }
+            }
+            catch (TaskCanceledException) { }
+        }, DisposeToken);
     }
 
     public string? SelectedPath { get => selectedPath; private set { if (Set(ref selectedPath, value)) RaiseCommands(); } }

@@ -33,31 +33,51 @@ function Read-CloudRow([string]$Table, [Guid]$Id, [string]$Select) {
 
 try {
     $before = Read-CloudRow 'session_participants' $ApproveParticipantId 'status,cloud_version'
-    Invoke-LocalMutation "api/v1/sessions/$SessionId/participants/$ApproveParticipantId/approve" @{} | Out-Null
+    $approveMutationRequestId = [Guid]::NewGuid()
+    Invoke-LocalMutation "api/v1/sessions/$SessionId/participants/$ApproveParticipantId/approve" @{
+        mutationRequestId = $approveMutationRequestId
+    } | Out-Null
     $after = Read-CloudRow 'session_participants' $ApproveParticipantId 'status,cloud_version'
     if ($after.status -ne 'Approved' -or [long]$after.cloud_version -le [long]$before.cloud_version) {
         throw 'Approve did not commit an authoritative newer cloud row.'
     }
 
-    Invoke-LocalMutation "api/v1/sessions/$SessionId/participants/$RejectParticipantId/reject" @{ reason = 'Acceptance rejection' } | Out-Null
+    $rejectMutationRequestId = [Guid]::NewGuid()
+    Invoke-LocalMutation "api/v1/sessions/$SessionId/participants/$RejectParticipantId/reject" @{
+        reason = 'Acceptance rejection'
+        mutationRequestId = $rejectMutationRequestId
+    } | Out-Null
     if ((Read-CloudRow 'session_participants' $RejectParticipantId 'status').status -ne 'Rejected') {
         throw 'Reject did not reach Supabase.'
     }
 
     $extraBefore = Read-CloudRow 'session_participants' $ExtraTimeParticipantId 'extra_time_minutes,cloud_version'
-    Invoke-LocalMutation "api/v1/sessions/$SessionId/participants/$ExtraTimeParticipantId/extra-time" @{ minutes = 5; reason = 'Acceptance accommodation' } | Out-Null
+    $extraTimeMutationRequestId = [Guid]::NewGuid()
+    Invoke-LocalMutation "api/v1/sessions/$SessionId/participants/$ExtraTimeParticipantId/extra-time" @{
+        minutes = 5
+        reason = 'Acceptance accommodation'
+        mutationRequestId = $extraTimeMutationRequestId
+    } | Out-Null
     $extraAfter = Read-CloudRow 'session_participants' $ExtraTimeParticipantId 'extra_time_minutes,cloud_version'
     if ([int]$extraAfter.extra_time_minutes -ne ([int]$extraBefore.extra_time_minutes + 5) -or
         [long]$extraAfter.cloud_version -le [long]$extraBefore.cloud_version) {
         throw 'Extra time did not increase server state and cloud_version.'
     }
 
-    Invoke-LocalMutation "api/v1/participants/$ResubmitParticipantId/allow-resubmit" @{ reason = 'Acceptance retry' } | Out-Null
+    $resubmitMutationRequestId = [Guid]::NewGuid()
+    Invoke-LocalMutation "api/v1/participants/$ResubmitParticipantId/allow-resubmit" @{
+        reason = 'Acceptance retry'
+        mutationRequestId = $resubmitMutationRequestId
+    } | Out-Null
     if (-not (Read-CloudRow 'session_participants' $ResubmitParticipantId 'resubmit_allowed').resubmit_allowed) {
         throw 'Resubmit permission did not reach Supabase.'
     }
 
-    Invoke-LocalMutation "api/v1/submissions/$SubmissionId/reject" @{ reason = 'Acceptance rejection' } | Out-Null
+    $submissionRejectMutationRequestId = [Guid]::NewGuid()
+    Invoke-LocalMutation "api/v1/submissions/$SubmissionId/reject" @{
+        reason = 'Acceptance rejection'
+        mutationRequestId = $submissionRejectMutationRequestId
+    } | Out-Null
     if ((Read-CloudRow 'submissions' $SubmissionId 'status').status -ne 'Rejected') {
         throw 'Submission rejection did not reach Supabase.'
     }

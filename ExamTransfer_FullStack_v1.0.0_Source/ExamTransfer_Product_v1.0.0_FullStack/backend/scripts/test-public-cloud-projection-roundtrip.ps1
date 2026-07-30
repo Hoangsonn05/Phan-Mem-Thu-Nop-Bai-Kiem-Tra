@@ -37,9 +37,13 @@ try {
         throw 'Pending participant was not visible through the teacher session service.'
     }
 
+    $mutationRequestId = [Guid]::NewGuid()
+    $approveBody = @{
+        mutationRequestId = $mutationRequestId
+    } | ConvertTo-Json -Compress
     Invoke-RestMethod -Method Post `
         -Uri "$base/api/v1/sessions/$SessionId/participants/$participantId/approve" `
-        -Headers $localHeaders -ContentType 'application/json' -Body '{}' | Out-Null
+        -Headers $localHeaders -ContentType 'application/json' -Body $approveBody | Out-Null
     $cloudRows = @(Invoke-RestMethod -Method Get `
         -Uri "$cloud/rest/v1/session_participants?id=eq.$participantId&select=status,cloud_version" `
         -Headers $studentHeaders)

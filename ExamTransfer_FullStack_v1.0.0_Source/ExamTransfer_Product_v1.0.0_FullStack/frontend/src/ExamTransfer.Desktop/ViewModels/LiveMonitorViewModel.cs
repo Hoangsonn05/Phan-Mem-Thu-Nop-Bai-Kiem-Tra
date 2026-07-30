@@ -11,17 +11,23 @@ namespace ExamTransfer.Desktop.ViewModels;
 public sealed class LiveMonitorViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
-    private readonly IRealtimeService? realtime;
+    private readonly IRealtimeService realtime;
+    private readonly TeacherRealtimeSessionBinding realtimeBinding;
+    private readonly RealtimeRefreshDebouncer realtimeRefresh =
+        new(TimeSpan.FromMilliseconds(150), "LiveMonitor.RealtimeRefresh");
     private SessionSummaryDto? selectedSession;
     private ParticipantDto? selectedParticipant;
     private string message = "Vui lòng kiểm tra file bài làm trước khi nộp.";
     private string extraMinutes = "5";
 
-    public LiveMonitorViewModel(IBackendClient api)
+    public LiveMonitorViewModel(
+        IBackendClient api,
+        IRealtimeService? realtime = null)
     {
         this.api = api;
-        realtime = new RealtimeService(AppServices.BaseUrl);
-        realtime.EventReceived += OnRealtimeEvent;
+        this.realtime = realtime ?? new RealtimeService(AppServices.BaseUrl);
+        realtimeBinding = new TeacherRealtimeSessionBinding(this.realtime);
+        this.realtime.NotificationReceived += OnRealtimeNotification;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSessionAsync, () => !IsBusy && SelectedSession is not null);
         MessageCommand = new AsyncRelayCommand(MessageAsync, () => !IsBusy && SelectedSession is not null);
@@ -35,7 +41,19 @@ public sealed class LiveMonitorViewModel : ProductPageBase
     public ObservableCollection<SessionSummaryDto> Sessions { get; } = new();
     public ObservableCollection<ParticipantDto> Participants { get; } = new();
     public ObservableCollection<MonitorEvent> Events { get; } = new();
-    public SessionSummaryDto? SelectedSession { get => selectedSession; set { if (Set(ref selectedSession, value)) RaiseCommands(); } }
+    public SessionSummaryDto? SelectedSession
+    {
+        get => selectedSession;
+        set
+        {
+            if (!Set(ref selectedSession, value))
+                return;
+            realtimeBinding
+                .SelectAsync(value?.Id, DisposeToken)
+                .SafeFireAndForget("LiveMonitor.SelectRealtimeSession");
+            RaiseCommands();
+        }
+    }
     public ParticipantDto? SelectedParticipant { get => selectedParticipant; set { if (Set(ref selectedParticipant, value)) RaiseCommands(); } }
     public string Message { get => message; set => Set(ref message, value); }
     public string ExtraMinutes { get => extraMinutes; set => Set(ref extraMinutes, value); }
@@ -52,16 +70,15 @@ public sealed class LiveMonitorViewModel : ProductPageBase
     {
         await RunAsync("Đang tải các phiên trực tiếp", "Giám sát trực tiếp đã được cập nhật", async token =>
         {
-            if (realtime is not null && !realtime.IsConnected)
-            {
-                var accountToken = AppServices.AuthState.AccountAccessToken;
-                if (!string.IsNullOrWhiteSpace(accountToken))
-                    await realtime.ConnectAsync(accountToken, token);
-            }
             var data = ApiGuard.Require(await api.GetSessionsAsync(token));
             Sessions.ReplaceWith(data.Items.Where(x => x.Status is SessionStatus.Waiting or SessionStatus.Distributing or SessionStatus.InProgress or SessionStatus.Paused or SessionStatus.Collecting));
             SelectedSession ??= Sessions.FirstOrDefault();
-            if (SelectedSession is not null) await LoadSessionCoreAsync(token);
+            await realtimeBinding.EnsureAsync(
+                AppServices.AuthState.AccountAccessToken,
+                SelectedSession?.Id,
+                token);
+            if (SelectedSession is not null)
+                await LoadSessionCoreAsync(token);
         });
     }
 
@@ -116,25 +133,42 @@ public sealed class LiveMonitorViewModel : ProductPageBase
     }
 
 
-    private void OnRealtimeEvent(object? sender, string eventName)
+    private void OnRealtimeNotification(
+        object? sender,
+        StudentRealtimeNotification notification)
     {
-        if (IsDisposed || SelectedSession is null) return;
+        if (IsDisposed
+            || SelectedSession is not { } session
+            || notification.SessionId != session.Id)
+            return;
+
         var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is null) return;
-        dispatcher.InvokeAsync(() =>
+        void ScheduleRefresh()
         {
-            Events.Insert(0, new MonitorEvent(DateTime.Now.ToString("HH:mm:ss"), "Cập nhật thời gian thực", eventName, "info", "\uE7BA"));
-            LoadSessionAsync().SafeFireAndForget("LiveMonitor.RealtimeRefresh");
-        });
+            Events.Insert(0, new MonitorEvent(
+                DateTime.Now.ToString("HH:mm:ss"),
+                "Cập nhật thời gian thực",
+                notification.EventName,
+                "info",
+                "\uE7BA"));
+            realtimeRefresh.Schedule(LoadSessionAsync);
+        }
+
+        if (dispatcher is null || dispatcher.CheckAccess())
+            ScheduleRefresh();
+        else
+            dispatcher.InvokeAsync(ScheduleRefresh);
     }
 
     public override void Dispose()
     {
-        if (realtime is not null)
-        {
-            realtime.EventReceived -= OnRealtimeEvent;
-            realtime.DisconnectAsync().SafeFireAndForget("LiveMonitor.DisconnectRealtime");
-        }
+        if (IsDisposed)
+            return;
+        realtime.NotificationReceived -= OnRealtimeNotification;
+        realtimeRefresh.Dispose();
+        realtimeBinding
+            .StopAsync()
+            .SafeFireAndForget("LiveMonitor.DisconnectRealtime");
         base.Dispose();
     }
 

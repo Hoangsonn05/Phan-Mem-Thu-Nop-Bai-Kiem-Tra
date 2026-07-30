@@ -15,7 +15,7 @@ services:
       - ${EXAMTRANSFER_ENV_FILE:-./.env.docker}
     ports:
       - "${EXAMTRANSFER_TCP_PORT:-5048}:5048/tcp"
-      - "${EXAMTRANSFER_UDP_PORT:-5050}:5050/udp"
+      - "${EXAMTRANSFER_UDP_PORT:-40550}:40550/udp"
     volumes:
       - examtransfer_data:/data/ExamTransfer
       - examtransfer_runtime:/usr/share/ExamTransfer

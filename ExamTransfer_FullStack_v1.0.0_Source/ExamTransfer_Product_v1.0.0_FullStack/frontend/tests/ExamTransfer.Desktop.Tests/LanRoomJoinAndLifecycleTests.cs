@@ -242,12 +242,28 @@ public sealed class LanRoomJoinAndLifecycleTests
         Assert.True(result.Started);
         Assert.Equal(1, runtime.StartCount);
         Assert.Equal(Path.GetDirectoryName(layout.ServerExe), runtime.WorkingDirectory);
-        await service.StopAsync();
+        await service.StopOwnedAsync();
         Assert.True(runtime.StartedProcess?.Stopped);
+        Assert.Equal(0, runtime.StopExactCount);
     }
 
     [Fact]
-    public async Task Lifecycle_HealthyServer_DoesNotStartAnotherProcess()
+    public async Task Lifecycle_StudentNonOwnerExit_DoesNotStopExistingPackagedServer()
+    {
+        using var layout = TeacherLayout();
+        var runtime = new FakeRuntime { Healthy = true };
+        var service = new LocalServerLifecycleService(runtime, layout.Client);
+        var result = await service.EnsureStartedAsync(UserRole.Student);
+
+        Assert.Equal("ROLE_NOT_AUTHORIZED", result.Status);
+        Assert.Equal(0, runtime.StartCount);
+        await service.StopOwnedAsync();
+        Assert.Equal(0, runtime.StopExactCount);
+        Assert.True(runtime.Healthy);
+    }
+
+    [Fact]
+    public async Task Lifecycle_TeacherNonOwnerExit_DoesNotStopServerFromAnotherInstance()
     {
         using var layout = TeacherLayout();
         var runtime = new FakeRuntime { Healthy = true };
@@ -256,8 +272,56 @@ public sealed class LanRoomJoinAndLifecycleTests
 
         Assert.Equal("SERVER_HEALTHY", result.Status);
         Assert.Equal(0, runtime.StartCount);
-        await service.StopAsync();
+        await service.StopOwnedAsync();
+        Assert.Equal(0, runtime.StopExactCount);
+        Assert.True(runtime.Healthy);
+    }
+
+    [Theory]
+    [InlineData(UserRole.Teacher)]
+    [InlineData(UserRole.Admin)]
+    public async Task Lifecycle_AuthorizedRole_CanExplicitlyStopExistingPackagedServer(
+        UserRole role)
+    {
+        using var layout = TeacherLayout();
+        var runtime = new FakeRuntime { Healthy = true };
+        var service = new LocalServerLifecycleService(runtime, layout.Client);
+
+        await service.StopExistingPackagedServerAsync(role);
+
+        Assert.Equal(1, runtime.StopExactCount);
         Assert.Equal(Path.GetFullPath(layout.ServerExe), runtime.StoppedExecutablePath);
+        Assert.False(runtime.Healthy);
+    }
+
+    [Fact]
+    public async Task Lifecycle_StudentCannotExplicitlyStopExistingPackagedServer()
+    {
+        using var layout = TeacherLayout();
+        var runtime = new FakeRuntime { Healthy = true };
+        var service = new LocalServerLifecycleService(runtime, layout.Client);
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => service.StopExistingPackagedServerAsync(UserRole.Student));
+
+        Assert.Equal(0, runtime.StopExactCount);
+        Assert.True(runtime.Healthy);
+    }
+
+    [Fact]
+    public void ApplicationExit_UsesOwnershipSafeLocalServerStop()
+    {
+        var source = File.ReadAllText(FindFile(
+            "frontend", "src", "ExamTransfer.Desktop", "App.xaml.cs"));
+
+        Assert.Contains(
+            "LocalServerLifecycle.StopOwnedAsync()",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "LocalServerLifecycle.StopExistingPackagedServerAsync",
+            source,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -659,6 +723,7 @@ public sealed class LanRoomJoinAndLifecycleTests
         public bool BecomeHealthyAfterStart { get; set; }
         public LocalServerProbeResult? ProbeResult { get; set; }
         public int StartCount { get; private set; }
+        public int StopExactCount { get; private set; }
         public string? WorkingDirectory { get; private set; }
         public string? StoppedExecutablePath { get; private set; }
         public FakeProcess? StartedProcess { get; private set; }
@@ -700,6 +765,7 @@ public sealed class LanRoomJoinAndLifecycleTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            StopExactCount++;
             StoppedExecutablePath = Path.GetFullPath(executablePath);
             Healthy = false;
             return Task.CompletedTask;

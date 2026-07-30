@@ -1,0 +1,484 @@
+using System.IO;
+using ExamTransfer.Desktop.Infrastructure;
+using ExamTransfer.Desktop.Services;
+using ExamTransfer.Desktop.ViewModels;
+using ExamTransfer.Shared.Contracts;
+using Xunit;
+
+namespace ExamTransfer.Desktop.Tests;
+
+public sealed class TeacherRealtimeTests
+{
+    [Fact]
+    public async Task SubscriptionStore_RestoresEveryDesiredSessionAfterReconnect()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var subscriptions = new RealtimeSessionSubscriptions();
+        subscriptions.Add(first);
+        subscriptions.Add(second);
+        var invoked = new List<Guid>();
+
+        await subscriptions.RestoreAsync(
+            (sessionId, _) =>
+            {
+                invoked.Add(sessionId);
+                return Task.CompletedTask;
+            },
+            default);
+        await subscriptions.RestoreAsync(
+            (sessionId, _) =>
+            {
+                invoked.Add(sessionId);
+                return Task.CompletedTask;
+            },
+            default);
+
+        Assert.Equal(2, invoked.Count(x => x == first));
+        Assert.Equal(2, invoked.Count(x => x == second));
+
+        subscriptions.Remove(first);
+        invoked.Clear();
+        await subscriptions.RestoreAsync(
+            (sessionId, _) =>
+            {
+                invoked.Add(sessionId);
+                return Task.CompletedTask;
+            },
+            default);
+        Assert.Equal([second], invoked);
+    }
+
+    [Fact]
+    public async Task SubscriptionStore_FailedInvokesRemainRetrySafe()
+    {
+        var sessionId = Guid.NewGuid();
+        var subscriptions = new RealtimeSessionSubscriptions();
+        var subscribeAttempts = 0;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            subscriptions.SubscribeAsync(
+                sessionId,
+                true,
+                (_, _) =>
+                {
+                    subscribeAttempts++;
+                    throw new InvalidOperationException("transient");
+                },
+                default));
+        await subscriptions.SubscribeAsync(
+            sessionId,
+            true,
+            (_, _) =>
+            {
+                subscribeAttempts++;
+                return Task.CompletedTask;
+            },
+            default);
+
+        Assert.Equal(2, subscribeAttempts);
+        var restored = new List<Guid>();
+        await subscriptions.RestoreAsync(
+            (id, _) =>
+            {
+                restored.Add(id);
+                return Task.CompletedTask;
+            },
+            default);
+        Assert.Equal([sessionId], restored);
+
+        var unsubscribeAttempts = 0;
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            subscriptions.UnsubscribeAsync(
+                sessionId,
+                true,
+                (_, _) =>
+                {
+                    unsubscribeAttempts++;
+                    throw new InvalidOperationException("transient");
+                },
+                default));
+        await subscriptions.UnsubscribeAsync(
+            sessionId,
+            true,
+            (_, _) =>
+            {
+                unsubscribeAttempts++;
+                return Task.CompletedTask;
+            },
+            default);
+
+        Assert.Equal(2, unsubscribeAttempts);
+        restored.Clear();
+        await subscriptions.RestoreAsync(
+            (id, _) =>
+            {
+                restored.Add(id);
+                return Task.CompletedTask;
+            },
+            default);
+        Assert.Empty(restored);
+    }
+
+    [Fact]
+    public async Task SessionBinding_StopDisconnectsWhenUnsubscribeFails()
+    {
+        var sessionId = Guid.NewGuid();
+        var realtime = new FakeTeacherRealtime
+        {
+            FailNextUnsubscribe = true
+        };
+        var binding = new TeacherRealtimeSessionBinding(realtime);
+        await binding.SelectAsync(sessionId, default);
+
+        await binding.StopAsync();
+
+        Assert.False(realtime.IsConnected);
+        Assert.Equal(1, realtime.DisconnectCount);
+        Assert.Empty(realtime.Subscribed);
+    }
+
+    [Fact]
+    public async Task Lobby_ParticipantJoinedRefreshesSelectedSessionOnlyAndDebounces()
+    {
+        var session = CreateSession(SessionStatus.Waiting);
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        var viewModel = new LobbyViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        await WaitForAsync(() => realtime.Subscribed.Contains(session.Id));
+        Assert.Equal(1, backend.SessionDetailRequests);
+
+        realtime.Raise(
+            new(
+                Guid.NewGuid(),
+                RealtimeEvents.ParticipantJoined,
+                1,
+                null));
+        await Task.Delay(250);
+        Assert.Equal(1, backend.SessionDetailRequests);
+
+        backend.Participants =
+        [
+            CreateParticipant(session.Id)
+        ];
+        for (var i = 0; i < 3; i++)
+        {
+            realtime.Raise(
+                new(
+                    session.Id,
+                    RealtimeEvents.ParticipantJoined,
+                    i + 2,
+                    null));
+        }
+
+        await WaitForAsync(() => backend.SessionDetailRequests == 2);
+        await Task.Delay(200);
+        Assert.Equal(2, backend.SessionDetailRequests);
+        Assert.Single(viewModel.Participants);
+
+        viewModel.Dispose();
+        await WaitForAsync(() => realtime.Unsubscribed.Contains(session.Id));
+        Assert.False(realtime.IsConnected);
+    }
+
+    [Fact]
+    public async Task LiveMonitor_FiltersOtherSessionsBeforeRefreshingSnapshot()
+    {
+        var session = CreateSession(SessionStatus.InProgress);
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        using var viewModel = new LiveMonitorViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        await WaitForAsync(() => realtime.Subscribed.Contains(session.Id));
+        Assert.Equal(1, backend.SessionDetailRequests);
+
+        realtime.Raise(
+            new(
+                Guid.NewGuid(),
+                RealtimeEvents.ParticipantConnectionChanged,
+                2,
+                null));
+        await Task.Delay(250);
+        Assert.Equal(1, backend.SessionDetailRequests);
+
+        realtime.Raise(
+            new(
+                session.Id,
+                RealtimeEvents.ParticipantConnectionChanged,
+                3,
+                null));
+        await WaitForAsync(() => backend.SessionDetailRequests == 2);
+        Assert.Contains(
+            viewModel.Events,
+            item => item.Description == RealtimeEvents.ParticipantConnectionChanged);
+    }
+
+    [Fact]
+    public async Task SubmissionCenter_SubmissionAcceptedRefreshesSelectedSessionOnlyAndDebounces()
+    {
+        var session = CreateSession(SessionStatus.Collecting);
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        using var viewModel = new SubmissionCenterViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        await WaitForAsync(() => realtime.Subscribed.Contains(session.Id));
+        Assert.Equal(1, backend.SubmissionRequests);
+
+        realtime.Raise(
+            new(
+                Guid.NewGuid(),
+                RealtimeEvents.SubmissionAccepted,
+                1,
+                null));
+        await Task.Delay(250);
+        Assert.Equal(1, backend.SubmissionRequests);
+
+        backend.Submissions =
+        [
+            CreateSubmission(session.Id)
+        ];
+        for (var i = 0; i < 3; i++)
+        {
+            realtime.Raise(
+                new(
+                    session.Id,
+                    RealtimeEvents.SubmissionAccepted,
+                    i + 2,
+                    null));
+        }
+
+        await WaitForAsync(() => backend.SubmissionRequests == 2);
+        await Task.Delay(200);
+        Assert.Equal(2, backend.SubmissionRequests);
+        Assert.Single(viewModel.Submissions);
+    }
+
+    private static SessionSummaryDto CreateSession(SessionStatus status) =>
+        new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "Realtime exam",
+            "RT1234",
+            status,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null,
+            new SessionCountsDto(0, 0, 0, 0, 0, 0, 0),
+            1,
+            "v1");
+
+    private static ParticipantDto CreateParticipant(Guid sessionId) =>
+        new(
+            Guid.NewGuid(),
+            sessionId,
+            "SV001",
+            "Student",
+            "device",
+            "machine",
+            "127.0.0.1",
+            "1.2.0",
+            ParticipantStatus.PendingApproval,
+            DateTimeOffset.UtcNow,
+            DownloadStatus.NotStarted,
+            SubmissionStatus.NotStarted,
+            0,
+            null,
+            ConnectionState.Online);
+
+    private static SubmissionSummaryDto CreateSubmission(Guid sessionId) =>
+        new(
+            Guid.NewGuid(),
+            sessionId,
+            Guid.NewGuid(),
+            "SV001",
+            "Student",
+            1,
+            SubmissionStatus.Submitted,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddMinutes(30),
+            false,
+            "RECEIPT",
+            true,
+            []);
+
+    private static async Task WaitForAsync(
+        Func<bool> condition,
+        int timeoutMilliseconds = 3000)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMilliseconds);
+        while (!condition() && DateTimeOffset.UtcNow < deadline)
+            await Task.Delay(20);
+        Assert.True(condition());
+    }
+
+    private sealed class FakeTeacherRealtime : IRealtimeService
+    {
+        public bool IsConnected { get; private set; } = true;
+        public bool FailNextUnsubscribe { get; set; }
+        public int DisconnectCount { get; private set; }
+        public HashSet<Guid> Subscribed { get; } = [];
+        public List<Guid> Unsubscribed { get; } = [];
+        public event EventHandler<string>? EventReceived;
+        public event EventHandler<StudentRealtimeNotification>? NotificationReceived;
+
+        public Task ConnectAsync(
+            string? token = null,
+            CancellationToken ct = default)
+        {
+            IsConnected = true;
+            return Task.CompletedTask;
+        }
+
+        public Task SubscribeSessionAsync(
+            Guid sessionId,
+            CancellationToken ct = default)
+        {
+            Subscribed.Add(sessionId);
+            return Task.CompletedTask;
+        }
+
+        public Task UnsubscribeSessionAsync(
+            Guid sessionId,
+            CancellationToken ct = default)
+        {
+            Subscribed.Remove(sessionId);
+            Unsubscribed.Add(sessionId);
+            if (FailNextUnsubscribe)
+            {
+                FailNextUnsubscribe = false;
+                throw new InvalidOperationException("transient unsubscribe failure");
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task DisconnectAsync(CancellationToken ct = default)
+        {
+            IsConnected = false;
+            DisconnectCount++;
+            EventReceived?.Invoke(this, "Disconnected");
+            return Task.CompletedTask;
+        }
+
+        public void Raise(StudentRealtimeNotification notification) =>
+            NotificationReceived?.Invoke(this, notification);
+    }
+
+    private sealed class TeacherRealtimeBackend(
+        SessionSummaryDto session) : IBackendClient
+    {
+        public IReadOnlyList<ParticipantDto> Participants { get; set; } = [];
+        public IReadOnlyList<SubmissionSummaryDto> Submissions { get; set; } = [];
+        public int SessionDetailRequests { get; private set; }
+        public int SubmissionRequests { get; private set; }
+        public Uri BaseAddress { get; } = new("http://localhost:5048/");
+        public bool HasTrustedAccountToken => true;
+
+        public bool TrySetBaseAddress(
+            string hostOrUrl,
+            int port,
+            out string? error)
+        {
+            error = null;
+            return true;
+        }
+
+        public Task<ApiResponse<PagedResult<SessionSummaryDto>>?> GetSessionsAsync(
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<PagedResult<SessionSummaryDto>>?>(
+                ApiResponse<PagedResult<SessionSummaryDto>>.Ok(
+                    new([session], 1, 50, 1),
+                    "test"));
+
+        public Task<ApiResponse<SessionDetailDto>?> GetSessionAsync(
+            Guid id,
+            CancellationToken ct = default)
+        {
+            SessionDetailRequests++;
+            return Task.FromResult<ApiResponse<SessionDetailDto>?>(
+                ApiResponse<SessionDetailDto>.Ok(
+                    new(session, Participants, "{}"),
+                    "test"));
+        }
+
+        public Task<ApiResponse<PagedResult<SubmissionSummaryDto>>?> GetSubmissionsAsync(
+            Guid sessionId,
+            CancellationToken ct = default)
+        {
+            SubmissionRequests++;
+            return Task.FromResult<ApiResponse<PagedResult<SubmissionSummaryDto>>?>(
+                ApiResponse<PagedResult<SubmissionSummaryDto>>.Ok(
+                    new(Submissions, 1, 50, Submissions.Count),
+                    "test"));
+        }
+
+        public Task<ApiResponse<SystemStatusDto>?> GetSystemStatusAsync(
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<SystemStatusDto>?>(null);
+        public Task<ApiResponse<DashboardSummaryDto>?> GetDashboardAsync(
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<DashboardSummaryDto>?>(null);
+        public Task<ApiResponse<PagedResult<ClassSummaryDto>>?> GetClassesAsync(
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<PagedResult<ClassSummaryDto>>?>(null);
+        public Task<ApiResponse<PagedResult<ExamSummaryDto>>?> GetExamsAsync(
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<PagedResult<ExamSummaryDto>>?>(null);
+        public Task<ApiResponse<CloudSyncStatusDto>?> GetCloudStatusAsync(
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<CloudSyncStatusDto>?>(null);
+        public Task<ApiResponse<SettingsDto>?> GetSettingsAsync(
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<SettingsDto>?>(null);
+        public Task<ApiResponse<T>?> GetAsync<T>(
+            string path,
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<T>?>(null);
+        public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(
+            string path,
+            TRequest request,
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<TResponse>?>(null);
+        public Task<ApiResponse<TResponse>?> PutAsync<TRequest, TResponse>(
+            string path,
+            TRequest request,
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<TResponse>?>(null);
+        public Task<ApiResponse<TResponse>?> DeleteAsync<TResponse>(
+            string path,
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<TResponse>?>(null);
+        public Task<ApiResponse<object>?> UploadChunkAsync(
+            string path,
+            Stream content,
+            long contentLength,
+            string? sha256 = null,
+            CancellationToken ct = default) =>
+            Task.FromResult<ApiResponse<object>?>(null);
+        public Task DownloadFileAsync(
+            string path,
+            string destinationPath,
+            IProgress<double>? progress = null,
+            CancellationToken ct = default) =>
+            Task.CompletedTask;
+        public Task DownloadVerifiedFileAsync(
+            string path,
+            string destinationPath,
+            string expectedSha256,
+            IProgress<double>? progress = null,
+            CancellationToken ct = default) =>
+            Task.CompletedTask;
+        public Task PostDownloadFileAsync<TRequest>(
+            string path,
+            TRequest request,
+            string destinationPath,
+            IProgress<double>? progress = null,
+            CancellationToken ct = default) =>
+            Task.CompletedTask;
+        public void SetBearerToken(string? token) { }
+        public void SetAccountToken(string? token) { }
+        public void SetParticipantToken(string? token) { }
+    }
+}

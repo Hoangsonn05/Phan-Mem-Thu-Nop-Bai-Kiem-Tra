@@ -103,6 +103,9 @@ public interface IRealtimeService
 {
     bool IsConnected { get; }
     event EventHandler<string>? EventReceived;
+    event EventHandler<StudentRealtimeNotification>? NotificationReceived;
     Task ConnectAsync(string? token = null, CancellationToken ct = default);
+    Task SubscribeSessionAsync(Guid sessionId, CancellationToken ct = default);
+    Task UnsubscribeSessionAsync(Guid sessionId, CancellationToken ct = default);
     Task DisconnectAsync(CancellationToken ct = default);
 }

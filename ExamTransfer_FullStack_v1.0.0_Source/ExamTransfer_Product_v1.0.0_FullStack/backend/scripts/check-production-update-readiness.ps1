@@ -273,7 +273,9 @@ try {
             'backup-supabase-storage.ps1',
             'backup-supabase-production-all.ps1',
             'verify-supabase-production-backup.ps1',
-            'apply-supabase-production-update.ps1')) {
+            'apply-supabase-production-update.ps1',
+            'repair-supabase-production-student-role.ps1',
+            'test-supabase-production-student-role-repair-guard.ps1')) {
             $path = Join-Path $PSScriptRoot $name
             if (-not (Test-Path -LiteralPath $path)) { throw "Missing $name" }
             $tokens = $null
@@ -290,6 +292,11 @@ try {
 
     Invoke-Gate 'Backup verifier local regression' {
         Invoke-PowerShellFile (Join-Path $PSScriptRoot 'test-backup-verifier-local.ps1')
+    } | Out-Null
+
+    Invoke-Gate 'Production student role repair guard regression' {
+        Invoke-PowerShellFile (
+            Join-Path $PSScriptRoot 'test-supabase-production-student-role-repair-guard.ps1')
     } | Out-Null
 
     Invoke-Gate 'Production write guard' {

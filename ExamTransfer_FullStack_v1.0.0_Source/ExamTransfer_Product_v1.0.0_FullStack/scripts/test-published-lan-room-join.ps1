@@ -206,13 +206,18 @@ try {
 
     $accountToken = (Get-Content -LiteralPath $tokenFile -Raw).Trim()
     $headers = @{ Authorization = "Bearer $accountToken" }
+    $machineName = if ([string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+        [Environment]::MachineName
+    } else {
+        $env:COMPUTERNAME
+    }
     $joinPayload = @{
         roomCode = 'DOCKERDISC'
         studentCode = 'SMOKE001'
         displayName = 'Published smoke student'
         className = $null
         deviceId = 'published-smoke-device'
-        machineName = $env:COMPUTERNAME
+        machineName = $machineName
         appVersion = [string]$manifest.semanticVersion
         nonce = [Guid]::NewGuid().ToString('N')
     }
@@ -232,7 +237,26 @@ try {
             -Body $joinRequest `
             -TimeoutSec 5
     } catch {
-        $validationBody = [string]$_.ErrorDetails.Message
+        $validationBody = ''
+        if ($null -ne $_.ErrorDetails) {
+            $validationBody = [string]$_.ErrorDetails.Message
+        }
+        if ([string]::IsNullOrWhiteSpace($validationBody) -and
+            $null -ne $_.Exception.Response) {
+            try {
+                $responseStream = $_.Exception.Response.GetResponseStream()
+                if ($null -ne $responseStream) {
+                    $reader = [IO.StreamReader]::new($responseStream)
+                    try {
+                        $validationBody = $reader.ReadToEnd()
+                    } finally {
+                        $reader.Dispose()
+                    }
+                }
+            } catch {
+                $validationBody = ''
+            }
+        }
         if ([string]::IsNullOrWhiteSpace($validationBody)) {
             $validationBody = [string]$_.Exception.Message
         }
