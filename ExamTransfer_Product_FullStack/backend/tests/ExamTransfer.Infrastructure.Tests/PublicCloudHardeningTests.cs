@@ -4,6 +4,10 @@ using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
 using ExamTransfer.Infrastructure.Cloud;
+using ExamTransfer.Infrastructure.Execution;
+using ExamTransfer.Infrastructure.Execution.Dispatch;
+using ExamTransfer.Infrastructure.Execution.OnlyLan;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Infrastructure.Services;
@@ -900,15 +904,33 @@ internal static class PublicCloudTestHarness
         IRealtimePublisher? realtime = null)
     {
         var options = Options.Create(new ExamTransferOptions());
+        var tokens = new SessionTokenService(options);
+        var audit = new AuditService(db, new HttpContextAccessor());
+        var outbox = new OutboxService(db);
+        var publisher = realtime ?? new NoOpRealtimePublisher();
+        var participantMutations = new SessionParticipantMutationDispatcher(
+            db,
+            new ISessionParticipantMutationHandler[]
+            {
+                new LanSessionParticipantMutationHandler(
+                    db,
+                    tokens,
+                    audit,
+                    outbox,
+                    publisher,
+                    options),
+                new PublicCloudSessionParticipantMutationHandler(options, cloud)
+            });
         return new SessionService(
             db,
-            new SessionTokenService(options),
-            new AuditService(db, new HttpContextAccessor()),
-            new OutboxService(db),
-            realtime ?? new NoOpRealtimePublisher(),
+            tokens,
+            audit,
+            outbox,
+            publisher,
             options,
             NullLogger<SessionService>.Instance,
-            cloud: cloud);
+            cloud: cloud,
+            participantMutations: participantMutations);
     }
 
     public static async Task RunPullOnceAsync(string databasePath, ICloudAdapter cloud)

@@ -1,6 +1,10 @@
 ﻿using ExamTransfer.Application;
 using ExamTransfer.Infrastructure.Backup;
 using ExamTransfer.Infrastructure.Cloud;
+using ExamTransfer.Infrastructure.Execution;
+using ExamTransfer.Infrastructure.Execution.Dispatch;
+using ExamTransfer.Infrastructure.Execution.OnlyLan;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Infrastructure.Services;
@@ -64,6 +68,13 @@ public static class DependencyInjection
         services.AddScoped<IAccountAuthenticationService, AccountAuthenticationService>();
         services.AddScoped<IClassService, ClassService>();
         services.AddScoped<IExamService, ExamService>();
+        services.AddScoped<
+            ISessionParticipantMutationHandler,
+            LanSessionParticipantMutationHandler>();
+        services.AddScoped<
+            ISessionParticipantMutationHandler,
+            PublicCloudSessionParticipantMutationHandler>();
+        services.AddScoped<SessionParticipantMutationDispatcher>();
         services.AddScoped<ISessionService, SessionService>();
         services.AddScoped<ISubmissionService, SubmissionService>();
         services.AddScoped<IGradeService, GradeService>();

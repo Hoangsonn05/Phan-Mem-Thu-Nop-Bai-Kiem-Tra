@@ -1,6 +1,10 @@
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
+using ExamTransfer.Infrastructure.Execution;
+using ExamTransfer.Infrastructure.Execution.Dispatch;
+using ExamTransfer.Infrastructure.Execution.OnlyLan;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Infrastructure.Services;
@@ -504,10 +508,25 @@ public sealed class OnlyLanWorkflowCharacterizationTests
 
         public AppDbContext CreateContext() => CreateContext(databasePath);
 
-        public SessionService CreateSessionService(ILanAccessPolicy lanPolicy) =>
-            new(
+        public SessionService CreateSessionService(ILanAccessPolicy lanPolicy)
+        {
+            var tokens = new SessionTokenService(Options);
+            var participantMutations = new SessionParticipantMutationDispatcher(
                 Db,
-                new SessionTokenService(Options),
+                new ISessionParticipantMutationHandler[]
+                {
+                    new LanSessionParticipantMutationHandler(
+                        Db,
+                        tokens,
+                        audit,
+                        outbox,
+                        realtime,
+                        Options),
+                    new PublicCloudSessionParticipantMutationHandler(Options, Cloud)
+                });
+            return new SessionService(
+                Db,
+                tokens,
                 audit,
                 outbox,
                 realtime,
@@ -515,7 +534,9 @@ public sealed class OnlyLanWorkflowCharacterizationTests
                 NullLogger<SessionService>.Instance,
                 lanPolicy,
                 Cloud,
-                null);
+                null,
+                participantMutations);
+        }
 
         public async Task<SeededQuiz> SeedPublishedQuizAsync()
         {

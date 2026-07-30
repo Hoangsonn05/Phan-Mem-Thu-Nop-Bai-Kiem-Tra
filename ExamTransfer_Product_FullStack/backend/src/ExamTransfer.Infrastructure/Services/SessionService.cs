@@ -2,6 +2,10 @@
 using System.Text.Json;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
+using ExamTransfer.Infrastructure.Execution;
+using ExamTransfer.Infrastructure.Execution.Dispatch;
+using ExamTransfer.Infrastructure.Execution.OnlyLan;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
@@ -10,10 +14,23 @@ using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SessionService(AppDbContext db, ISessionTokenService tokens, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, ILanAccessPolicy? lanAccessPolicy = null, ICloudAdapter? cloud = null, ICloudSyncSignal? cloudSyncSignal = null) : ISessionService
+public sealed class SessionService(AppDbContext db, ISessionTokenService tokens, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, ILanAccessPolicy? lanAccessPolicy = null, ICloudAdapter? cloud = null, ICloudSyncSignal? cloudSyncSignal = null, SessionParticipantMutationDispatcher? participantMutations = null) : ISessionService
 {
     private readonly ExamTransferOptions _options = options.Value;
     private readonly ILanAccessPolicy _lanAccessPolicy = lanAccessPolicy ?? new Security.LanAccessPolicy(options);
+    private readonly SessionParticipantMutationDispatcher _participantMutations =
+        participantMutations ?? new SessionParticipantMutationDispatcher(
+            db,
+            [
+                new LanSessionParticipantMutationHandler(
+                    db,
+                    tokens,
+                    audit,
+                    outbox,
+                    realtime,
+                    options),
+                new PublicCloudSessionParticipantMutationHandler(options, cloud)
+            ]);
 
     public async Task<PagedResult<SessionSummaryDto>> ListAsync(SessionStatus? status, int page, int pageSize, CancellationToken cancellationToken)
     {
@@ -415,40 +432,11 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
 
     public async Task<ParticipantDto> ApproveAsync(Guid sessionId, Guid participantId, Guid mutationRequestId, CancellationToken cancellationToken)
     {
-        var participant = await db.SessionParticipantsSet
-            .Include(x => x.Session)
-            .ThenInclude(x => x.Exam)
-            .FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
-        if (participant.Session.AccessMode == SessionAccessMode.PublicCloud)
-        {
-            if (mutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
-            var result = await RequireCloud().ApprovePublicParticipantAsync(
-                sessionId,
-                participantId,
-                mutationRequestId,
-                cancellationToken);
-            return ToMutationDto(participant, result);
-        }
-        if (participant.Session.Status != SessionStatus.Waiting) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ duyệt trong phòng chờ.", 409);
-        participant.Status = ParticipantStatus.Approved; participant.ApprovedAtUtc = DateTimeOffset.UtcNow; participant.Session.Sequence++;
-        await db.SaveChangesAsync(cancellationToken);
-        var issued = tokens.IssueParticipantToken(
+        return await _participantMutations.ApproveAsync(
             sessionId,
             participantId,
-            participant.UserId ?? Guid.Empty,
-            participant.DeviceId,
-            participant.Status,
-            ParticipantTokenLifetime(participant.Session));
-        await audit.WriteAsync("ParticipantApproved", nameof(SessionParticipant), participant.Id.ToString(), sessionId, null, ToCloud(participant), cancellationToken);
-        await outbox.EnqueueAsync(
-            "session_participants",
-            participant.Id.ToString(),
-            "upsert",
-            ToCloud(participant),
-            cancellationToken: cancellationToken);
-        await realtime.PublishParticipantAsync(sessionId, participantId, RealtimeEvents.ParticipantApproved, participant.Session.Sequence, new ParticipantApprovedEvent(participant.Id, issued.ExpiresAtUtc), cancellationToken);
-        return participant.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds, ParticipantDeadline(participant));
+            mutationRequestId,
+            cancellationToken);
     }
 
     public async Task RejectAsync(Guid sessionId, Guid participantId, string? reason, Guid mutationRequestId, CancellationToken cancellationToken)
@@ -721,7 +709,7 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
     }
     private static DateTimeOffset? EffectiveDeadline(ExamSession s) => s.StartedAtUtc?.AddMinutes(s.Exam.DurationMinutes);
     private static DateTimeOffset? ParticipantDeadline(SessionParticipant participant) =>
-        participant.Session.StartedAtUtc?.AddMinutes(participant.Session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
+        SessionParticipantMutationRules.ParticipantDeadline(participant);
     private async Task<string> GenerateRoomCodeAsync(CancellationToken cancellationToken)
     {
         const string chars = RoomCodeRules.GeneratedAlphabet;
@@ -732,12 +720,8 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         }
         throw new ApiException(ErrorCodes.RoomCodeConflict, "Không thể sinh mã phòng không trùng.", 500);
     }
-    private TimeSpan ParticipantTokenLifetime(ExamSession session)
-    {
-        var minimumMinutes = Math.Max(60, _options.Security.TokenMinutes);
-        var examMinutes = Math.Max(1, session.Exam.DurationMinutes);
-        return TimeSpan.FromMinutes(Math.Max(minimumMinutes, examMinutes + 180));
-    }
+    private TimeSpan ParticipantTokenLifetime(ExamSession session) =>
+        SessionParticipantMutationRules.ParticipantTokenLifetime(_options, session);
 
     private ICloudAdapter RequireCloud() =>
         cloud ?? throw new ApiException(
@@ -748,44 +732,13 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
     private ParticipantDto ToMutationDto(
         SessionParticipant participant,
         CloudParticipantMutationResult result)
-    {
-        var current = participant.ToDto(
-            DateTimeOffset.UtcNow,
-            _options.Session.DisconnectAfterSeconds,
-            result.EffectiveDeadlineUtc ?? ParticipantDeadline(participant));
-        return current with
-        {
-            Status = result.Status,
-            ExtraTimeMinutes = result.ExtraTimeMinutes,
-            EffectiveDeadlineUtc = result.EffectiveDeadlineUtc ?? current.EffectiveDeadlineUtc
-        };
-    }
+        => SessionParticipantMutationRules.ToMutationDto(
+            _options,
+            participant,
+            result);
 
-    private static object ToCloud(SessionParticipant x) => new
-    {
-        id = x.Id,
-        session_id = x.SessionId,
-        user_id = x.UserId,
-        student_code = x.StudentCode,
-        display_name = x.DisplayName,
-        class_name = x.ClassName,
-        device_id = x.DeviceId,
-        machine_name = x.MachineName,
-        ip_address = x.IpAddress,
-        app_version = x.AppVersion,
-        status = x.Status.ToString(),
-        joined_at = x.JoinedAtUtc,
-        approved_at = x.ApprovedAtUtc,
-        last_seen_at = x.LastSeenUtc,
-        download_status = x.DownloadStatus.ToString(),
-        submission_status = x.SubmissionStatus.ToString(),
-        extra_time_minutes = x.ExtraTimeMinutes,
-        resubmit_allowed = x.ResubmitAllowed,
-        resubmit_reason = x.ResubmitReason,
-        capability_json = x.CapabilityJson,
-        created_at = x.CreatedAtUtc,
-        updated_at = x.UpdatedAtUtc
-    };
+    private static object ToCloud(SessionParticipant x) =>
+        SessionParticipantMutationRules.ToCloud(x);
 
     private static object ToCloud(ExamSession x) => new
     {
