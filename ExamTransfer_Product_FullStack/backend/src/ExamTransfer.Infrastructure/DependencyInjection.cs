@@ -76,6 +76,13 @@ public static class DependencyInjection
             PublicCloudSessionParticipantMutationHandler>();
         services.AddScoped<SessionParticipantMutationDispatcher>();
         services.AddScoped<ISessionService, SessionService>();
+        services.AddScoped<
+            ISubmissionMutationHandler,
+            LanSubmissionMutationHandler>();
+        services.AddScoped<
+            ISubmissionMutationHandler,
+            PublicCloudSubmissionMutationHandler>();
+        services.AddScoped<SubmissionMutationDispatcher>();
         services.AddScoped<ISubmissionService, SubmissionService>();
         services.AddScoped<IGradeService, GradeService>();
         services.AddScoped<IQuizGradingService, QuizGradingService>();

@@ -1,6 +1,10 @@
 ﻿using System.Text.Json;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
+using ExamTransfer.Infrastructure.Execution;
+using ExamTransfer.Infrastructure.Execution.Dispatch;
+using ExamTransfer.Infrastructure.Execution.OnlyLan;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Storage;
 using ExamTransfer.Shared.Contracts;
@@ -9,9 +13,20 @@ using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IReceiptSigner receipts, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ICloudAdapter? cloud = null) : ISubmissionService
+public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IReceiptSigner receipts, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ICloudAdapter? cloud = null, SubmissionMutationDispatcher? submissionMutations = null) : ISubmissionService
 {
     private readonly ExamTransferOptions _options = options.Value;
+    private readonly SubmissionMutationDispatcher _submissionMutations =
+        submissionMutations ?? new SubmissionMutationDispatcher(
+            db,
+            [
+                new LanSubmissionMutationHandler(
+                    db,
+                    audit,
+                    outbox,
+                    realtime),
+                new PublicCloudSubmissionMutationHandler(cloud)
+            ]);
 
     public async Task<InitSubmissionResponse> InitAsync(InitSubmissionRequest request, CancellationToken cancellationToken)
     {
@@ -156,62 +171,18 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
 
     public async Task RejectAsync(Guid submissionId, RejectSubmissionRequest request, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Phải có lý do từ chối.");
-        var submission = await db.SubmissionsSet.Include(x => x.Participant).ThenInclude(x => x.Session).FirstOrDefaultAsync(x => x.Id == submissionId, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài nộp.", 404);
-        if (submission.Participant.Session.AccessMode == SessionAccessMode.PublicCloud)
-        {
-            if (request.MutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
-            _ = await RequireCloud().RejectPublicSubmissionAsync(
-                submissionId,
-                request.Reason,
-                request.MutationRequestId,
-                cancellationToken);
-            return;
-        }
-        if (submission.Status is not (SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted)) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ từ chối bài đã nộp.", 409);
-        submission.Status = SubmissionStatus.Rejected; submission.TeacherRejectReason = request.Reason; submission.Participant.SubmissionStatus = SubmissionStatus.Rejected; submission.Participant.Session.Sequence++;
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("SubmissionRejected", nameof(Submission), submission.Id.ToString(), submission.SessionId, null, request, cancellationToken);
-        await outbox.EnqueueAsync(
-            "submissions",
-            submission.Id.ToString(),
-            "upsert",
-            ToCloud(submission),
-            cancellationToken: cancellationToken);
-        await realtime.PublishParticipantAsync(submission.SessionId, submission.ParticipantId, RealtimeEvents.SubmissionRejected, submission.Participant.Session.Sequence, new SubmissionRejectedEvent(submission.Id, request.Reason), cancellationToken);
+        await _submissionMutations.RejectAsync(
+            submissionId,
+            request,
+            cancellationToken);
     }
 
     public async Task AllowResubmitAsync(Guid participantId, AllowResubmitRequest request, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Phải có lý do cho nộp lại.");
-        var participant = await db.SessionParticipantsSet.Include(x => x.Session).FirstOrDefaultAsync(x => x.Id == participantId, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
-        if (participant.Session.AccessMode == SessionAccessMode.PublicCloud)
-        {
-            if (request.MutationRequestId == Guid.Empty) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu MutationRequestId.");
-            _ = await RequireCloud().AllowPublicResubmissionAsync(
-                participantId,
-                request.Reason,
-                request.MutationRequestId,
-                cancellationToken);
-            return;
-        }
-        participant.ResubmitAllowed = true;
-        participant.ResubmitReason = request.Reason;
-        await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync(
-            "ResubmitAllowed",
-            nameof(SessionParticipant),
-            participant.Id.ToString(),
-            participant.SessionId,
-            null,
+        await _submissionMutations.AllowResubmitAsync(
+            participantId,
             request,
             cancellationToken);
-        await outbox.EnqueueAsync(
-            "session_participants",
-            participant.Id.ToString(),
-            "upsert",
-            ToCloud(participant),
-            cancellationToken: cancellationToken);
     }
 
     public async Task<(string Path, string MimeType, string DownloadName)> GetFileAsync(Guid submissionId, Guid fileId, CancellationToken cancellationToken)
@@ -225,52 +196,8 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
     private InitSubmissionResponse ToInitResponse(Submission s) => new(s.Id, s.AttemptNumber, _options.Transfer.ChunkSizeBytes, s.Files.Select(f => new ChunkPlanDto(f.Id, f.TotalChunks, Enumerable.Range(0, f.TotalChunks).Except(chunks.ReadReceivedChunks(f.ReceivedChunksJson)).ToList())).ToList(), s.DeadlineUtc);
     private SubmissionSummaryDto ToSummary(Submission s) => new(s.Id, s.SessionId, s.ParticipantId, s.Participant.StudentCode, s.Participant.DisplayName, s.AttemptNumber, s.Status, s.ClientSubmittedAtUtc, s.ServerReceivedAtUtc, s.DeadlineUtc, s.IsLate, s.ReceiptCode, s.IsOfficial, s.Files.Select(f => f.ToDto(chunks.ReadReceivedChunks(f.ReceivedChunksJson))).ToList());
     private static FileDescriptorDto ToDescriptor(SubmissionFile f) => new(f.Id, f.OriginalName, f.SizeBytes, f.Sha256, f.MimeType, $"/api/v1/submissions/{f.SubmissionId}/files/{f.Id}/content");
-    private static object ToCloud(Submission x) => new
-    {
-        id = x.Id,
-        session_id = x.SessionId,
-        participant_id = x.ParticipantId,
-        attempt_number = x.AttemptNumber,
-        idempotency_key = x.IdempotencyKey,
-        status = x.Status.ToString(),
-        client_submitted_at = x.ClientSubmittedAtUtc,
-        server_received_at = x.ServerReceivedAtUtc,
-        deadline_at = x.DeadlineUtc,
-        is_late = x.IsLate,
-        is_official = x.IsOfficial,
-        receipt_code = x.ReceiptCode,
-        receipt_signature = x.ReceiptSignature,
-        teacher_reject_reason = x.TeacherRejectReason,
-        client_note = x.ClientNote,
-        created_at = x.CreatedAtUtc,
-        updated_at = x.UpdatedAtUtc
-    };
-
-    private static object ToCloud(SessionParticipant x) => new
-    {
-        id = x.Id,
-        session_id = x.SessionId,
-        user_id = x.UserId,
-        student_code = x.StudentCode,
-        display_name = x.DisplayName,
-        class_name = x.ClassName,
-        device_id = x.DeviceId,
-        machine_name = x.MachineName,
-        ip_address = x.IpAddress,
-        app_version = x.AppVersion,
-        status = x.Status.ToString(),
-        joined_at = x.JoinedAtUtc,
-        approved_at = x.ApprovedAtUtc,
-        last_seen_at = x.LastSeenUtc,
-        download_status = x.DownloadStatus.ToString(),
-        submission_status = x.SubmissionStatus.ToString(),
-        extra_time_minutes = x.ExtraTimeMinutes,
-        resubmit_allowed = x.ResubmitAllowed,
-        resubmit_reason = x.ResubmitReason,
-        capability_json = x.CapabilityJson,
-        created_at = x.CreatedAtUtc,
-        updated_at = x.UpdatedAtUtc
-    };
+    private static object ToCloud(Submission x) =>
+        SubmissionMutationPayloads.ToCloud(x);
 
     private static object ToCloud(SubmissionFile x) => new
     {
@@ -302,9 +229,4 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
         }
     }
 
-    private ICloudAdapter RequireCloud() =>
-        cloud ?? throw new ApiException(
-            ErrorCodes.CloudOffline,
-            "PublicCloud chưa được cấu hình cho thao tác giáo viên.",
-            503);
 }

@@ -1,6 +1,10 @@
 ﻿using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
+using ExamTransfer.Infrastructure.Execution;
+using ExamTransfer.Infrastructure.Execution.Dispatch;
+using ExamTransfer.Infrastructure.Execution.OnlyLan;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Importing;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
@@ -993,6 +997,142 @@ public sealed class CoreWorkflowPersistenceTests
         Assert.Contains(observed, row => row.Contains("Email", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task SubmissionReject_LanOnly_preserves_state_audit_outbox_and_realtime()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var seeded = await SeedSubmissionMutationAsync(
+            database.Context,
+            SessionAccessMode.LanOnly);
+        var outbox = new RecordingOutbox();
+        var realtime = new RecordingRealtimePublisher();
+        var cloud = new OfflineCloudAdapter();
+        var service = SubmissionMutations(
+            database.Context,
+            outbox,
+            realtime,
+            cloud);
+        var sequenceBefore = seeded.Session.Sequence;
+
+        await service.RejectAsync(
+            seeded.Submission.Id,
+            new RejectSubmissionRequest("Unreadable archive", Guid.Empty),
+            CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var submission = await database.Context.SubmissionsSet
+            .SingleAsync(x => x.Id == seeded.Submission.Id);
+        var participant = await database.Context.SessionParticipantsSet
+            .SingleAsync(x => x.Id == seeded.Participant.Id);
+        var session = await database.Context.ExamSessionsSet
+            .SingleAsync(x => x.Id == seeded.Session.Id);
+        Assert.Equal(SubmissionStatus.Rejected, submission.Status);
+        Assert.Equal("Unreadable archive", submission.TeacherRejectReason);
+        Assert.Equal(SubmissionStatus.Rejected, participant.SubmissionStatus);
+        Assert.Equal(sequenceBefore + 1, session.Sequence);
+        var outboxCall = Assert.Single(outbox.Calls);
+        Assert.Equal("submissions", outboxCall.EntityType);
+        Assert.Equal(seeded.Submission.Id.ToString(), outboxCall.EntityId);
+        var published = Assert.Single(realtime.ParticipantEvents);
+        Assert.Equal(RealtimeEvents.SubmissionRejected, published.EventName);
+        var payload = Assert.IsType<SubmissionRejectedEvent>(published.Payload);
+        Assert.Equal(seeded.Submission.Id, payload.SubmissionId);
+        Assert.Equal("Unreadable archive", payload.Reason);
+        Assert.Contains(
+            await database.Context.AuditLogsSet.ToListAsync(),
+            x => x.Action == "SubmissionRejected"
+                && x.EntityId == seeded.Submission.Id.ToString());
+        Assert.Equal(0, cloud.TeacherMutationCalls);
+    }
+
+    [Fact]
+    public async Task AllowResubmit_LanOnly_preserves_attempt_and_updates_participant_only()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var seeded = await SeedSubmissionMutationAsync(
+            database.Context,
+            SessionAccessMode.LanOnly);
+        seeded.Submission.Status = SubmissionStatus.Rejected;
+        seeded.Participant.SubmissionStatus = SubmissionStatus.Rejected;
+        await database.Context.SaveChangesAsync();
+        var outbox = new RecordingOutbox();
+        var realtime = new RecordingRealtimePublisher();
+        var cloud = new OfflineCloudAdapter();
+        var service = SubmissionMutations(
+            database.Context,
+            outbox,
+            realtime,
+            cloud);
+
+        await service.AllowResubmitAsync(
+            seeded.Participant.Id,
+            new AllowResubmitRequest("Approved retry", Guid.Empty),
+            CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var participant = await database.Context.SessionParticipantsSet
+            .SingleAsync(x => x.Id == seeded.Participant.Id);
+        var submission = await database.Context.SubmissionsSet
+            .SingleAsync(x => x.Id == seeded.Submission.Id);
+        Assert.True(participant.ResubmitAllowed);
+        Assert.Equal("Approved retry", participant.ResubmitReason);
+        Assert.Equal(SubmissionStatus.Rejected, submission.Status);
+        Assert.Equal(1, submission.AttemptNumber);
+        var outboxCall = Assert.Single(outbox.Calls);
+        Assert.Equal("session_participants", outboxCall.EntityType);
+        Assert.Equal(seeded.Participant.Id.ToString(), outboxCall.EntityId);
+        Assert.Empty(realtime.ParticipantEvents);
+        Assert.Contains(
+            await database.Context.AuditLogsSet.ToListAsync(),
+            x => x.Action == "ResubmitAllowed"
+                && x.EntityId == seeded.Participant.Id.ToString());
+        Assert.Equal(0, cloud.TeacherMutationCalls);
+    }
+
+    [Fact]
+    public async Task SubmissionMutationDispatcher_unknown_mode_fails_closed_without_side_effects()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var seeded = await SeedSubmissionMutationAsync(
+            database.Context,
+            (SessionAccessMode)999);
+        var outbox = new RecordingOutbox();
+        var realtime = new RecordingRealtimePublisher();
+        var cloud = new OfflineCloudAdapter();
+        var service = SubmissionMutations(
+            database.Context,
+            outbox,
+            realtime,
+            cloud);
+
+        var rejectError = await Assert.ThrowsAsync<ApiException>(() =>
+            service.RejectAsync(
+                seeded.Submission.Id,
+                new RejectSubmissionRequest("Reject", Guid.NewGuid()),
+                CancellationToken.None));
+        var resubmitError = await Assert.ThrowsAsync<ApiException>(() =>
+            service.AllowResubmitAsync(
+                seeded.Participant.Id,
+                new AllowResubmitRequest("Retry", Guid.NewGuid()),
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.InvalidStateTransition, rejectError.Code);
+        Assert.Equal(ErrorCodes.InvalidStateTransition, resubmitError.Code);
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(
+            SubmissionStatus.Submitted,
+            (await database.Context.SubmissionsSet
+                .SingleAsync(x => x.Id == seeded.Submission.Id))
+                .Status);
+        Assert.False(
+            (await database.Context.SessionParticipantsSet
+                .SingleAsync(x => x.Id == seeded.Participant.Id))
+                .ResubmitAllowed);
+        Assert.Empty(outbox.Calls);
+        Assert.Empty(realtime.ParticipantEvents);
+        Assert.Equal(0, cloud.TeacherMutationCalls);
+    }
+
     private static byte[] CreateXlsx(params string[][][] worksheets)
     {
         using var stream = new MemoryStream();
@@ -1081,6 +1221,101 @@ public sealed class CoreWorkflowPersistenceTests
             new SessionService(db, new SessionTokenService(options), audit, outbox, realtime, options, NullLogger<SessionService>.Instance));
     }
 
+    private static SubmissionService SubmissionMutations(
+        AppDbContext db,
+        IOutboxService outbox,
+        IRealtimePublisher realtime,
+        ICloudAdapter cloud)
+    {
+        var options = Options.Create(new ExamTransferOptions());
+        var audit = new AuditService(db, new HttpContextAccessor());
+        var paths = new TestStoragePaths(
+            Path.Combine(
+                Path.GetDirectoryName(db.Database.GetDbConnection().DataSource)!,
+                "submission-storage"));
+        var dispatcher = new SubmissionMutationDispatcher(
+            db,
+            new ISubmissionMutationHandler[]
+            {
+                new LanSubmissionMutationHandler(
+                    db,
+                    audit,
+                    outbox,
+                    realtime),
+                new PublicCloudSubmissionMutationHandler(cloud)
+            });
+        return new SubmissionService(
+            db,
+            paths,
+            new ChunkStorage(),
+            new ReceiptSigner(options),
+            audit,
+            outbox,
+            realtime,
+            options,
+            cloud,
+            dispatcher);
+    }
+
+    private static async Task<SubmissionMutationSeed>
+        SeedSubmissionMutationAsync(
+            AppDbContext db,
+            SessionAccessMode accessMode)
+    {
+        var exam = new Exam
+        {
+            Title = "Submission mutation",
+            Subject = "Characterization",
+            DurationMinutes = 30,
+            Status = ExamStatus.Published,
+            DeliveryType = ExamDeliveryType.FileSubmission,
+            Version = 1
+        };
+        var session = new ExamSession
+        {
+            Exam = exam,
+            ExamId = exam.Id,
+            RoomCode = $"SUB{Random.Shared.Next(10000, 99999)}",
+            HostDeviceId = "submission-host",
+            Status = SessionStatus.Collecting,
+            AccessMode = accessMode,
+            DeliveryTypeSnapshot = ExamDeliveryType.FileSubmission,
+            ExamVersionSnapshot = exam.Version,
+            Sequence = 7
+        };
+        var participant = new SessionParticipant
+        {
+            Session = session,
+            SessionId = session.Id,
+            StudentCode = "SUB-STUDENT",
+            DisplayName = "Submission Student",
+            DeviceId = "submission-device",
+            MachineName = "submission-machine",
+            AppVersion = "characterization",
+            Status = ParticipantStatus.Approved,
+            SubmissionStatus = SubmissionStatus.Submitted,
+            SourceMode = accessMode == SessionAccessMode.PublicCloud
+                ? "PublicCloud"
+                : "Lan"
+        };
+        var submission = new Submission
+        {
+            Session = session,
+            SessionId = session.Id,
+            Participant = participant,
+            ParticipantId = participant.Id,
+            AttemptNumber = 1,
+            IdempotencyKey = $"submission-{Guid.NewGuid():N}",
+            Status = SubmissionStatus.Submitted,
+            ClientSubmittedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+            DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(30),
+            SourceMode = participant.SourceMode
+        };
+        db.AddRange(exam, session, participant, submission);
+        await db.SaveChangesAsync();
+        return new(exam, session, participant, submission);
+    }
+
     private static SystemService DashboardService(AppDbContext db)
     {
         var options = Options.Create(new ExamTransferOptions());
@@ -1089,6 +1324,12 @@ public sealed class CoreWorkflowPersistenceTests
     }
 
     private sealed record ServiceSet(ClassService Classes, ExamService Exams, SessionService Sessions);
+
+    private sealed record SubmissionMutationSeed(
+        Exam Exam,
+        ExamSession Session,
+        SessionParticipant Participant,
+        Submission Submission);
 
     private sealed class RecordingOutbox : IOutboxService
     {
@@ -1120,6 +1361,43 @@ public sealed class CoreWorkflowPersistenceTests
         public Task PublishParticipantAsync<T>(Guid sessionId, Guid participantId, string eventName, long sequence, T payload, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
+    private sealed class RecordingRealtimePublisher : IRealtimePublisher
+    {
+        public List<ParticipantEvent> ParticipantEvents { get; } = [];
+
+        public Task PublishSessionAsync<T>(
+            Guid sessionId,
+            string eventName,
+            long sequence,
+            T payload,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task PublishParticipantAsync<T>(
+            Guid sessionId,
+            Guid participantId,
+            string eventName,
+            long sequence,
+            T payload,
+            CancellationToken cancellationToken = default)
+        {
+            ParticipantEvents.Add(new(
+                sessionId,
+                participantId,
+                eventName,
+                sequence,
+                payload!));
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed record ParticipantEvent(
+        Guid SessionId,
+        Guid ParticipantId,
+        string EventName,
+        long Sequence,
+        object Payload);
+
     private sealed class ThrowingRealtimePublisher : IRealtimePublisher
     {
         public Task PublishSessionAsync<T>(Guid sessionId, string eventName, long sequence, T payload, CancellationToken cancellationToken = default) => throw new IOException("Simulated realtime outage");
@@ -1128,6 +1406,7 @@ public sealed class CoreWorkflowPersistenceTests
 
     private sealed class OfflineCloudAdapter : ICloudAdapter
     {
+        public int TeacherMutationCalls { get; private set; }
         public bool Enabled => false;
         public bool Configured => false;
         public bool Authenticated => false;
@@ -1141,6 +1420,26 @@ public sealed class CoreWorkflowPersistenceTests
 
         public Task<CloudPushResult> PushAsync(SyncQueueItem item, Func<CancellationToken, Task>? checkpoint, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+
+        public Task<CloudParticipantMutationResult> AllowPublicResubmissionAsync(
+            Guid participantId,
+            string reason,
+            Guid requestId,
+            CancellationToken cancellationToken)
+        {
+            TeacherMutationCalls++;
+            throw new IOException("OnlyLAN must not call PublicCloud resubmit RPC.");
+        }
+
+        public Task<CloudSubmissionMutationResult> RejectPublicSubmissionAsync(
+            Guid submissionId,
+            string reason,
+            Guid requestId,
+            CancellationToken cancellationToken)
+        {
+            TeacherMutationCalls++;
+            throw new IOException("OnlyLAN must not call PublicCloud reject RPC.");
+        }
 
         public Task<CloudLoginResult> LoginAsync(string email, string password, CancellationToken cancellationToken) =>
             throw new NotSupportedException();

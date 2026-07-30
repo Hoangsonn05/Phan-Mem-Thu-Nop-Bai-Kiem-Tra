@@ -613,17 +613,7 @@ public sealed class PublicCloudTeacherMutationRoutingTests
         database.Context.SubmissionsSet.Add(submission);
         await database.Context.SaveChangesAsync();
         var cloud = new RecordingCloudAdapter();
-        var options = Options.Create(new ExamTransferOptions());
-        var service = new SubmissionService(
-            database.Context,
-            new TestStoragePaths(),
-            new ChunkStorage(),
-            new ReceiptSigner(options),
-            new AuditService(database.Context, new HttpContextAccessor()),
-            new OutboxService(database.Context),
-            new TestRealtimePublisher(),
-            options,
-            cloud);
+        var service = CreateSubmissionService(database.Context, cloud);
 
         var resubmitRequestId = Guid.NewGuid();
         var rejectRequestId = Guid.NewGuid();
@@ -634,12 +624,138 @@ public sealed class PublicCloudTeacherMutationRoutingTests
         Assert.Equal(1, cloud.RejectSubmissionCalls);
         Assert.Equal(resubmitRequestId, cloud.LastResubmitRequestId);
         Assert.Equal(rejectRequestId, cloud.LastRejectSubmissionRequestId);
+        Assert.Equal("Approved retry", cloud.LastResubmitReason);
+        Assert.Equal("Unreadable archive", cloud.LastRejectSubmissionReason);
         database.Context.ChangeTracker.Clear();
         Assert.False((await database.Context.SessionParticipantsSet.SingleAsync(x => x.Id == participant.Id)).ResubmitAllowed);
         Assert.Equal(
             SubmissionStatus.Submitted,
             (await database.Context.SubmissionsSet.SingleAsync(x => x.Id == submission.Id)).Status);
         Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+    }
+
+    [Fact]
+    public async Task PublicCloud_submission_mutations_require_request_id_before_rpc()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        var submission = new Submission
+        {
+            Participant = participant,
+            SessionId = participant.SessionId,
+            AttemptNumber = 1,
+            IdempotencyKey = "public-request-id-test",
+            Status = SubmissionStatus.Submitted,
+            ClientSubmittedAtUtc = DateTimeOffset.UtcNow,
+            DeadlineUtc = DateTimeOffset.UtcNow.AddHours(1),
+            SourceMode = "PublicCloud"
+        };
+        database.Context.SubmissionsSet.Add(submission);
+        await database.Context.SaveChangesAsync();
+        var cloud = new RecordingCloudAdapter();
+        var service = CreateSubmissionService(database.Context, cloud);
+
+        var resubmitError = await Assert.ThrowsAsync<ApiException>(() =>
+            service.AllowResubmitAsync(
+                participant.Id,
+                new AllowResubmitRequest("Retry", Guid.Empty),
+                CancellationToken.None));
+        var rejectError = await Assert.ThrowsAsync<ApiException>(() =>
+            service.RejectAsync(
+                submission.Id,
+                new RejectSubmissionRequest("Reject", Guid.Empty),
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.ValidationFailed, resubmitError.Code);
+        Assert.Equal(ErrorCodes.ValidationFailed, rejectError.Code);
+        Assert.Equal(0, cloud.ResubmitCalls);
+        Assert.Equal(0, cloud.RejectSubmissionCalls);
+    }
+
+    [Fact]
+    public async Task PublicCloud_submission_rpc_failures_do_not_fallback_or_write_local_state()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        participant.SubmissionStatus = SubmissionStatus.Submitted;
+        var submission = new Submission
+        {
+            Participant = participant,
+            SessionId = participant.SessionId,
+            AttemptNumber = 1,
+            IdempotencyKey = "public-failure-test",
+            Status = SubmissionStatus.Submitted,
+            ClientSubmittedAtUtc = DateTimeOffset.UtcNow,
+            DeadlineUtc = DateTimeOffset.UtcNow.AddHours(1),
+            SourceMode = "PublicCloud"
+        };
+        database.Context.SubmissionsSet.Add(submission);
+        await database.Context.SaveChangesAsync();
+        var cloud = new RecordingCloudAdapter
+        {
+            FailResubmit = true,
+            FailRejectSubmission = true
+        };
+        var service = CreateSubmissionService(database.Context, cloud);
+
+        await Assert.ThrowsAsync<ApiException>(() =>
+            service.AllowResubmitAsync(
+                participant.Id,
+                new AllowResubmitRequest("Retry failure", Guid.NewGuid()),
+                CancellationToken.None));
+        await Assert.ThrowsAsync<ApiException>(() =>
+            service.RejectAsync(
+                submission.Id,
+                new RejectSubmissionRequest("Reject failure", Guid.NewGuid()),
+                CancellationToken.None));
+
+        database.Context.ChangeTracker.Clear();
+        Assert.False(
+            (await database.Context.SessionParticipantsSet
+                .SingleAsync(x => x.Id == participant.Id))
+                .ResubmitAllowed);
+        Assert.Equal(
+            SubmissionStatus.Submitted,
+            (await database.Context.SubmissionsSet
+                .SingleAsync(x => x.Id == submission.Id))
+                .Status);
+        Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+    }
+
+    private static SubmissionService CreateSubmissionService(
+        AppDbContext db,
+        ICloudAdapter cloud)
+    {
+        var options = Options.Create(new ExamTransferOptions());
+        var audit = new AuditService(db, new HttpContextAccessor());
+        var outbox = new OutboxService(db);
+        var realtime = new TestRealtimePublisher();
+        var dispatcher = new SubmissionMutationDispatcher(
+            db,
+            new ISubmissionMutationHandler[]
+            {
+                new LanSubmissionMutationHandler(
+                    db,
+                    audit,
+                    outbox,
+                    realtime),
+                new PublicCloudSubmissionMutationHandler(cloud)
+            });
+        return new SubmissionService(
+            db,
+            new TestStoragePaths(),
+            new ChunkStorage(),
+            new ReceiptSigner(options),
+            audit,
+            outbox,
+            realtime,
+            options,
+            cloud,
+            dispatcher);
     }
 
     private sealed class TestRealtimePublisher : IRealtimePublisher
@@ -1138,11 +1254,15 @@ internal class RecordingCloudAdapter : ICloudAdapter
     public IReadOnlyList<Guid>? LastBulkApproveParticipantIds { get; private set; }
     public Guid? LastResubmitRequestId { get; private set; }
     public Guid? LastRejectSubmissionRequestId { get; private set; }
+    public string? LastResubmitReason { get; private set; }
+    public string? LastRejectSubmissionReason { get; private set; }
     public Guid? LastExtraTimeRequestId { get; private set; }
     public bool FailApprove { get; init; }
     public bool FailRejectParticipant { get; init; }
     public bool FailBulkApprove { get; init; }
     public bool FailExtraTime { get; init; }
+    public bool FailResubmit { get; init; }
+    public bool FailRejectSubmission { get; init; }
     public bool ExtraTimeMissingContract { get; init; }
     public CloudParticipantMutationResult? ExtraTimeResult { get; private set; }
     public bool Enabled => true;
@@ -1227,6 +1347,12 @@ internal class RecordingCloudAdapter : ICloudAdapter
     {
         ResubmitCalls++;
         LastResubmitRequestId = requestId;
+        LastResubmitReason = reason;
+        if (FailResubmit)
+            throw new ApiException(
+                ErrorCodes.CloudUploadFailed,
+                "Simulated resubmit RPC failure",
+                502);
         var now = DateTimeOffset.UtcNow;
         return Task.FromResult(new CloudParticipantMutationResult(
             participantId, Guid.Empty, ParticipantStatus.Approved, now, 0, true, reason, 43, now));
@@ -1272,6 +1398,12 @@ internal class RecordingCloudAdapter : ICloudAdapter
     {
         RejectSubmissionCalls++;
         LastRejectSubmissionRequestId = requestId;
+        LastRejectSubmissionReason = reason;
+        if (FailRejectSubmission)
+            throw new ApiException(
+                ErrorCodes.CloudUploadFailed,
+                "Simulated submission reject RPC failure",
+                502);
         return Task.FromResult(new CloudSubmissionMutationResult(
             submissionId, Guid.Empty, Guid.Empty, SubmissionStatus.Rejected, reason, 44, DateTimeOffset.UtcNow));
     }
