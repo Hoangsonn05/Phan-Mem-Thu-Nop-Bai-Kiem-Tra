@@ -34,7 +34,7 @@ public sealed class RuntimeStabilize03E2DesignTests
     }
 
     [Fact]
-    public async Task ParticipantPull_CommitsInsertAndUpdate_AdvancesCursorFeedsSnapshotAndEmitsNoPulse()
+    public async Task ParticipantPull_CommitsInsertAndUpdate_AdvancesCursorFeedsSnapshotAndEmitsPostCommitPulse()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
         var primarySeed = await PublicCloudTestHarness.SeedSessionAsync(
@@ -92,6 +92,16 @@ public sealed class RuntimeStabilize03E2DesignTests
             Assert.Equal(participantId, participant.Id);
             Assert.Equal(SessionAccessMode.PublicCloud, detail.Summary.AccessMode);
         }
+        var insertEvent = Assert.Single(realtime.Events);
+        Assert.Equal(primarySessionId, insertEvent.SessionId);
+        Assert.Equal(RealtimeEvents.PublicCloudProjectionUpdated, insertEvent.EventName);
+        Assert.Equal(101, insertEvent.Sequence);
+        Assert.Equal(
+            new PublicCloudProjectionUpdatedEvent(
+                primarySessionId,
+                PublicCloudProjectionEntityTypes.SessionParticipant,
+                101),
+            insertEvent.Payload);
 
         await RunPullOnceAsync(
             database.Path,
@@ -157,7 +167,164 @@ public sealed class RuntimeStabilize03E2DesignTests
 
         var otherDetail = await sessionService.GetAsync(otherSessionId, CancellationToken.None);
         Assert.Equal(otherParticipantId, Assert.Single(otherDetail.Participants).Id);
+        Assert.Collection(
+            realtime.Events,
+            item => Assert.Equal((primarySessionId, 101L), (item.SessionId, item.Sequence)),
+            item => Assert.Equal((otherSessionId, 102L), (item.SessionId, item.Sequence)),
+            item => Assert.Equal((primarySessionId, 103L), (item.SessionId, item.Sequence)));
+    }
+
+    [Fact]
+    public async Task ParticipantPull_CoalescesBySessionUsesMaxVersionAndSeparatesSessions()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var firstSeed = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        var secondSeed = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        database.Context.SessionParticipantsSet.RemoveRange(firstSeed, secondSeed);
+        await database.Context.SaveChangesAsync();
+        var now = DateTimeOffset.UtcNow;
+        var records = new[]
+        {
+            ParticipantRecord(Guid.NewGuid(), firstSeed.SessionId, 201, now, "A", "A", ParticipantStatus.PendingApproval),
+            ParticipantRecord(Guid.NewGuid(), secondSeed.SessionId, 202, now.AddSeconds(1), "B", "B", ParticipantStatus.Approved),
+            ParticipantRecord(Guid.NewGuid(), firstSeed.SessionId, 203, now.AddSeconds(2), "C", "C", ParticipantStatus.Approved)
+        };
+        var realtime = new RecordingRealtimePublisher();
+
+        await RunPullOnceAsync(database.Path, new MultiRecordPullCloudAdapter(records), realtime);
+
+        Assert.Equal(2, realtime.Events.Count);
+        var versions = realtime.Events.ToDictionary(x => x.SessionId, x => x.Sequence);
+        Assert.Equal(203, versions[firstSeed.SessionId]);
+        Assert.Equal(202, versions[secondSeed.SessionId]);
+        Assert.All(realtime.Events, item =>
+        {
+            Assert.Equal(RealtimeEvents.PublicCloudProjectionUpdated, item.EventName);
+            Assert.Equal(PublicCloudProjectionEntityTypes.SessionParticipant, item.Payload?.EntityType);
+        });
+
+        await RunPullOnceAsync(database.Path, new MultiRecordPullCloudAdapter(records), realtime);
+        Assert.Equal(2, realtime.Events.Count);
+    }
+
+    [Fact]
+    public async Task ParticipantPull_RollbackAndOnlyLanProjectionDoNotPublish()
+    {
+        await using var failedDatabase = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var realtime = new RecordingRealtimePublisher();
+        var invalidParticipantId = Guid.NewGuid();
+        await RunPullOnceAsync(
+            failedDatabase.Path,
+            new MultiRecordPullCloudAdapter([
+                ParticipantRecord(
+                    invalidParticipantId,
+                    Guid.NewGuid(),
+                    250,
+                    DateTimeOffset.UtcNow,
+                    "INVALID",
+                    "Invalid",
+                    ParticipantStatus.PendingApproval)
+            ]),
+            realtime);
+        await using (var verifyFailure = failedDatabase.CreateContext())
+        {
+            Assert.False(await verifyFailure.SessionParticipantsSet.AnyAsync(x => x.Id == invalidParticipantId));
+            Assert.False(await verifyFailure.PublicCloudPullCursorsSet.AnyAsync(
+                x => x.EntityName == "session_participants"));
+        }
         Assert.Empty(realtime.Events);
+
+        await using var lanDatabase = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var lanSeed = await PublicCloudTestHarness.SeedSessionAsync(
+            lanDatabase.Context,
+            SessionAccessMode.LanOnly);
+        lanDatabase.Context.SessionParticipantsSet.Remove(lanSeed);
+        await lanDatabase.Context.SaveChangesAsync();
+        var lanParticipantId = Guid.NewGuid();
+        await RunPullOnceAsync(
+            lanDatabase.Path,
+            new MultiRecordPullCloudAdapter([
+                ParticipantRecord(
+                    lanParticipantId,
+                    lanSeed.SessionId,
+                    251,
+                    DateTimeOffset.UtcNow,
+                    "LAN",
+                    "LAN",
+                    ParticipantStatus.PendingApproval)
+            ]),
+            realtime);
+        await using var verifyLan = lanDatabase.CreateContext();
+        Assert.True(await verifyLan.SessionParticipantsSet.AnyAsync(x => x.Id == lanParticipantId));
+        Assert.Empty(realtime.Events);
+    }
+
+    [Fact]
+    public async Task ParticipantPull_PublishFailureDoesNotRollbackCommittedProjectionOrCursor()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var seed = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        database.Context.SessionParticipantsSet.Remove(seed);
+        await database.Context.SaveChangesAsync();
+        var participantId = Guid.NewGuid();
+        var realtime = new ThrowingRealtimePublisher();
+
+        await RunPullOnceAsync(
+            database.Path,
+            new MultiRecordPullCloudAdapter([
+                ParticipantRecord(
+                    participantId,
+                    seed.SessionId,
+                    301,
+                    DateTimeOffset.UtcNow,
+                    "PUBLISH",
+                    "Publish failure",
+                    ParticipantStatus.Approved)
+            ]),
+            realtime);
+
+        await using var verify = database.CreateContext();
+        Assert.True(await verify.SessionParticipantsSet.AnyAsync(x => x.Id == participantId));
+        Assert.Equal(
+            301,
+            (await verify.PublicCloudPullCursorsSet.SingleAsync(
+                x => x.EntityName == "session_participants")).LastCloudVersion);
+        Assert.Equal(1, realtime.Attempts);
+    }
+
+    [Fact]
+    public async Task ParticipantPull_PublishesOnlyAfterProjectionAndCursorAreCommitted()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var seed = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        database.Context.SessionParticipantsSet.Remove(seed);
+        await database.Context.SaveChangesAsync();
+        var participantId = Guid.NewGuid();
+        var realtime = new CommitCheckingRealtimePublisher(database.Path, participantId, 401);
+
+        await RunPullOnceAsync(
+            database.Path,
+            new MultiRecordPullCloudAdapter([
+                ParticipantRecord(
+                    participantId,
+                    seed.SessionId,
+                    401,
+                    DateTimeOffset.UtcNow,
+                    "COMMIT",
+                    "Committed",
+                    ParticipantStatus.Approved)
+            ]),
+            realtime);
+
+        Assert.True(realtime.ObservedCommittedState);
     }
 
     private static CloudPullRecord ParticipantRecord(
@@ -233,14 +400,19 @@ public sealed class RuntimeStabilize03E2DesignTests
         await using var provider = services.BuildServiceProvider();
         var worker = new PublicCloudPullWorker(
             provider.GetRequiredService<IServiceScopeFactory>(),
-            NullLogger<PublicCloudPullWorker>.Instance);
+            NullLogger<PublicCloudPullWorker>.Instance,
+            realtime);
 
         await worker.PullOnceAsync(CancellationToken.None);
     }
 
     private sealed class RecordingRealtimePublisher : IRealtimePublisher
     {
-        public List<(Guid SessionId, string EventName)> Events { get; } = [];
+        public List<(
+            Guid SessionId,
+            string EventName,
+            long Sequence,
+            PublicCloudProjectionUpdatedEvent? Payload)> Events { get; } = [];
 
         public Task PublishSessionAsync<T>(
             Guid sessionId,
@@ -249,7 +421,11 @@ public sealed class RuntimeStabilize03E2DesignTests
             T payload,
             CancellationToken cancellationToken = default)
         {
-            Events.Add((sessionId, eventName));
+            Events.Add((
+                sessionId,
+                eventName,
+                sequence,
+                payload as PublicCloudProjectionUpdatedEvent));
             return Task.CompletedTask;
         }
 
@@ -261,8 +437,89 @@ public sealed class RuntimeStabilize03E2DesignTests
             T payload,
             CancellationToken cancellationToken = default)
         {
-            Events.Add((sessionId, eventName));
+            Events.Add((sessionId, eventName, sequence, null));
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class ThrowingRealtimePublisher : IRealtimePublisher
+    {
+        public int Attempts { get; private set; }
+
+        public Task PublishSessionAsync<T>(
+            Guid sessionId,
+            string eventName,
+            long sequence,
+            T payload,
+            CancellationToken cancellationToken = default)
+        {
+            Attempts++;
+            throw new InvalidOperationException("simulated SignalR failure");
+        }
+
+        public Task PublishParticipantAsync<T>(
+            Guid sessionId,
+            Guid participantId,
+            string eventName,
+            long sequence,
+            T payload,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class MultiRecordPullCloudAdapter(
+        IReadOnlyList<CloudPullRecord> records) : RecordingCloudAdapter
+    {
+        public override Task<CloudPullPage> PullAsync(
+            string entityName,
+            CloudPullCursorValue cursor,
+            int limit,
+            CancellationToken cancellationToken)
+        {
+            var page = records
+                .Where(x => x.EntityName == entityName && x.CloudVersion > cursor.CloudVersion)
+                .OrderBy(x => x.CloudVersion)
+                .ThenBy(x => x.UpdatedAtUtc)
+                .ThenBy(x => x.EntityId, StringComparer.Ordinal)
+                .Take(limit)
+                .ToArray();
+            return Task.FromResult(new CloudPullPage(page, false));
+        }
+    }
+
+    private sealed class CommitCheckingRealtimePublisher(
+        string databasePath,
+        Guid participantId,
+        long expectedVersion) : IRealtimePublisher
+    {
+        public bool ObservedCommittedState { get; private set; }
+
+        public async Task PublishSessionAsync<T>(
+            Guid sessionId,
+            string eventName,
+            long sequence,
+            T payload,
+            CancellationToken cancellationToken = default)
+        {
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite($"Data Source={databasePath}")
+                .Options;
+            await using var verify = new AppDbContext(options);
+            ObservedCommittedState = await verify.SessionParticipantsSet
+                    .AnyAsync(x => x.Id == participantId && x.CloudVersion == expectedVersion, cancellationToken)
+                && await verify.PublicCloudPullCursorsSet.AnyAsync(
+                    x => x.EntityName == "session_participants"
+                         && x.LastCloudVersion == expectedVersion,
+                    cancellationToken);
+        }
+
+        public Task PublishParticipantAsync<T>(
+            Guid sessionId,
+            Guid participantId,
+            string eventName,
+            long sequence,
+            T payload,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

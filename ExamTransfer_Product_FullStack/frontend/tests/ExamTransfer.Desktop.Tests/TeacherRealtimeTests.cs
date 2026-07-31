@@ -295,6 +295,143 @@ public sealed class TeacherRealtimeTests
     }
 
     [Fact]
+    public async Task ProjectionCoordinator_DeduplicatesVersionsSerializesAndBoundsRetries()
+    {
+        var calls = 0;
+        var concurrent = 0;
+        var maxConcurrent = 0;
+        using var coordinator = new ProjectionRefreshCoordinator(
+            async (_, _) =>
+            {
+                var active = Interlocked.Increment(ref concurrent);
+                maxConcurrent = Math.Max(maxConcurrent, active);
+                var call = Interlocked.Increment(ref calls);
+                try
+                {
+                    await Task.Delay(10);
+                    if (call <= 2)
+                        throw new InvalidOperationException("transient snapshot failure");
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref concurrent);
+                }
+            },
+            TimeSpan.Zero,
+            [TimeSpan.Zero, TimeSpan.Zero],
+            []);
+        var sessionId = Guid.NewGuid();
+
+        Assert.True(coordinator.Schedule(sessionId, 10));
+        Assert.False(coordinator.Schedule(sessionId, 10));
+        Assert.False(coordinator.Schedule(sessionId, 9));
+        await WaitForAsync(() => calls == 3);
+        Assert.True(coordinator.Schedule(sessionId, 11));
+        await WaitForAsync(() => calls == 4);
+
+        Assert.Equal(1, maxConcurrent);
+    }
+
+    [Fact]
+    public async Task ProjectionCoordinator_RecoveryIsBoundedAndDisposeCancelsPendingWork()
+    {
+        var calls = 0;
+        using (var coordinator = new ProjectionRefreshCoordinator(
+                   (_, _) =>
+                   {
+                       Interlocked.Increment(ref calls);
+                       return Task.CompletedTask;
+                   },
+                   TimeSpan.Zero,
+                   [],
+                   [TimeSpan.Zero, TimeSpan.Zero]))
+        {
+            coordinator.StartRecovery();
+            await WaitForAsync(() => calls == 2);
+            await Task.Delay(50);
+            Assert.Equal(2, calls);
+        }
+
+        var cancelledCalls = 0;
+        var cancelled = new ProjectionRefreshCoordinator(
+            (_, _) =>
+            {
+                Interlocked.Increment(ref cancelledCalls);
+                return Task.CompletedTask;
+            },
+            TimeSpan.FromSeconds(1),
+            [],
+            [TimeSpan.FromSeconds(1)]);
+        cancelled.StartRecovery();
+        cancelled.Dispose();
+        await Task.Delay(100);
+        Assert.Equal(0, cancelledCalls);
+    }
+
+    [Fact]
+    public async Task LiveMonitor_PublicCloudProjectionEventRefreshesVisibleParticipantOncePerNewVersion()
+    {
+        var session = CreateSession(SessionStatus.InProgress, SessionAccessMode.PublicCloud);
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        var viewModel = new LiveMonitorViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        await WaitForAsync(() => backend.SessionDetailRequests == 3);
+
+        backend.Participants = [CreateParticipant(session.Id)];
+        var update10 = new PublicCloudProjectionUpdatedEvent(
+            session.Id,
+            PublicCloudProjectionEntityTypes.SessionParticipant,
+            10);
+        for (var index = 0; index < 3; index++)
+            realtime.Raise(new(
+                session.Id,
+                RealtimeEvents.PublicCloudProjectionUpdated,
+                10,
+                null,
+                null,
+                update10));
+        realtime.Raise(new(
+            Guid.NewGuid(),
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            99,
+            null,
+            null,
+            update10 with { SessionId = Guid.NewGuid(), ProjectionVersion = 99 }));
+
+        await WaitForAsync(() => backend.SessionDetailRequests == 4);
+        Assert.Single(viewModel.Participants);
+        await Task.Delay(250);
+        Assert.Equal(4, backend.SessionDetailRequests);
+
+        var update11 = update10 with { ProjectionVersion = 11 };
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            11,
+            null,
+            null,
+            update11));
+        await WaitForAsync(() => backend.SessionDetailRequests == 5);
+
+        realtime.RaiseEvent("Reconnected");
+        await WaitForAsync(() => backend.SessionDetailRequests == 7);
+        await Task.Delay(200);
+        Assert.Equal(7, backend.SessionDetailRequests);
+
+        viewModel.Dispose();
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            12,
+            null,
+            null,
+            update11 with { ProjectionVersion = 12 }));
+        await Task.Delay(250);
+        Assert.Equal(7, backend.SessionDetailRequests);
+    }
+
+    [Fact]
     public async Task SubmissionCenter_SubmissionAcceptedRefreshesSelectedSessionOnlyAndDebounces()
     {
         var session = CreateSession(SessionStatus.Collecting);
@@ -334,7 +471,9 @@ public sealed class TeacherRealtimeTests
         Assert.Single(viewModel.Submissions);
     }
 
-    private static SessionSummaryDto CreateSession(SessionStatus status) =>
+    private static SessionSummaryDto CreateSession(
+        SessionStatus status,
+        SessionAccessMode accessMode = SessionAccessMode.LanOnly) =>
         new(
             Guid.NewGuid(),
             Guid.NewGuid(),
@@ -347,7 +486,8 @@ public sealed class TeacherRealtimeTests
             null,
             new SessionCountsDto(0, 0, 0, 0, 0, 0, 0),
             1,
-            "v1");
+            "v1",
+            accessMode);
 
     private static ParticipantDto CreateParticipant(Guid sessionId) =>
         new(
@@ -444,6 +584,9 @@ public sealed class TeacherRealtimeTests
 
         public void Raise(StudentRealtimeNotification notification) =>
             NotificationReceived?.Invoke(this, notification);
+
+        public void RaiseEvent(string eventName) =>
+            EventReceived?.Invoke(this, eventName);
     }
 
     private sealed class TeacherRealtimeBackend(

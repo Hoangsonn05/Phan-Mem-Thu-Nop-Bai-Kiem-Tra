@@ -13,6 +13,7 @@ public sealed class LiveMonitorViewModel : ProductPageBase
     private readonly IBackendClient api;
     private readonly IRealtimeService realtime;
     private readonly TeacherRealtimeSessionBinding realtimeBinding;
+    private readonly ProjectionRefreshCoordinator projectionRefresh;
     private readonly RealtimeRefreshDebouncer realtimeRefresh =
         new(TimeSpan.FromMilliseconds(150), "LiveMonitor.RealtimeRefresh");
     private SessionSummaryDto? selectedSession;
@@ -27,7 +28,13 @@ public sealed class LiveMonitorViewModel : ProductPageBase
         this.api = api;
         this.realtime = realtime ?? new RealtimeService(AppServices.BaseUrl);
         realtimeBinding = new TeacherRealtimeSessionBinding(this.realtime);
+        projectionRefresh = new ProjectionRefreshCoordinator(
+            RefreshProjectionSnapshotAsync,
+            TimeSpan.FromMilliseconds(150),
+            [TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500)],
+            [TimeSpan.FromMilliseconds(350), TimeSpan.FromMilliseconds(850)]);
         this.realtime.NotificationReceived += OnRealtimeNotification;
+        this.realtime.EventReceived += OnRealtimeEvent;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSessionAsync, () => !IsBusy && SelectedSession is not null);
         MessageCommand = new AsyncRelayCommand(MessageAsync, () => !IsBusy && SelectedSession is not null);
@@ -78,7 +85,11 @@ public sealed class LiveMonitorViewModel : ProductPageBase
                 SelectedSession?.Id,
                 token);
             if (SelectedSession is not null)
+            {
                 await LoadSessionCoreAsync(token);
+                if (SelectedSession.AccessMode == SessionAccessMode.PublicCloud)
+                    projectionRefresh.StartRecovery();
+            }
         });
     }
 
@@ -142,15 +153,31 @@ public sealed class LiveMonitorViewModel : ProductPageBase
             || notification.SessionId != session.Id)
             return;
 
+        if (notification.EventName == RealtimeEvents.PublicCloudProjectionUpdated)
+        {
+            void ScheduleProjectionRefresh()
+            {
+                var update = notification.ProjectionUpdated;
+                if (session.AccessMode != SessionAccessMode.PublicCloud
+                    || update is null
+                    || update.SessionId != session.Id
+                    || update.EntityType != PublicCloudProjectionEntityTypes.SessionParticipant
+                    || !projectionRefresh.Schedule(session.Id, update.ProjectionVersion))
+                    return;
+                AddRealtimeEvent(notification.EventName);
+            }
+            var projectionDispatcher = Application.Current?.Dispatcher;
+            if (projectionDispatcher is null || projectionDispatcher.CheckAccess())
+                ScheduleProjectionRefresh();
+            else
+                projectionDispatcher.InvokeAsync(ScheduleProjectionRefresh);
+            return;
+        }
+
         var dispatcher = Application.Current?.Dispatcher;
         void ScheduleRefresh()
         {
-            Events.Insert(0, new MonitorEvent(
-                DateTime.Now.ToString("HH:mm:ss"),
-                "Cập nhật thời gian thực",
-                notification.EventName,
-                "info",
-                "\uE7BA"));
+            AddRealtimeEvent(notification.EventName);
             realtimeRefresh.Schedule(LoadSessionAsync);
         }
 
@@ -160,12 +187,54 @@ public sealed class LiveMonitorViewModel : ProductPageBase
             dispatcher.InvokeAsync(ScheduleRefresh);
     }
 
+    private async Task RefreshProjectionSnapshotAsync(
+        Guid? expectedSessionId,
+        CancellationToken cancellationToken)
+    {
+        if (IsDisposed
+            || SelectedSession is not { AccessMode: SessionAccessMode.PublicCloud } session
+            || expectedSessionId.HasValue && expectedSessionId.Value != session.Id)
+            return;
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+            await LoadSessionCoreAsync(cancellationToken);
+        else
+            await dispatcher.InvokeAsync(
+                () => LoadSessionCoreAsync(cancellationToken)).Task.Unwrap();
+    }
+
+    private void OnRealtimeEvent(object? sender, string eventName)
+    {
+        if (eventName != "Reconnected" || IsDisposed)
+            return;
+        var dispatcher = Application.Current?.Dispatcher;
+        void Recover()
+        {
+            if (SelectedSession?.AccessMode == SessionAccessMode.PublicCloud)
+                projectionRefresh.StartRecovery();
+        }
+        if (dispatcher is null || dispatcher.CheckAccess())
+            Recover();
+        else
+            dispatcher.InvokeAsync(Recover);
+    }
+
+    private void AddRealtimeEvent(string eventName) =>
+        Events.Insert(0, new MonitorEvent(
+            DateTime.Now.ToString("HH:mm:ss"),
+            "Cập nhật thời gian thực",
+            eventName,
+            "info",
+            "\uE7BA"));
+
     public override void Dispose()
     {
         if (IsDisposed)
             return;
         realtime.NotificationReceived -= OnRealtimeNotification;
+        realtime.EventReceived -= OnRealtimeEvent;
         realtimeRefresh.Dispose();
+        projectionRefresh.Dispose();
         realtimeBinding
             .StopAsync()
             .SafeFireAndForget("LiveMonitor.DisconnectRealtime");

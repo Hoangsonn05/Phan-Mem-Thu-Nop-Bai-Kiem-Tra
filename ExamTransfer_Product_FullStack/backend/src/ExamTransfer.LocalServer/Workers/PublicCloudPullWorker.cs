@@ -11,7 +11,8 @@ namespace ExamTransfer.LocalServer.Workers;
 
 public sealed class PublicCloudPullWorker(
     IServiceScopeFactory scopeFactory,
-    ILogger<PublicCloudPullWorker> logger) : BackgroundService, IPublicCloudPullWorker
+    ILogger<PublicCloudPullWorker> logger,
+    IRealtimePublisher? realtime = null) : BackgroundService, IPublicCloudPullWorker
 {
     private static readonly string[] EntityOrder =
     [
@@ -93,12 +94,13 @@ public sealed class PublicCloudPullWorker(
         }
     }
 
-    private static async Task PullEntityAsync(
+    private async Task PullEntityAsync(
         AppDbContext db,
         ICloudAdapter cloud,
         string entityName,
         CancellationToken cancellationToken)
     {
+        var committedProjectionVersions = new Dictionary<Guid, long>();
         var cursor = await db.PublicCloudPullCursorsSet
             .SingleOrDefaultAsync(x => x.EntityName == entityName, cancellationToken);
         cursor ??= new PublicCloudPullCursor { EntityName = entityName };
@@ -113,9 +115,13 @@ public sealed class PublicCloudPullWorker(
                 100,
                 cancellationToken);
             if (page.Records.Count == 0)
+            {
+                await PublishProjectionUpdatesAsync(committedProjectionVersions, cancellationToken);
                 return;
+            }
 
             await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            var pageProjectionVersions = new Dictionary<Guid, long>();
             try
             {
                 foreach (var record in page.Records)
@@ -147,6 +153,14 @@ public sealed class PublicCloudPullWorker(
                             $"The same cloud_version produced different payloads for {record.EntityName}/{record.EntityId}.");
                     }
 
+                    long? previousParticipantVersion = null;
+                    if (record.EntityName == "session_participants"
+                        && Guid.TryParse(record.EntityId, out var participantId))
+                    {
+                        previousParticipantVersion = (await db.SessionParticipantsSet
+                            .FindAsync([participantId], cancellationToken))?.CloudVersion;
+                    }
+
                     var localId = await ApplyTeacherProjectionAsync(db, record, cancellationToken);
                     if (localId.HasValue)
                     {
@@ -167,6 +181,29 @@ public sealed class PublicCloudPullWorker(
                             mapping.LocalEntityId = localId.Value;
                         }
                     }
+
+                    if (record.EntityName == "session_participants"
+                        && localId.HasValue
+                        && (!previousParticipantVersion.HasValue
+                            || record.CloudVersion > previousParticipantVersion.Value))
+                    {
+                        var participant = await db.SessionParticipantsSet
+                            .FindAsync([localId.Value], cancellationToken);
+                        if (participant is not null)
+                        {
+                            var accessMode = await db.ExamSessionsSet
+                                .Where(x => x.Id == participant.SessionId)
+                                .Select(x => (SessionAccessMode?)x.AccessMode)
+                                .SingleOrDefaultAsync(cancellationToken);
+                            if (accessMode == SessionAccessMode.PublicCloud)
+                            {
+                                pageProjectionVersions[participant.SessionId] =
+                                    Math.Max(
+                                        pageProjectionVersions.GetValueOrDefault(participant.SessionId),
+                                        record.CloudVersion);
+                            }
+                        }
+                    }
                 }
 
                 var last = page.Records[^1];
@@ -175,6 +212,12 @@ public sealed class PublicCloudPullWorker(
                 cursor.LastEntityId = last.EntityId;
                 await db.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
+                foreach (var update in pageProjectionVersions)
+                {
+                    committedProjectionVersions[update.Key] = Math.Max(
+                        committedProjectionVersions.GetValueOrDefault(update.Key),
+                        update.Value);
+                }
             }
             catch
             {
@@ -183,7 +226,50 @@ public sealed class PublicCloudPullWorker(
                 throw;
             }
             if (!page.HasMore)
+            {
+                await PublishProjectionUpdatesAsync(committedProjectionVersions, cancellationToken);
                 return;
+            }
+        }
+
+        await PublishProjectionUpdatesAsync(committedProjectionVersions, cancellationToken);
+    }
+
+    private async Task PublishProjectionUpdatesAsync(
+        IReadOnlyDictionary<Guid, long> projectionVersions,
+        CancellationToken cancellationToken)
+    {
+        if (realtime is null)
+            return;
+
+        foreach (var update in projectionVersions.OrderBy(x => x.Key))
+        {
+            try
+            {
+                var payload = new PublicCloudProjectionUpdatedEvent(
+                    update.Key,
+                    PublicCloudProjectionEntityTypes.SessionParticipant,
+                    update.Value);
+                await realtime.PublishSessionAsync(
+                    update.Key,
+                    RealtimeEvents.PublicCloudProjectionUpdated,
+                    update.Value,
+                    payload,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "PublicCloud projection publish failed after local commit. SessionId={SessionId}; EntityType={EntityType}; ProjectionVersion={ProjectionVersion}",
+                    update.Key,
+                    PublicCloudProjectionEntityTypes.SessionParticipant,
+                    update.Value);
+            }
         }
     }
 

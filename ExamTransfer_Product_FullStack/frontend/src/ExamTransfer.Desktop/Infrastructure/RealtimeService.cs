@@ -61,11 +61,28 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
                         payload));
             });
 
+        connection.On<RealtimeEnvelope<PublicCloudProjectionUpdatedEvent>>(
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            envelope =>
+            {
+                NotificationReceived?.Invoke(
+                    this,
+                    new(
+                        envelope.SessionId,
+                        RealtimeEvents.PublicCloudProjectionUpdated,
+                        envelope.Payload.ProjectionVersion,
+                        null,
+                        null,
+                        envelope.Payload));
+                EventReceived?.Invoke(this, RealtimeEvents.PublicCloudProjectionUpdated);
+            });
+
         foreach (var eventName in typeof(RealtimeEvents)
                      .GetFields()
                      .Select(field => field.GetValue(null)?.ToString())
                      .Where(value => !string.IsNullOrWhiteSpace(value)
-                         && value != RealtimeEvents.TimeExtended))
+                          && value != RealtimeEvents.TimeExtended
+                          && value != RealtimeEvents.PublicCloudProjectionUpdated))
         {
             connection.On<JsonElement>(eventName!, envelope =>
             {

@@ -30,7 +30,18 @@ public static class RealtimeEvents
     public const string SettingsChanged = nameof(SettingsChanged);
     public const string SystemStatusChanged = nameof(SystemStatusChanged);
     public const string DashboardMetricChanged = nameof(DashboardMetricChanged);
+    public const string PublicCloudProjectionUpdated = nameof(PublicCloudProjectionUpdated);
 }
+
+public static class PublicCloudProjectionEntityTypes
+{
+    public const string SessionParticipant = nameof(SessionParticipant);
+}
+
+public sealed record PublicCloudProjectionUpdatedEvent(
+    Guid SessionId,
+    string EntityType,
+    long ProjectionVersion);
 
 public sealed record SessionStateChangedEvent(SessionStatus Status, DateTimeOffset ServerNowUtc, DateTimeOffset? EffectiveDeadlineUtc);
 public sealed record ParticipantApprovedEvent(Guid ParticipantId, DateTimeOffset TokenExpiryUtc);
