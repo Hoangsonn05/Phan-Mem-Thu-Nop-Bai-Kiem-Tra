@@ -1238,4 +1238,5 @@ public sealed record PublicStudentTimeline(
     string SubmissionStatus = "NotStarted",
     string AdmissionMode = "ClassMembersOnly",
     string? ExamTitle = null,
-    string? Subject = null);
+    string? Subject = null,
+    bool ResubmitAllowed = false);

@@ -183,6 +183,7 @@ public sealed class StudentExamViewModel : ProductPageBase
             state.ExamId = loadedSession.Summary.ExamId;
             state.ParticipantStatus = loadedParticipant.Status;
             state.SubmissionStatus = loadedParticipant.SubmissionStatus;
+            state.ApplyResubmitAuthority(loadedParticipant.ResubmitAllowed);
             Connection = $"Đã xác thực · {Session.Summary.Status}";
             UpdateSteps();
             RaiseTime();
@@ -276,6 +277,7 @@ public sealed class StudentExamViewModel : ProductPageBase
                 timeline.EffectiveDeadlineUtc,
                 timeline.ServerNowUtc))
             return false;
+        state.ApplyResubmitAuthority(timeline.ResubmitAllowed);
         Raise(nameof(Title));
         Raise(nameof(CandidateCount));
         return true;

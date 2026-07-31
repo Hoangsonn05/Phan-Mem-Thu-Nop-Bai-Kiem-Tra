@@ -2916,21 +2916,24 @@ public sealed class StudentWaitingViewModel : ProductPageBase
         if (!state.SessionId.HasValue || !state.ParticipantId.HasValue)
             return;
         Participant = new ParticipantDto(
-            state.ParticipantId.Value,
-            state.SessionId.Value,
-            state.StudentCode,
-            state.DisplayName,
-            Environment.MachineName + "-" + Environment.UserName,
-            Environment.MachineName,
-            null,
-            "1.0.0",
-            state.ParticipantStatus ?? ParticipantStatus.PendingApproval,
-            DateTimeOffset.UtcNow,
-            DownloadStatus.NotStarted,
-            state.SubmissionStatus,
-            0,
-            null,
-            realtime.IsConnected ? ConnectionState.Online : ConnectionState.Reconnecting);
+            Id: state.ParticipantId.Value,
+            SessionId: state.SessionId.Value,
+            StudentCode: state.StudentCode,
+            DisplayName: state.DisplayName,
+            DeviceId: Environment.MachineName + "-" + Environment.UserName,
+            MachineName: Environment.MachineName,
+            IpAddress: null,
+            AppVersion: "1.0.0",
+            Status: state.ParticipantStatus ?? ParticipantStatus.PendingApproval,
+            LastSeenUtc: DateTimeOffset.UtcNow,
+            DownloadStatus: DownloadStatus.NotStarted,
+            SubmissionStatus: state.SubmissionStatus,
+            ExtraTimeMinutes: 0,
+            EffectiveDeadlineUtc: null,
+            ConnectionState: realtime.IsConnected
+                ? ConnectionState.Online
+                : ConnectionState.Reconnecting,
+            ResubmitAllowed: state.ResubmitAllowed);
         Raise(nameof(RoomCodeHint));
         Raise(nameof(SessionTitleDisplay));
     }

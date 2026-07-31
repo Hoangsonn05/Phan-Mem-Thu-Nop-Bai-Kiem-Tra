@@ -1,5 +1,5 @@
 begin;
-select plan(36);
+select plan(39);
 
 select is((select schema_version from public.examtransfer_cloud_meta where id=1), 23,
   'session-first workflow remains compatible at schema version 22');
@@ -190,6 +190,26 @@ insert into open19_values(key,value) values (
 select is((select value->>'admissionMode' from open19_values where key='timeline'),
   'OpenRequest',
   'OpenRequest participant can read the authoritative timeline');
+select is((select value->>'resubmitAllowed' from open19_values where key='timeline'),
+  'false',
+  'student timeline returns false resubmit authority');
+update public.session_participants
+set resubmit_allowed = true,
+    cloud_version = private.next_public_cloud_version(),
+    updated_at = pg_catalog.now()
+where id = (select (value->>'participantId')::uuid from open19_values where key='join');
+update open19_values
+set value = public.get_public_student_timeline(
+  '61300000-0000-0000-0000-000000000001')
+where key = 'timeline';
+select is((select value->>'resubmitAllowed' from open19_values where key='timeline'),
+  'true',
+  'student timeline returns true resubmit authority');
+update public.session_participants
+set resubmit_allowed = false,
+    cloud_version = private.next_public_cloud_version(),
+    updated_at = pg_catalog.now()
+where id = (select (value->>'participantId')::uuid from open19_values where key='join');
 select throws_ok($$select public.get_public_exam_manifest(
   '61300000-0000-0000-0000-000000000001')$$,
   '42501','PUBLIC_EXAM_MANIFEST_FORBIDDEN',
@@ -199,6 +219,10 @@ select set_config(
   'request.jwt.claims',
   '{"sub":"62000000-0000-0000-0000-000000000002","role":"authenticated"}',
   true);
+select throws_ok($$select public.get_public_student_timeline(
+  '61300000-0000-0000-0000-000000000001')$$,
+  'P0002','PUBLIC_STUDENT_TIMELINE_NOT_FOUND',
+  'student timeline never exposes another participant authority');
 select throws_ok($$select public.join_open_public_session_by_room_code(
   'OPEN19','other-device','other-machine','1.0.0','{}')$$,
   'P0002','OPEN_PUBLIC_SESSION_NOT_FOUND',

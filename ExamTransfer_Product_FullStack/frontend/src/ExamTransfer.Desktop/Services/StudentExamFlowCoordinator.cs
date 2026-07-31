@@ -229,6 +229,7 @@ public sealed class StudentExamFlowCoordinator(
             state.SessionStatus = detail.Summary.Status;
             state.ParticipantStatus = participant.Status;
             state.SubmissionStatus = participant.SubmissionStatus;
+            state.ApplyResubmitAuthority(participant.ResubmitAllowed);
             attempt = detail.Summary.DeliveryType == ExamDeliveryType.MultipleChoice
                 ? ApiGuard.Require(await api.GetAsync<QuizAttemptLookupDto>(
                     $"api/v1/student/quiz/sessions/{state.SessionId}/attempt",
@@ -342,6 +343,7 @@ public sealed class StudentExamFlowCoordinator(
         state.SessionStatus = ParseEnum<SessionStatus>(timeline.SessionStatus);
         state.ParticipantStatus = ParseEnum<ParticipantStatus>(timeline.ParticipantStatus);
         state.SubmissionStatus = ParseEnum(timeline.SubmissionStatus, SubmissionStatus.NotStarted);
+        state.ApplyResubmitAuthority(timeline.ResubmitAllowed);
         state.CurrentAttempt = attempt;
         state.Revision = timeline.Revision;
     }

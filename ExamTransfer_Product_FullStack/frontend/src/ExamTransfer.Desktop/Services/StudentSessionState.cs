@@ -27,6 +27,7 @@ public sealed class StudentSessionState : ObservableObject
     private SessionStatus? sessionStatus;
     private ParticipantStatus? participantStatus;
     private SubmissionStatus submissionStatus = SubmissionStatus.NotStarted;
+    private bool resubmitAllowed;
     private QuizAttemptDto? currentAttempt;
     private long revision;
     private string? routeIntent;
@@ -55,6 +56,7 @@ public sealed class StudentSessionState : ObservableObject
     public SessionStatus? SessionStatus { get => sessionStatus; set => Set(ref sessionStatus, value); }
     public ParticipantStatus? ParticipantStatus { get => participantStatus; set => Set(ref participantStatus, value); }
     public SubmissionStatus SubmissionStatus { get => submissionStatus; set => Set(ref submissionStatus, value); }
+    public bool ResubmitAllowed { get => resubmitAllowed; private set => Set(ref resubmitAllowed, value); }
     public QuizAttemptDto? CurrentAttempt { get => currentAttempt; set => Set(ref currentAttempt, value); }
     public long Revision { get => revision; set => Set(ref revision, value); }
     public string? RouteIntent { get => routeIntent; set => Set(ref routeIntent, value); }
@@ -101,6 +103,7 @@ public sealed class StudentSessionState : ObservableObject
         DisplayName = name;
         AccessMode = mode;
         ServerId = discoveredServerId;
+        ApplyResubmitAuthority(false);
         JoinMutationCommitted = true;
         PostJoinSynchronizationPending = true;
         SessionChanged?.Invoke(this, EventArgs.Empty);
@@ -126,6 +129,9 @@ public sealed class StudentSessionState : ObservableObject
             PostJoinSynchronizationPending = true;
     }
 
+    internal void ApplyResubmitAuthority(bool allowed) =>
+        ResubmitAllowed = allowed;
+
     public void Reset()
     {
         SessionId = null;
@@ -148,6 +154,7 @@ public sealed class StudentSessionState : ObservableObject
         SessionStatus = null;
         ParticipantStatus = null;
         SubmissionStatus = SubmissionStatus.NotStarted;
+        ApplyResubmitAuthority(false);
         CurrentAttempt = null;
         Revision = 0;
         RouteIntent = null;

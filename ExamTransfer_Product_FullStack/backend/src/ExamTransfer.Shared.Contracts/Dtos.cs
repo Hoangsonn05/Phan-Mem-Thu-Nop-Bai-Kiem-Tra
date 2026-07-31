@@ -84,7 +84,8 @@ public sealed record ParticipantDto(
     SubmissionStatus SubmissionStatus,
     int ExtraTimeMinutes,
     DateTimeOffset? EffectiveDeadlineUtc,
-    ConnectionState ConnectionState);
+    ConnectionState ConnectionState,
+    bool ResubmitAllowed = false);
 
 public sealed record SubmissionFileDto(Guid Id, string Name, long SizeBytes, string Sha256, string MimeType, int TotalChunks, IReadOnlyList<int> ReceivedChunks, TransferStatus TransferStatus, string? DownloadUrl);
 public sealed record SubmissionSummaryDto(Guid Id, Guid SessionId, Guid ParticipantId, string StudentCode, string DisplayName, int AttemptNumber, SubmissionStatus Status, DateTimeOffset? ClientSubmittedAtUtc, DateTimeOffset? ServerReceivedAtUtc, DateTimeOffset DeadlineUtc, bool IsLate, string? ReceiptCode, bool IsOfficial, IReadOnlyList<SubmissionFileDto> Files);

@@ -60,9 +60,23 @@ public static class MappingExtensions
                         ? ConnectionState.Degraded
                         : ConnectionState.Online;
 
-        return new ParticipantDto(entity.Id, entity.SessionId, entity.StudentCode, entity.DisplayName, entity.DeviceId,
-            entity.MachineName, entity.IpAddress, entity.AppVersion, entity.Status, entity.LastSeenUtc,
-            entity.DownloadStatus, entity.SubmissionStatus, entity.ExtraTimeMinutes, effectiveDeadlineUtc, connection);
+        return new ParticipantDto(
+            Id: entity.Id,
+            SessionId: entity.SessionId,
+            StudentCode: entity.StudentCode,
+            DisplayName: entity.DisplayName,
+            DeviceId: entity.DeviceId,
+            MachineName: entity.MachineName,
+            IpAddress: entity.IpAddress,
+            AppVersion: entity.AppVersion,
+            Status: entity.Status,
+            LastSeenUtc: entity.LastSeenUtc,
+            DownloadStatus: entity.DownloadStatus,
+            SubmissionStatus: entity.SubmissionStatus,
+            ExtraTimeMinutes: entity.ExtraTimeMinutes,
+            EffectiveDeadlineUtc: effectiveDeadlineUtc,
+            ConnectionState: connection,
+            ResubmitAllowed: entity.ResubmitAllowed);
     }
 
     public static SubmissionFileDto ToDto(this SubmissionFile entity, IReadOnlyList<int> chunks) =>
