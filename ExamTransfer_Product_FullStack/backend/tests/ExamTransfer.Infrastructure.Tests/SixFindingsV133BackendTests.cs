@@ -1,6 +1,7 @@
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Infrastructure.Services;
@@ -176,6 +177,216 @@ public sealed class SixFindingsV133BackendTests
     }
 
     [Fact]
+    public async Task ProjectionReadiness_IsReadOnlyAndUsesNewestExamSessionQueueRow()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var exam = await SeedPublishedExamAsync(database.Context);
+        var lanSession = Session(exam, "READLAN", SessionAccessMode.LanOnly);
+        var cloudSession = Session(exam, "READCLOUD", SessionAccessMode.PublicCloud);
+        database.Context.ExamSessionsSet.AddRange(lanSession, cloudSession);
+        await database.Context.SaveChangesAsync();
+        database.Context.ChangeTracker.Clear();
+
+        var signal = new RecordingCloudSyncSignal();
+        var execution = new PublicCloudProjectionExecution(database.Context, signal);
+        var rowCountBefore = await database.Context.SyncQueueSet.CountAsync();
+
+        var lan = await execution.GetProjectionReadinessAsync(
+            lanSession.Id,
+            default);
+        var missing = await execution.GetProjectionReadinessAsync(
+            cloudSession.Id,
+            default);
+
+        Assert.False(lan.Required);
+        Assert.True(lan.Ready);
+        Assert.Equal(SyncStatus.LocalOnly, lan.Status);
+        Assert.Equal("LAN_ONLY", lan.Code);
+        Assert.True(missing.Required);
+        Assert.False(missing.Ready);
+        Assert.Equal(SyncStatus.Pending, missing.Status);
+        Assert.Equal("PUBLICCLOUD_PROJECTION_PENDING", missing.Code);
+        Assert.Equal(rowCountBefore, await database.Context.SyncQueueSet.CountAsync());
+        Assert.Equal(0, signal.PulseCount);
+        Assert.DoesNotContain(
+            database.Context.ChangeTracker.Entries(),
+            entry => entry.State is EntityState.Added
+                or EntityState.Modified
+                or EntityState.Deleted);
+
+        var older = ProjectionItem(
+            cloudSession.Id,
+            SyncStatus.Synced,
+            DateTimeOffset.UtcNow.AddMinutes(-2),
+            retryCount: 1);
+        var newest = ProjectionItem(
+            cloudSession.Id,
+            SyncStatus.Conflict,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            retryCount: 7);
+        database.Context.SyncQueueSet.AddRange(older, newest);
+        await database.Context.SaveChangesAsync();
+        database.Context.ChangeTracker.Clear();
+        var countWithProjection = await database.Context.SyncQueueSet.CountAsync();
+
+        var conflicted = await execution.GetProjectionReadinessAsync(
+            cloudSession.Id,
+            default);
+
+        Assert.True(conflicted.Required);
+        Assert.False(conflicted.Ready);
+        Assert.Equal(SyncStatus.Conflict, conflicted.Status);
+        Assert.Equal("PUBLICCLOUD_PROJECTION_FAILED", conflicted.Code);
+        Assert.Equal(7, conflicted.RetryCount);
+        Assert.Equal(
+            countWithProjection,
+            await database.Context.SyncQueueSet.CountAsync());
+        Assert.Equal(0, signal.PulseCount);
+        Assert.DoesNotContain(
+            typeof(PublicCloudProjectionExecution)
+                .GetConstructors()
+                .Single()
+                .GetParameters()
+                .Select(parameter => parameter.ParameterType),
+            type => type == typeof(ICloudAdapter));
+    }
+
+    [Fact]
+    public async Task RetryProjection_UpdatesNewestQueueInPlaceWithoutResettingRetryMetadata()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var exam = await SeedPublishedExamAsync(database.Context);
+        var session = Session(exam, "RETRYCLOUD", SessionAccessMode.PublicCloud);
+        var lastAttemptAtUtc = DateTimeOffset.UtcNow.AddMinutes(-3);
+        var payload = """{"id":"projection-payload","source_mode":"Lan"}""";
+        var item = ProjectionItem(
+            session.Id,
+            SyncStatus.Failed,
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            retryCount: 4);
+        item.PayloadJson = payload;
+        item.LastError = "transport failed";
+        item.LeaseUntilUtc = DateTimeOffset.UtcNow.AddMinutes(2);
+        item.NextRetryAtUtc = DateTimeOffset.UtcNow.AddMinutes(10);
+        item.LastAttemptAtUtc = lastAttemptAtUtc;
+        item.CompletedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+        database.Context.ExamSessionsSet.Add(session);
+        database.Context.SyncQueueSet.Add(item);
+        await database.Context.SaveChangesAsync();
+        database.Context.ChangeTracker.Clear();
+
+        var signal = new RecordingCloudSyncSignal();
+        var execution = new PublicCloudProjectionExecution(database.Context, signal);
+        var beforeRetry = DateTimeOffset.UtcNow;
+        var retrying = await execution.RetryProjectionAsync(session.Id, default);
+        var afterRetry = DateTimeOffset.UtcNow;
+
+        database.Context.ChangeTracker.Clear();
+        var persisted = await database.Context.SyncQueueSet.SingleAsync(
+            row => row.Id == item.Id);
+        Assert.False(retrying.Ready);
+        Assert.Equal(SyncStatus.Pending, retrying.Status);
+        Assert.Equal("PUBLICCLOUD_PROJECTION_SYNCING", retrying.Code);
+        Assert.Equal(SyncStatus.Pending, persisted.Status);
+        Assert.Equal(4, persisted.RetryCount);
+        Assert.Equal(payload, persisted.PayloadJson);
+        Assert.Equal("upsert", persisted.Operation);
+        Assert.Equal(lastAttemptAtUtc, persisted.LastAttemptAtUtc);
+        Assert.Null(persisted.LastError);
+        Assert.Null(persisted.LeaseUntilUtc);
+        Assert.Null(persisted.CompletedAtUtc);
+        Assert.NotNull(persisted.NextRetryAtUtc);
+        Assert.InRange(
+            persisted.NextRetryAtUtc.Value,
+            beforeRetry,
+            afterRetry);
+        Assert.Equal(1, signal.PulseCount);
+        Assert.Equal(
+            1,
+            await database.Context.SyncQueueSet.CountAsync(
+                row => row.EntityType == "exam_sessions"
+                    && row.EntityId == session.Id.ToString()));
+
+        var beforeRepeatedRetry = DateTimeOffset.UtcNow;
+        var repeated = await execution.RetryProjectionAsync(session.Id, default);
+
+        database.Context.ChangeTracker.Clear();
+        var repeatedItem = await database.Context.SyncQueueSet.SingleAsync(
+            row => row.Id == item.Id);
+        Assert.Equal(SyncStatus.Pending, repeated.Status);
+        Assert.Equal(4, repeatedItem.RetryCount);
+        Assert.True(repeatedItem.NextRetryAtUtc >= beforeRepeatedRetry);
+        Assert.Equal(2, signal.PulseCount);
+        Assert.Equal(
+            1,
+            await database.Context.SyncQueueSet.CountAsync(
+                row => row.EntityType == "exam_sessions"
+                    && row.EntityId == session.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task RetryProjection_LanSyncedAndMissingContractsRemainUnchanged()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var exam = await SeedPublishedExamAsync(database.Context);
+        var lanSession = Session(exam, "RETRYLAN", SessionAccessMode.LanOnly);
+        var syncedSession = Session(exam, "RETRYSYNC", SessionAccessMode.PublicCloud);
+        var missingSession = Session(exam, "RETRYMISS", SessionAccessMode.PublicCloud);
+        var lanItem = ProjectionItem(
+            lanSession.Id,
+            SyncStatus.Failed,
+            DateTimeOffset.UtcNow.AddMinutes(-2),
+            retryCount: 3);
+        lanItem.LastError = "lan queue must remain unchanged";
+        var syncedItem = ProjectionItem(
+            syncedSession.Id,
+            SyncStatus.Synced,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            retryCount: 5);
+        syncedItem.CompletedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+        database.Context.ExamSessionsSet.AddRange(
+            lanSession,
+            syncedSession,
+            missingSession);
+        database.Context.SyncQueueSet.AddRange(lanItem, syncedItem);
+        await database.Context.SaveChangesAsync();
+        database.Context.ChangeTracker.Clear();
+
+        var signal = new RecordingCloudSyncSignal();
+        var execution = new PublicCloudProjectionExecution(database.Context, signal);
+
+        var lan = await execution.RetryProjectionAsync(lanSession.Id, default);
+        var synced = await execution.RetryProjectionAsync(
+            syncedSession.Id,
+            default);
+        var missing = await Assert.ThrowsAsync<ApiException>(() =>
+            execution.RetryProjectionAsync(missingSession.Id, default));
+
+        database.Context.ChangeTracker.Clear();
+        var persistedLan = await database.Context.SyncQueueSet
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == lanItem.Id);
+        var persistedSynced = await database.Context.SyncQueueSet
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == syncedItem.Id);
+        Assert.False(lan.Required);
+        Assert.True(lan.Ready);
+        Assert.Equal(SyncStatus.LocalOnly, lan.Status);
+        Assert.True(synced.Required);
+        Assert.True(synced.Ready);
+        Assert.Equal(SyncStatus.Synced, synced.Status);
+        Assert.Equal(SyncStatus.Failed, persistedLan.Status);
+        Assert.Equal("lan queue must remain unchanged", persistedLan.LastError);
+        Assert.Equal(3, persistedLan.RetryCount);
+        Assert.Equal(SyncStatus.Synced, persistedSynced.Status);
+        Assert.Equal(5, persistedSynced.RetryCount);
+        Assert.Equal(ErrorCodes.Conflict, missing.Code);
+        Assert.Equal(409, missing.StatusCode);
+        Assert.Equal(0, signal.PulseCount);
+        Assert.Equal(2, await database.Context.SyncQueueSet.CountAsync());
+    }
+
+    [Fact]
     public async Task RuntimeHealth_RunsSchemaPreflightAndReportsBothWorkersHealthy()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
@@ -285,6 +496,41 @@ public sealed class SixFindingsV133BackendTests
         return exam;
     }
 
+    private static ExamSession Session(
+        Exam exam,
+        string roomCode,
+        SessionAccessMode accessMode) =>
+        new()
+        {
+            Exam = exam,
+            ExamId = exam.Id,
+            RoomCode = roomCode,
+            Status = SessionStatus.Waiting,
+            AcceptingParticipants = true,
+            AccessMode = accessMode,
+            AdmissionMode = SessionAdmissionMode.OpenRequest,
+            DeliveryTypeSnapshot = exam.DeliveryType,
+            SupervisionModeSnapshot = exam.SupervisionMode,
+            QuizResultPolicySnapshot = exam.QuizResultPolicy,
+            ExamVersionSnapshot = exam.Version
+        };
+
+    private static SyncQueueItem ProjectionItem(
+        Guid sessionId,
+        SyncStatus status,
+        DateTimeOffset createdAtUtc,
+        int retryCount) =>
+        new()
+        {
+            EntityType = "exam_sessions",
+            EntityId = sessionId.ToString(),
+            Operation = "upsert",
+            PayloadJson = """{"id":"projection"}""",
+            Status = status,
+            RetryCount = retryCount,
+            CreatedAtUtc = createdAtUtc
+        };
+
     private static CreateSessionRequest Request(Guid examId) => new(
         examId,
         null,
@@ -321,6 +567,18 @@ public sealed class SixFindingsV133BackendTests
             T payload,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    private sealed class RecordingCloudSyncSignal : ICloudSyncSignal
+    {
+        public int PulseCount { get; private set; }
+
+        public void Pulse() => PulseCount++;
+
+        public Task<bool> WaitAsync(
+            TimeSpan maximumDelay,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(false);
     }
 
     private sealed class SuccessfulPushCloud : ICloudAdapter
