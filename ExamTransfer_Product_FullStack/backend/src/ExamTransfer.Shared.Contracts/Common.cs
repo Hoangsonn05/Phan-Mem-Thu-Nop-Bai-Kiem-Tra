@@ -98,6 +98,12 @@ public static class ErrorCodes
     public const string InvalidStateTransition = "INVALID_STATE_TRANSITION";
     public const string SessionAlreadyStarted = "SESSION_ALREADY_STARTED";
     public const string SubmissionFinalized = "SUBMISSION_FINALIZED";
+    public const string SessionSubmissionNotOpen = "SESSION_SUBMISSION_NOT_OPEN";
+    public const string SubmissionAlreadyProcessing = "SUBMISSION_ALREADY_PROCESSING";
+    public const string SubmissionAlreadyCompleted = "SUBMISSION_ALREADY_COMPLETED";
+    public const string SubmissionNotFound = "SUBMISSION_NOT_FOUND";
+    public const string SubmissionIdempotencyConflict = "SUBMISSION_IDEMPOTENCY_CONFLICT";
+    public const string ResubmitNotAllowed = "RESUBMIT_NOT_ALLOWED";
     public const string DuplicateStudentCode = "DUPLICATE_STUDENT_CODE";
     public const string RoomCodeConflict = "ROOM_CODE_CONFLICT";
     public const string InvalidFileType = "INVALID_FILE_TYPE";

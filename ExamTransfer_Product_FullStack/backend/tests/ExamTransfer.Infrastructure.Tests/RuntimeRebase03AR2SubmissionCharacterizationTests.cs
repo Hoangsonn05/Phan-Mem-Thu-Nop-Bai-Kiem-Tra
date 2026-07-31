@@ -17,7 +17,7 @@ using Xunit;
 
 namespace ExamTransfer.Infrastructure.Tests;
 
-public sealed class RuntimeRebase03AR2SubmissionCharacterizationTests
+public sealed partial class RuntimeRebase03AR2SubmissionCharacterizationTests
 {
     private static readonly byte[] EmptyZip =
     [
@@ -28,7 +28,7 @@ public sealed class RuntimeRebase03AR2SubmissionCharacterizationTests
     ];
 
     [Fact]
-    public async Task EndSessionBetweenInitAndUpload_DoesNotBlockChunkOrFinalize()
+    public async Task EndSessionBetweenInitAndUpload_BlocksChunkWithoutSideEffects()
     {
         await using var database = await RuntimeDatabase.CreateAsync();
         var seed = await SeedAsync(database.Context, SessionStatus.InProgress);
@@ -41,33 +41,36 @@ public sealed class RuntimeRebase03AR2SubmissionCharacterizationTests
         seed.Session.EndedAtUtc = DateTimeOffset.UtcNow;
         await database.Context.SaveChangesAsync();
 
+        var temporaryPath = await database.Context.SubmissionFilesSet
+            .Where(x => x.Id == initialized.FilePlans.Single().FileId)
+            .Select(x => x.TemporaryPath)
+            .SingleAsync();
         await using var content = new MemoryStream(EmptyZip, writable: false);
-        await service.Service.UploadChunkAsync(
-            initialized.SubmissionId,
-            initialized.FilePlans.Single().FileId,
-            0,
-            content,
-            content.Length,
-            null,
-            CancellationToken.None);
-        var finalized = await service.Service.FinalizeAsync(
-            initialized.SubmissionId,
-            new("runtime characterization"),
-            CancellationToken.None);
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            service.Service.UploadChunkAsync(
+                initialized.SubmissionId,
+                initialized.FilePlans.Single().FileId,
+                0,
+                content,
+                content.Length,
+                null,
+                CancellationToken.None));
 
         database.Context.ChangeTracker.Clear();
         var persisted = await database.Context.SubmissionsSet
             .Include(x => x.Participant)
             .SingleAsync(x => x.Id == initialized.SubmissionId);
+        Assert.Equal(ErrorCodes.SessionSubmissionNotOpen, error.Code);
+        Assert.Equal(409, error.StatusCode);
         Assert.Equal(SessionStatus.Finished, seed.Session.Status);
-        Assert.True(finalized.Status is
-            SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted);
-        Assert.False(string.IsNullOrWhiteSpace(finalized.ReceiptCode));
-        Assert.Equal(finalized.Status, persisted.Status);
-        Assert.Equal(finalized.Status, persisted.Participant.SubmissionStatus);
+        Assert.Equal(SubmissionStatus.Uploading, persisted.Status);
+        Assert.Equal(SubmissionStatus.Uploading, persisted.Participant.SubmissionStatus);
+        Assert.False(Directory.Exists(temporaryPath));
+        Assert.False(Directory.Exists(service.Paths.ReceiptRoot(seed.Session.Id)));
     }
 
     [Theory]
+    [InlineData(SessionStatus.Waiting)]
     [InlineData(SessionStatus.Finished)]
     [InlineData(SessionStatus.Cancelled)]
     [InlineData(SessionStatus.Archived)]
@@ -82,7 +85,7 @@ public sealed class RuntimeRebase03AR2SubmissionCharacterizationTests
                 Request(seed, $"terminal-{terminal}-{Guid.NewGuid():N}"),
                 CancellationToken.None));
 
-        Assert.Equal(ErrorCodes.InvalidStateTransition, error.Code);
+        Assert.Equal(ErrorCodes.SessionSubmissionNotOpen, error.Code);
         Assert.Equal(409, error.StatusCode);
         Assert.Empty(await database.Context.SubmissionsSet.ToListAsync());
         Assert.Equal(SubmissionStatus.NotStarted, seed.Participant.SubmissionStatus);
@@ -91,7 +94,7 @@ public sealed class RuntimeRebase03AR2SubmissionCharacterizationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ConcurrentInit_LeavesOneRowAndLeaksRawDatabaseFailure(
+    public async Task ConcurrentInit_ReturnsIdempotentResultOrTypedConflict(
         bool sameIdempotencyKey)
     {
         await using var database = await RuntimeDatabase.CreateAsync();
@@ -121,14 +124,21 @@ public sealed class RuntimeRebase03AR2SubmissionCharacterizationTests
             CaptureAsync(() => first.InitAsync(firstRequest, CancellationToken.None)),
             CaptureAsync(() => second.InitAsync(secondRequest, CancellationToken.None)));
 
-        var success = Assert.Single(outcomes, x => x.Response is not null);
-        var failure = Assert.Single(outcomes, x => x.Exception is not null);
-        Assert.Equal(1, success.Response!.AttemptNumber);
-        Assert.IsNotType<ApiException>(failure.Exception);
-        Assert.True(
-            failure.Exception is DbUpdateException
-                || failure.Exception?.InnerException is DbException,
-            failure.Exception?.ToString());
+        if (sameIdempotencyKey)
+        {
+            Assert.All(outcomes, x => Assert.Null(x.Exception));
+            Assert.Single(outcomes.Select(x => x.Response!.SubmissionId).Distinct());
+            Assert.All(outcomes, x => Assert.Equal(1, x.Response!.AttemptNumber));
+        }
+        else
+        {
+            var success = Assert.Single(outcomes, x => x.Response is not null);
+            var failure = Assert.Single(outcomes, x => x.Exception is not null);
+            Assert.Equal(1, success.Response!.AttemptNumber);
+            var error = Assert.IsType<ApiException>(failure.Exception);
+            Assert.Equal(ErrorCodes.SubmissionAlreadyProcessing, error.Code);
+            Assert.Equal(409, error.StatusCode);
+        }
 
         await using var verify = database.CreateContext();
         var persisted = Assert.Single(await verify.SubmissionsSet

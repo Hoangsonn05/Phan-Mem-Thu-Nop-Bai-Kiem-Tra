@@ -6,6 +6,7 @@ using ExamTransfer.Infrastructure.Execution.Dispatch;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Storage;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -21,69 +22,179 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
         if (request.Files.Count != StudentSubmissionPolicy.MaxFileCount)
             throw new ApiException(ErrorCodes.SubmissionFileCountInvalid, "Bài nộp phải có đúng một file nén.");
         if (string.IsNullOrWhiteSpace(request.IdempotencyKey)) throw new ApiException(ErrorCodes.ValidationFailed, "Thiếu idempotencyKey.");
-        var existing = await db.SubmissionsSet.Include(x => x.Files).FirstOrDefaultAsync(x => x.ParticipantId == request.ParticipantId && x.IdempotencyKey == request.IdempotencyKey, cancellationToken);
-        if (existing is not null) return ToInitResponse(existing);
-
-        var participant = await db.SessionParticipantsSet.Include(x => x.Session).ThenInclude(x => x.Exam).FirstOrDefaultAsync(x => x.Id == request.ParticipantId && x.SessionId == request.SessionId, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người tham gia.", 404);
-        if (participant.Status != ParticipantStatus.Approved) throw new ApiException(ErrorCodes.Forbidden, "Người tham gia chưa được duyệt.", 403);
-        if (participant.Session.Status is not (SessionStatus.InProgress or SessionStatus.Collecting)) throw new ApiException(ErrorCodes.InvalidStateTransition, "Phòng chưa cho phép nộp bài.", 409);
-        var hasFinalizedAttempt = await db.SubmissionsSet.AnyAsync(x => x.ParticipantId == participant.Id && (x.Status == SubmissionStatus.Submitted || x.Status == SubmissionStatus.LateSubmitted), cancellationToken);
-        if (hasFinalizedAttempt && !participant.ResubmitAllowed)
-            throw new ApiException(ErrorCodes.Conflict, "Đã có bài nộp; giáo viên chưa cho phép nộp lại.", 409);
-
-        if (participant.Session.Exam.DeliveryType != ExamDeliveryType.FileSubmission)
-            throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài thi trắc nghiệm không sử dụng luồng nộp file.", 409);
         ValidateFiles(request.Files);
-        var attempt = (await db.SubmissionsSet.Where(x => x.ParticipantId == request.ParticipantId).MaxAsync(x => (int?)x.AttemptNumber, cancellationToken) ?? 0) + 1;
-        var deadline = participant.Session.StartedAtUtc!.Value.AddMinutes(participant.Session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
-        var submission = new Submission
+
+        Submission? submission = null;
+        SessionParticipant? participant = null;
+        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
         {
-            SessionId = request.SessionId, ParticipantId = request.ParticipantId, AttemptNumber = attempt, IdempotencyKey = request.IdempotencyKey,
-            Status = SubmissionStatus.Uploading, ClientSubmittedAtUtc = request.ClientSubmittedAtUtc, DeadlineUtc = deadline, IsOfficial = false
-        };
-        foreach (var input in request.Files)
-        {
-            var fileId = Guid.NewGuid(); var storedName = fileId.ToString("N") + Path.GetExtension(input.Name).ToLowerInvariant();
-            var transferRoot = Path.Combine(paths.SessionRoot(request.SessionId), "temporary", submission.Id.ToString("N"), fileId.ToString("N"), "chunks");
-            submission.Files.Add(new SubmissionFile
+            participant = await db.SessionParticipantsSet
+                .Include(x => x.Session)
+                .ThenInclude(x => x.Exam)
+                .FirstOrDefaultAsync(
+                    x => x.Id == request.ParticipantId
+                        && x.SessionId == request.SessionId,
+                    cancellationToken)
+                ?? throw new ApiException(
+                    ErrorCodes.NotFound,
+                    "Không tìm thấy người tham gia.",
+                    404);
+            if (participant.Status != ParticipantStatus.Approved)
+                throw new ApiException(ErrorCodes.Forbidden, "Người tham gia chưa được duyệt.", 403);
+            EnsureSessionAcceptsSubmission(participant.Session.Status);
+
+            var existing = await db.SubmissionsSet
+                .Include(x => x.Files)
+                .FirstOrDefaultAsync(
+                    x => x.ParticipantId == request.ParticipantId
+                        && x.IdempotencyKey == request.IdempotencyKey,
+                    cancellationToken);
+            if (existing is not null)
             {
-                Id = fileId, ClientFileId = input.ClientFileId, OriginalName = Path.GetFileName(input.Name), StoredName = storedName, MimeType = input.MimeType,
-                SizeBytes = input.SizeBytes, Sha256 = input.Sha256.ToLowerInvariant(), ChunkSizeBytes = _options.Transfer.ChunkSizeBytes,
-                TotalChunks = (int)Math.Ceiling(input.SizeBytes / (double)_options.Transfer.ChunkSizeBytes), TemporaryPath = transferRoot, TransferStatus = TransferStatus.Running
-            });
+                EnsureIdempotencyMatches(existing, request);
+                await transaction.CommitAsync(cancellationToken);
+                return ToInitResponse(existing);
+            }
+
+            if (participant.Session.Exam.DeliveryType != ExamDeliveryType.FileSubmission)
+                throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài thi trắc nghiệm không sử dụng luồng nộp file.", 409);
+
+            var previousAttempts = await db.SubmissionsSet
+                .Where(x => x.ParticipantId == participant.Id)
+                .ToListAsync(cancellationToken);
+            if (previousAttempts.Any(x => SubmissionStatePolicy.IsActiveSubmissionStatus(x.Status)))
+                throw new ApiException(
+                    ErrorCodes.SubmissionAlreadyProcessing,
+                    "Đã có một lần nộp bài đang được xử lý.",
+                    409);
+            if (previousAttempts.Any(x => SubmissionStatePolicy.IsCompletedSubmissionStatus(x.Status))
+                && !participant.ResubmitAllowed)
+            {
+                throw new ApiException(
+                    ErrorCodes.ResubmitNotAllowed,
+                    "Đã có bài nộp; giáo viên chưa cho phép nộp lại.",
+                    409);
+            }
+
+            var attempt = (previousAttempts.Count == 0
+                ? 0
+                : previousAttempts.Max(x => x.AttemptNumber)) + 1;
+            var deadline = participant.Session.StartedAtUtc!.Value.AddMinutes(
+                participant.Session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
+            submission = new Submission
+            {
+                SessionId = request.SessionId,
+                ParticipantId = request.ParticipantId,
+                AttemptNumber = attempt,
+                IdempotencyKey = request.IdempotencyKey,
+                Status = SubmissionStatus.Uploading,
+                ClientSubmittedAtUtc = request.ClientSubmittedAtUtc,
+                DeadlineUtc = deadline,
+                IsOfficial = false
+            };
+            foreach (var input in request.Files)
+            {
+                var fileId = Guid.NewGuid();
+                var storedName = fileId.ToString("N")
+                    + Path.GetExtension(input.Name).ToLowerInvariant();
+                var transferRoot = Path.Combine(
+                    paths.SessionRoot(request.SessionId),
+                    "temporary",
+                    submission.Id.ToString("N"),
+                    fileId.ToString("N"),
+                    "chunks");
+                submission.Files.Add(new SubmissionFile
+                {
+                    Id = fileId,
+                    ClientFileId = input.ClientFileId,
+                    OriginalName = Path.GetFileName(input.Name),
+                    StoredName = storedName,
+                    MimeType = input.MimeType,
+                    SizeBytes = input.SizeBytes,
+                    Sha256 = input.Sha256.ToLowerInvariant(),
+                    ChunkSizeBytes = _options.Transfer.ChunkSizeBytes,
+                    TotalChunks = (int)Math.Ceiling(
+                        input.SizeBytes / (double)_options.Transfer.ChunkSizeBytes),
+                    TemporaryPath = transferRoot,
+                    TransferStatus = TransferStatus.Running
+                });
+            }
+
+            db.SubmissionsSet.Add(submission);
+            participant.SubmissionStatus = SubmissionStatus.Uploading;
+            participant.ResubmitAllowed = false;
+            participant.Session.Sequence++;
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (IsSubmissionUniquenessViolation(ex))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                db.ChangeTracker.Clear();
+                return await ResolveConcurrentInitAsync(request, cancellationToken);
+            }
         }
-        db.SubmissionsSet.Add(submission); participant.SubmissionStatus = SubmissionStatus.Uploading; participant.ResubmitAllowed = false; participant.Session.Sequence++;
-        await db.SaveChangesAsync(cancellationToken);
+
         await audit.WriteAsync("SubmissionStarted", nameof(Submission), submission.Id.ToString(), submission.SessionId, null, new { submission.ParticipantId, submission.AttemptNumber, fileCount = submission.Files.Count }, cancellationToken);
-        await realtime.PublishSessionAsync(submission.SessionId, RealtimeEvents.SubmissionStarted, participant.Session.Sequence, new { submissionId = submission.Id, participantId = participant.Id, attempt }, cancellationToken);
+        await realtime.PublishSessionAsync(submission.SessionId, RealtimeEvents.SubmissionStarted, participant.Session.Sequence, new { submissionId = submission.Id, participantId = participant.Id, attempt = submission.AttemptNumber }, cancellationToken);
         return ToInitResponse(submission);
     }
 
     public async Task UploadChunkAsync(Guid submissionId, Guid fileId, int index, Stream content, long contentLength, string? chunkSha256, CancellationToken cancellationToken)
     {
-        var file = await db.SubmissionFilesSet.Include(x => x.Submission).ThenInclude(x => x.Participant).FirstOrDefaultAsync(x => x.Id == fileId && x.SubmissionId == submissionId, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy file bài nộp.", 404);
-        if (file.Submission.Status is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted or SubmissionStatus.Rejected) throw new ApiException(ErrorCodes.SubmissionFinalized, "Bài nộp đã đóng.", 409);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var file = await db.SubmissionFilesSet
+            .Include(x => x.Submission)
+            .ThenInclude(x => x.Participant)
+            .ThenInclude(x => x.Session)
+            .FirstOrDefaultAsync(
+                x => x.Id == fileId && x.SubmissionId == submissionId,
+                cancellationToken)
+            ?? throw new ApiException(
+                ErrorCodes.SubmissionNotFound,
+                "Không tìm thấy file bài nộp.",
+                404);
+        EnsureSessionAcceptsSubmission(file.Submission.Participant.Session.Status);
+        if (SubmissionStatePolicy.IsCompletedSubmissionStatus(file.Submission.Status))
+            throw new ApiException(
+                ErrorCodes.SubmissionAlreadyCompleted,
+                "Bài nộp đã đóng.",
+                409);
+        if (!SubmissionStatePolicy.AcceptsChunks(file.Submission.Status))
+            throw new ApiException(
+                ErrorCodes.SubmissionAlreadyProcessing,
+                "Bài nộp đang được hoàn tất.",
+                409);
         if (index < 0 || index >= file.TotalChunks || contentLength <= 0 || contentLength > file.ChunkSizeBytes) throw new ApiException(ErrorCodes.ChunkMismatch, "Chunk không hợp lệ.");
         await chunks.WriteChunkAsync(file.TemporaryPath, index, content, file.ChunkSizeBytes, chunkSha256, cancellationToken);
         var received = chunks.ReadReceivedChunks(file.ReceivedChunksJson).ToHashSet(); received.Add(index); file.ReceivedChunksJson = chunks.WriteReceivedChunks(received); file.TransferStatus = TransferStatus.Running;
         file.Submission.Status = SubmissionStatus.Uploading; file.Submission.Participant.SubmissionStatus = SubmissionStatus.Uploading;
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public Task<SubmissionSummaryDto> GetStatusAsync(Guid submissionId, CancellationToken cancellationToken) => GetAsync(submissionId, cancellationToken);
 
     public async Task<FinalizeSubmissionResponse> FinalizeAsync(Guid submissionId, FinalizeSubmissionRequest request, CancellationToken cancellationToken)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var submission = await db.SubmissionsSet.Include(x => x.Files).Include(x => x.Participant).ThenInclude(x => x.Session).ThenInclude(x => x.Exam).FirstOrDefaultAsync(x => x.Id == submissionId, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài nộp.", 404);
+            ?? throw new ApiException(ErrorCodes.SubmissionNotFound, "Không tìm thấy bài nộp.", 404);
         if (submission.Status is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted)
         {
             var descriptors = submission.Files.Select(ToDescriptor).ToList();
+            await transaction.CommitAsync(cancellationToken);
             return new FinalizeSubmissionResponse(submission.Status, submission.ServerReceivedAtUtc!.Value, submission.IsLate, submission.ReceiptCode!, submission.ReceiptSignature!, descriptors);
         }
-        submission.Status = SubmissionStatus.Verifying; await db.SaveChangesAsync(cancellationToken);
+        EnsureSessionAcceptsSubmission(submission.Participant.Session.Status);
+        if (SubmissionStatePolicy.IsCompletedSubmissionStatus(submission.Status))
+            throw new ApiException(
+                ErrorCodes.SubmissionAlreadyCompleted,
+                "Bài nộp đã đóng.",
+                409);
+        submission.Status = SubmissionStatus.Verifying;
         var finalRoot = paths.SubmissionRoot(submission.SessionId, submission.Participant.StudentCode, submission.Id); Directory.CreateDirectory(finalRoot);
         var completedFiles = new List<FileDescriptorDto>();
         try
@@ -104,7 +215,11 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
         }
         catch
         {
-            submission.Status = SubmissionStatus.Failed; submission.Participant.SubmissionStatus = SubmissionStatus.Failed; await db.SaveChangesAsync(cancellationToken); throw;
+            submission.Status = SubmissionStatus.Failed;
+            submission.Participant.SubmissionStatus = SubmissionStatus.Failed;
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            throw;
         }
         var receivedAt = DateTimeOffset.UtcNow; submission.ServerReceivedAtUtc = receivedAt; submission.IsLate = receivedAt > submission.DeadlineUtc; submission.Status = submission.IsLate ? SubmissionStatus.LateSubmitted : SubmissionStatus.Submitted;
         submission.Participant.SubmissionStatus = submission.Status; submission.ClientNote = request.ClientNote;
@@ -115,7 +230,16 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
         await db.SaveChangesAsync(cancellationToken);
         var receiptRoot = paths.ReceiptRoot(submission.SessionId); Directory.CreateDirectory(receiptRoot);
         var receiptPath = Path.Combine(receiptRoot, submission.Id.ToString("N") + ".json");
-        await File.WriteAllTextAsync(receiptPath, JsonSerializer.Serialize(new { submissionId = submission.Id, signed.ReceiptCode, signed.Signature, serverReceivedAtUtc = receivedAt, submission.IsLate, files = completedFiles }, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }), cancellationToken);
+        try
+        {
+            await File.WriteAllTextAsync(receiptPath, JsonSerializer.Serialize(new { submissionId = submission.Id, signed.ReceiptCode, signed.Signature, serverReceivedAtUtc = receivedAt, submission.IsLate, files = completedFiles }, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }), cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            if (File.Exists(receiptPath)) File.Delete(receiptPath);
+            throw;
+        }
         await audit.WriteAsync("SubmissionAccepted", nameof(Submission), submission.Id.ToString(), submission.SessionId, null, new { submission.Status, submission.IsLate, submission.ReceiptCode }, cancellationToken);
         await outbox.EnqueueAsync("submissions", submission.Id.ToString(), "upsert", ToCloud(submission), cancellationToken: cancellationToken);
         foreach (var file in submission.Files)
@@ -202,6 +326,88 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
         created_at = x.CreatedAtUtc,
         updated_at = x.UpdatedAtUtc
     };
+
+    private async Task<InitSubmissionResponse> ResolveConcurrentInitAsync(
+        InitSubmissionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var existing = await db.SubmissionsSet
+            .AsNoTracking()
+            .Include(x => x.Files)
+            .FirstOrDefaultAsync(
+                x => x.ParticipantId == request.ParticipantId
+                    && x.IdempotencyKey == request.IdempotencyKey,
+                cancellationToken);
+        if (existing is not null)
+        {
+            EnsureIdempotencyMatches(existing, request);
+            return ToInitResponse(existing);
+        }
+
+        var statuses = await db.SubmissionsSet
+            .AsNoTracking()
+            .Where(x => x.ParticipantId == request.ParticipantId)
+            .Select(x => x.Status)
+            .ToListAsync(cancellationToken);
+        if (statuses.Any(SubmissionStatePolicy.IsActiveSubmissionStatus))
+        {
+            throw new ApiException(
+                ErrorCodes.SubmissionAlreadyProcessing,
+                "Đã có một lần nộp bài đang được xử lý.",
+                409);
+        }
+
+        throw new ApiException(
+            ErrorCodes.SubmissionIdempotencyConflict,
+            "Không thể xác nhận kết quả khởi tạo đồng thời.",
+            409);
+    }
+
+    private static void EnsureSessionAcceptsSubmission(SessionStatus status)
+    {
+        if (!SubmissionStatePolicy.SessionAcceptsSubmission(status))
+        {
+            throw new ApiException(
+                ErrorCodes.SessionSubmissionNotOpen,
+                "Phòng thi hiện không nhận bài nộp.",
+                409);
+        }
+    }
+
+    private static void EnsureIdempotencyMatches(
+        Submission existing,
+        InitSubmissionRequest request)
+    {
+        var filesMatch = existing.Files.Count == request.Files.Count
+            && request.Files.All(input => existing.Files.Any(file =>
+                file.ClientFileId == input.ClientFileId
+                && file.OriginalName == Path.GetFileName(input.Name)
+                && file.SizeBytes == input.SizeBytes
+                && file.Sha256.Equals(input.Sha256, StringComparison.OrdinalIgnoreCase)
+                && file.MimeType == input.MimeType));
+        if (existing.SessionId != request.SessionId || !filesMatch)
+        {
+            throw new ApiException(
+                ErrorCodes.SubmissionIdempotencyConflict,
+                "IdempotencyKey đã được dùng cho yêu cầu khởi tạo khác.",
+                409);
+        }
+    }
+
+    private static bool IsSubmissionUniquenessViolation(DbUpdateException exception)
+    {
+        if (exception.InnerException is not SqliteException sqlite
+            || sqlite.SqliteErrorCode != 19
+            || sqlite.SqliteExtendedErrorCode != 2067)
+        {
+            return false;
+        }
+
+        return sqlite.Message.Contains("submissions", StringComparison.OrdinalIgnoreCase)
+            && sqlite.Message.Contains("ParticipantId", StringComparison.OrdinalIgnoreCase)
+            && (sqlite.Message.Contains("AttemptNumber", StringComparison.OrdinalIgnoreCase)
+                || sqlite.Message.Contains("IdempotencyKey", StringComparison.OrdinalIgnoreCase));
+    }
 
     private static void ValidateFiles(IReadOnlyList<InitSubmissionFileRequest> files)
     {
