@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ServerDirectory,
+    [string]$ClientDirectory,
     [ValidateRange(1, 10)]
     [int]$Repeat = 1,
     [ValidateRange(5, 120)]
@@ -38,6 +39,33 @@ if (-not [string]::Equals(
         [string]$manifest.server.sha256,
         [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Published Local Server SHA-256 does not match release-manifest.json.'
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ClientDirectory)) {
+    $clientDirectoryPath = (Resolve-Path -LiteralPath $ClientDirectory).Path
+    $candidateRoot = (Split-Path -Parent $serverDirectoryPath)
+    if (-not [string]::Equals(
+            (Split-Path -Parent $clientDirectoryPath),
+            $candidateRoot,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Published frontend and backend must belong to the same candidate root.'
+    }
+
+    $clientExe = Join-Path $clientDirectoryPath 'ExamTransfer.Desktop.exe'
+    if (-not (Test-Path -LiteralPath $clientExe -PathType Leaf)) {
+        throw "Published frontend executable was not found: $clientExe"
+    }
+    if ($null -eq $manifest.frontend -or
+        [string]::IsNullOrWhiteSpace([string]$manifest.frontend.sha256)) {
+        throw 'Published release manifest does not contain frontend identity.'
+    }
+    $publishedClientHash = (Get-FileHash -LiteralPath $clientExe -Algorithm SHA256).Hash
+    if (-not [string]::Equals(
+            $publishedClientHash,
+            [string]$manifest.frontend.sha256,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Published frontend SHA-256 does not match release-manifest.json.'
+    }
 }
 
 function Get-PhysicalLanCandidate {
