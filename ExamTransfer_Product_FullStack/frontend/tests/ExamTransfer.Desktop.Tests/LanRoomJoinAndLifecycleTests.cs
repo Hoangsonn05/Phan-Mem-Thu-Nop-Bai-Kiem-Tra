@@ -217,6 +217,149 @@ public sealed class LanRoomJoinAndLifecycleTests
     }
 
     [Fact]
+    public void LanPostJoinSynchronizationFailure_RetainsIdentityButReportsJoinAsNetworkFailure()
+    {
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var room = Room(sessionId, Guid.NewGuid());
+        var handler = new JoinRecordingHandler(room, participantId);
+        var api = new BackendClient("http://192.168.1.7:5048", handler);
+        api.SetAccountToken("server-account-token");
+        var auth = StudentAuth();
+        var state = new StudentSessionState();
+        var completionCalls = 0;
+        using var viewModel = new StudentConnectViewModel(
+            api,
+            state,
+            auth,
+            new RecordingDiscovery(room),
+            _ =>
+            {
+                completionCalls++;
+                throw new IOException("simulated post-join realtime failure");
+            });
+        viewModel.RoomCode = room.RoomCode;
+
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && completionCalls == 1,
+            TimeSpan.FromSeconds(3)));
+
+        Assert.True(state.HasSession);
+        Assert.Equal(sessionId, state.SessionId);
+        Assert.Equal(participantId, state.ParticipantId);
+        Assert.Equal("participant-token", state.AccessToken);
+        Assert.Contains("NETWORK_ERROR", viewModel.Status, StringComparison.Ordinal);
+        Assert.Equal("danger", viewModel.StatusTone);
+        Assert.Equal(1, handler.JoinCalls);
+        auth.Clear();
+    }
+
+    [Fact]
+    public void LanRejoinAfterPostJoinFailure_ReissuesMutationWithNewRequestIdentity()
+    {
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var room = Room(sessionId, Guid.NewGuid());
+        var handler = new JoinRecordingHandler(room, participantId);
+        var api = new BackendClient("http://192.168.1.7:5048", handler);
+        api.SetAccountToken("server-account-token");
+        var auth = StudentAuth();
+        var state = new StudentSessionState();
+        using var viewModel = new StudentConnectViewModel(
+            api,
+            state,
+            auth,
+            new RecordingDiscovery(room),
+            _ => throw new IOException("simulated post-join timeline failure"));
+        viewModel.RoomCode = room.RoomCode;
+
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && handler.JoinCalls == 1,
+            TimeSpan.FromSeconds(3)));
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && handler.JoinCalls == 2,
+            TimeSpan.FromSeconds(3)));
+
+        Assert.Equal(2, handler.JoinNonces.Count);
+        Assert.Equal(2, handler.JoinNonces.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(participantId, state.ParticipantId);
+        auth.Clear();
+    }
+
+    [Fact]
+    public void PublicCloudPostJoinSynchronizationFailure_RetainsIdentityAndReissuesRpcOnRetry()
+    {
+        var auth = StudentAuth();
+        var state = new StudentSessionState();
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var examId = Guid.NewGuid();
+        var joinCalls = 0;
+        var completionCalls = 0;
+        PublicCloudJoinResult JoinResult() => new(
+            SessionId: sessionId,
+            ExamId: examId,
+            ParticipantId: participantId,
+            ParticipantStatus: ParticipantStatus.PendingApproval,
+            SessionStatus: SessionStatus.Waiting,
+            RoomCode: "ROOM42",
+            ExamTitle: "Cloud exam",
+            Subject: "Tin",
+            DurationMinutes: 45,
+            DeliveryType: ExamDeliveryType.FileSubmission,
+            SupervisionMode: SupervisionMode.None,
+            QuizResultPolicy: QuizResultPolicy.Hidden,
+            PlannedStartUtc: null,
+            Capacity: 40,
+            CurrentParticipantCount: 1,
+            AccessToken: "cloud-access-token");
+        using var viewModel = new StudentConnectViewModel(
+            new BackendClient("http://localhost:5048"),
+            state,
+            auth,
+            new RecordingDiscovery(null),
+            _ => throw new InvalidOperationException("LAN path must not run."),
+            () => true,
+            (_, _) =>
+            {
+                joinCalls++;
+                return Task.FromResult(JoinResult());
+            },
+            (_, _) =>
+            {
+                completionCalls++;
+                throw new IOException("simulated post-join timeline failure");
+            });
+        viewModel.SelectedAccessMode = SessionAccessMode.PublicCloud;
+        viewModel.RoomCode = "ROOM42";
+
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && joinCalls == 1,
+            TimeSpan.FromSeconds(3)));
+        Assert.True(state.HasSession);
+        Assert.Equal(sessionId, state.SessionId);
+        Assert.Equal(examId, state.ExamId);
+        Assert.Equal(participantId, state.ParticipantId);
+        Assert.Equal("cloud-access-token", state.AccessToken);
+        Assert.Contains("NETWORK_ERROR", viewModel.Status, StringComparison.Ordinal);
+
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && joinCalls == 2,
+            TimeSpan.FromSeconds(3)));
+
+        Assert.Equal(2, completionCalls);
+        Assert.Equal(sessionId, state.SessionId);
+        Assert.Equal(examId, state.ExamId);
+        Assert.Equal(participantId, state.ParticipantId);
+        auth.Clear();
+    }
+
+    [Fact]
     public void ProductionXaml_UpdatesRoomCodeImmediatelyAndHasNoManualIpOrPort()
     {
         var xaml = File.ReadAllText(FindFile(
@@ -633,6 +776,8 @@ public sealed class LanRoomJoinAndLifecycleTests
     {
         public List<string> RequestUris { get; } = [];
         public List<string?> AuthorizationHeaders { get; } = [];
+        public List<string> JoinNonces { get; } = [];
+        public int JoinCalls { get; private set; }
         public string? JoinAuthorization { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
@@ -675,7 +820,16 @@ public sealed class LanRoomJoinAndLifecycleTests
             }
             else if (request.RequestUri.AbsolutePath.EndsWith("/sessions/join", StringComparison.Ordinal))
             {
+                JoinCalls++;
                 JoinAuthorization = request.Headers.Authorization?.Parameter;
+                var requestJson = request.Content!.ReadAsStringAsync(cancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
+                var joinRequest = JsonSerializer.Deserialize<JoinSessionRequest>(requestJson, Json)
+                    ?? throw new JsonException("Join request body was empty.");
+                if (string.IsNullOrWhiteSpace(joinRequest.Nonce))
+                    throw new JsonException("Join request nonce was missing.");
+                JoinNonces.Add(joinRequest.Nonce);
                 var participant = new ParticipantDto(
                     participantId,
                     room.SessionId,

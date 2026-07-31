@@ -201,6 +201,29 @@ public sealed class SixFindingsV133Tests
     }
 
     [Fact]
+    public async Task WaitingSameRevisionRepeatedThreeTimes_ResolvesAndNavigatesOnce()
+    {
+        var state = WaitingState();
+        using var realtime = new ControllableRealtime();
+        var delay = new ControllableDelay();
+        var flow = new SequencedFlow(state, Pending(), ReadyFile());
+        using var viewModel = WaitingViewModel(state, realtime, flow, delay);
+        await viewModel.InitializeAsync(default);
+
+        for (var index = 0; index < 3; index++)
+            realtime.Raise(new(
+                state.SessionId!.Value,
+                RealtimeEvents.SessionStateChanged,
+                2,
+                null));
+        delay.ReleaseLatestDebounce();
+        await WaitUntilAsync(() => flow.ResolveCalls == 2);
+
+        Assert.Equal(2, flow.ResolveCalls);
+        Assert.Equal(1, flow.NavigationCount);
+    }
+
+    [Fact]
     public async Task WaitingPollingAndManualRefresh_ReResolveThroughCoordinator()
     {
         var pollingState = WaitingState();
