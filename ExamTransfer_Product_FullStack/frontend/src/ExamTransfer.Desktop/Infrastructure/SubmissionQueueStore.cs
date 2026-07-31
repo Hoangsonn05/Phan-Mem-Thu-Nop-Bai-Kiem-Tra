@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -66,14 +67,40 @@ public sealed record SubmissionProgressSnapshot(
     int CompletedChunks,
     int TotalChunks);
 
+public enum SubmissionPreparationOutcome
+{
+    Created,
+    ExistingActive
+}
+
+public sealed record SubmissionPreparationResult(
+    PendingSubmission Submission,
+    SubmissionPreparationOutcome Outcome)
+{
+    public bool Created => Outcome == SubmissionPreparationOutcome.Created;
+}
+
 public static class SubmissionQueueStore
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
+    private static readonly ConcurrentDictionary<SubmissionBusinessKey, BusinessKeyLock> BusinessKeyLocks = new();
+    private static readonly AsyncLocal<string?> StorageRootOverride = new();
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-    private static string Root => Path.Combine(AppProfile.LocalDataRoot, "submission-queue");
-    private static string SpoolRoot => Path.Combine(AppProfile.LocalDataRoot, "submission-spool");
-    private static string ReceiptRoot => Path.Combine(AppProfile.LocalDataRoot, "receipts");
+    private static string LocalDataRoot => StorageRootOverride.Value ?? AppProfile.LocalDataRoot;
+    private static string Root => Path.Combine(LocalDataRoot, "submission-queue");
+    private static string SpoolRoot => Path.Combine(LocalDataRoot, "submission-spool");
+    private static string ReceiptRoot => Path.Combine(LocalDataRoot, "receipts");
     private static string QueuePath => Path.Combine(Root, "queue.json");
+
+    internal static int ActiveBusinessKeyLockCount => BusinessKeyLocks.Count;
+
+    internal static IDisposable UseStorageRootForTests(string root)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        var previous = StorageRootOverride.Value;
+        StorageRootOverride.Value = Path.GetFullPath(root);
+        return new StorageRootScope(previous);
+    }
 
     public static string ProtectToken(string? token)
     {
@@ -105,8 +132,39 @@ public static class SubmissionQueueStore
         SessionAccessMode accessMode,
         string? serverId,
         string? token,
+        CancellationToken ct) =>
+        (await PrepareOrGetActiveAsync(
+            sourcePath,
+            endpoint,
+            ownerUserId,
+            studentCode,
+            sessionId,
+            participantId,
+            roomCode,
+            accessMode,
+            serverId,
+            token,
+            ct)).Submission;
+
+    public static async Task<SubmissionPreparationResult> PrepareOrGetActiveAsync(
+        string sourcePath,
+        string endpoint,
+        Guid ownerUserId,
+        string studentCode,
+        Guid sessionId,
+        Guid participantId,
+        string? roomCode,
+        SessionAccessMode accessMode,
+        string? serverId,
+        string? token,
         CancellationToken ct)
     {
+        var businessKey = new SubmissionBusinessKey(sessionId, participantId);
+        using var keyLease = await AcquireBusinessKeyAsync(businessKey, ct);
+        var existing = FindActiveQueue(await LoadAsync(ct), sessionId, participantId);
+        if (existing is not null)
+            return new(existing, SubmissionPreparationOutcome.ExistingActive);
+
         var source = new FileInfo(Path.GetFullPath(sourcePath));
         if (!source.Exists) throw new FileNotFoundException("Không tìm thấy file bài làm.", source.FullName);
         if (!StudentSubmissionPolicy.IsAllowedExtension(source.Name))
@@ -138,7 +196,7 @@ public static class SubmissionQueueStore
                 ownerUserId, studentCode, null, roomCode, accessMode, serverId, null,
                 SubmissionQueueStatus.Prepared, 0, now, null, false, false, null, source.FullName);
             await SaveAsync(item, ct);
-            return item;
+            return new(item, SubmissionPreparationOutcome.Created);
         }
         catch
         {
@@ -146,6 +204,31 @@ public static class SubmissionQueueStore
             throw;
         }
     }
+
+    public static bool IsActiveQueueStatus(SubmissionQueueStatus status) =>
+        status is SubmissionQueueStatus.Prepared
+            or SubmissionQueueStatus.WaitingForConnection
+            or SubmissionQueueStatus.Initializing
+            or SubmissionQueueStatus.Uploading
+            or SubmissionQueueStatus.Finalizing
+            or SubmissionQueueStatus.AwaitingReceipt
+            or SubmissionQueueStatus.Completed
+            or SubmissionQueueStatus.NeedsLogin
+            or SubmissionQueueStatus.NeedsRejoin;
+
+    public static bool IsActiveQueue(PendingSubmission item) =>
+        !item.ReceiptReceived && IsActiveQueueStatus(item.QueueStatus);
+
+    public static PendingSubmission? FindActiveQueue(
+        IEnumerable<PendingSubmission> items,
+        Guid sessionId,
+        Guid participantId) =>
+        items
+            .Where(item => item.SessionId == sessionId
+                && item.ParticipantId == participantId
+                && IsActiveQueue(item))
+            .OrderBy(item => item.CreatedAtUtc)
+            .FirstOrDefault();
 
     public static async Task<IReadOnlyList<PendingSubmission>> LoadAsync(CancellationToken ct)
     {
@@ -303,5 +386,92 @@ public static class SubmissionQueueStore
         var fullPath = Path.GetFullPath(path) + Path.DirectorySeparatorChar;
         if (!fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase)) return;
         try { Directory.Delete(path, true); } catch (IOException) { }
+    }
+
+    private static async Task<BusinessKeyLease> AcquireBusinessKeyAsync(
+        SubmissionBusinessKey key,
+        CancellationToken ct)
+    {
+        while (true)
+        {
+            var entry = BusinessKeyLocks.GetOrAdd(key, static _ => new BusinessKeyLock());
+            lock (entry.SyncRoot)
+            {
+                if (entry.Retired)
+                    continue;
+                entry.ReferenceCount++;
+            }
+
+            try
+            {
+                await entry.Semaphore.WaitAsync(ct);
+                return new BusinessKeyLease(key, entry);
+            }
+            catch
+            {
+                ReleaseBusinessKey(key, entry, acquired: false);
+                throw;
+            }
+        }
+    }
+
+    private static void ReleaseBusinessKey(
+        SubmissionBusinessKey key,
+        BusinessKeyLock entry,
+        bool acquired)
+    {
+        if (acquired)
+            entry.Semaphore.Release();
+
+        var dispose = false;
+        lock (entry.SyncRoot)
+        {
+            entry.ReferenceCount--;
+            if (entry.ReferenceCount == 0)
+            {
+                entry.Retired = true;
+                dispose = BusinessKeyLocks.TryRemove(
+                    new KeyValuePair<SubmissionBusinessKey, BusinessKeyLock>(key, entry));
+            }
+        }
+
+        if (dispose)
+            entry.Semaphore.Dispose();
+    }
+
+    private readonly record struct SubmissionBusinessKey(
+        Guid SessionId,
+        Guid ParticipantId);
+
+    private sealed class BusinessKeyLock
+    {
+        public object SyncRoot { get; } = new();
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+        public int ReferenceCount { get; set; }
+        public bool Retired { get; set; }
+    }
+
+    private sealed class BusinessKeyLease(
+        SubmissionBusinessKey key,
+        BusinessKeyLock entry) : IDisposable
+    {
+        private int disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) == 0)
+                ReleaseBusinessKey(key, entry, acquired: true);
+        }
+    }
+
+    private sealed class StorageRootScope(string? previous) : IDisposable
+    {
+        private int disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) == 0)
+                StorageRootOverride.Value = previous;
+        }
     }
 }

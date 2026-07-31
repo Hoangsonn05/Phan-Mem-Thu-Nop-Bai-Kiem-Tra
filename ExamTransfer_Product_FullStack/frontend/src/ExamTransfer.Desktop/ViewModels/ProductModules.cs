@@ -3093,6 +3093,10 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
     private string sha256 = "Chưa tính";
     private string validationStatus = "Chưa kiểm tra";
     private bool isFileValid;
+    private bool hasActiveQueue;
+    private bool receiptReceived;
+    private Guid? trackedQueueSessionId;
+    private Guid? trackedQueueParticipantId;
     private bool progressSubscribed;
 
     public StudentSubmissionViewModel(
@@ -3106,7 +3110,10 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
         this.authState = authState;
         this.submissionRecovery = submissionRecovery ?? AppServices.SubmissionRecovery;
         PickCommand = new AsyncRelayCommand(PickAsync, () => !IsBusy);
-        SubmitCommand = new AsyncRelayCommand(SubmitAsync, () => !IsBusy && IsFileValid && !string.IsNullOrWhiteSpace(SelectedPath) && state.HasSession);
+        SubmitCommand = new AsyncRelayCommand(
+            SubmitAsync,
+            () => EvaluateEligibility().Allowed);
+        state.PropertyChanged += OnSessionStatePropertyChanged;
     }
 
     public string? SelectedPath { get => selectedPath; private set { if (Set(ref selectedPath, value)) RaiseCommands(); } }
@@ -3129,8 +3136,10 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
         StatusTone = state.HasSession ? "info" : "warning";
         if (state.HasSession)
         {
-            var pending = (await Infrastructure.SubmissionQueueStore.LoadAsync(ct))
-                .FirstOrDefault(x => x.SessionId == state.SessionId && x.ParticipantId == state.ParticipantId && File.Exists(x.FilePath));
+            var pending = Infrastructure.SubmissionQueueStore.FindActiveQueue(
+                await Infrastructure.SubmissionQueueStore.LoadAsync(ct),
+                state.SessionId!.Value,
+                state.ParticipantId!.Value);
             if (pending is not null)
             {
                 SelectedPath = pending.FilePath;
@@ -3143,6 +3152,8 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
                 submissionRecovery.Trigger();
             }
         }
+        receiptReceived = state.LastReceipt is not null;
+        RaiseCommands();
     }
 
     private async Task PickAsync()
@@ -3180,23 +3191,109 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
         }
     }
 
-    private Task SubmitAsync() => RunAsync("Đang sao chép bài vào vùng lưu an toàn", "Đã lưu trên máy; hệ thống sẽ tự gửi và chỉ báo thành công sau khi có biên nhận", async ct =>
+    internal Task SubmitAsync()
     {
-        if (SelectedPath is null || !state.SessionId.HasValue || !state.ParticipantId.HasValue || authState.CurrentAccount is null) return;
-        var queued = await Infrastructure.SubmissionQueueStore.PrepareAsync(
-            SelectedPath, api.BaseAddress.ToString(), authState.CurrentAccount.UserId, authState.CurrentAccount.StudentCode ?? state.StudentCode,
-            state.SessionId.Value, state.ParticipantId.Value, state.RoomCode, state.AccessMode, state.ServerId, state.AccessToken, ct);
-        SelectedPath = queued.FilePath;
-        Sha256 = queued.Sha256;
-        TrackQueue(queued);
-        submissionRecovery.Trigger();
-    });
+        var decision = EvaluateEligibility();
+        if (!decision.Allowed)
+        {
+            ApplyEligibilityDenial(decision);
+            return Task.CompletedTask;
+        }
+        if (authState.CurrentAccount is null)
+        {
+            Status = "Hãy đăng nhập đúng tài khoản học sinh trước khi nộp bài.";
+            StatusTone = "warning";
+            return Task.CompletedTask;
+        }
+
+        return SubmitEligibleAsync();
+    }
+
+    private Task SubmitEligibleAsync()
+    {
+        var attachedToExisting = false;
+        return RunAsync(
+            "Đang sao chép bài vào vùng lưu an toàn",
+            () => attachedToExisting
+                ? "Bài nộp đang được xử lý; hệ thống tiếp tục dùng bản đã lưu trước đó"
+                : "Đã lưu trên máy; hệ thống sẽ tự gửi và chỉ báo thành công sau khi có biên nhận",
+            async ct =>
+            {
+                var prepared = await Infrastructure.SubmissionQueueStore.PrepareOrGetActiveAsync(
+                    SelectedPath!, api.BaseAddress.ToString(), authState.CurrentAccount!.UserId, authState.CurrentAccount.StudentCode ?? state.StudentCode,
+                    state.SessionId!.Value, state.ParticipantId!.Value, state.RoomCode, state.AccessMode, state.ServerId, state.AccessToken, ct);
+                attachedToExisting = !prepared.Created;
+                var queued = prepared.Submission;
+                SelectedPath = queued.FilePath;
+                Sha256 = queued.Sha256;
+                TrackQueue(queued);
+                if (prepared.Created)
+                    submissionRecovery.Trigger();
+            });
+    }
+
+    private SubmissionEligibilityDecision EvaluateEligibility() =>
+        SubmissionEligibilityPolicy.Evaluate(new(
+            IsBusy,
+            state.HasSession,
+            state.SessionId,
+            state.ParticipantId,
+            state.ParticipantStatus,
+            state.SessionStatus,
+            state.DeliveryType,
+            IsFileValid
+                && !string.IsNullOrWhiteSpace(SelectedPath)
+                && File.Exists(SelectedPath),
+            hasActiveQueue,
+            receiptReceived || state.LastReceipt is not null,
+            state.SubmissionStatus,
+            state.ResubmitAllowed));
+
+    private void ApplyEligibilityDenial(SubmissionEligibilityDecision decision)
+    {
+        ValidationStatus = decision.UserMessage;
+        Status = decision.UserMessage;
+        StatusTone = "warning";
+        RaiseCommands();
+    }
 
     internal void TrackQueue(Infrastructure.PendingSubmission item)
     {
+        trackedQueueSessionId = item.SessionId;
+        trackedQueueParticipantId = item.ParticipantId;
         QueueId = item.QueueId;
         EnsureProgressSubscription();
         ApplyProgressSnapshot(Infrastructure.SubmissionQueueStore.CreateProgressSnapshot(item));
+    }
+
+    private void OnSessionStatePropertyChanged(
+        object? sender,
+        System.ComponentModel.PropertyChangedEventArgs args)
+    {
+        if ((args.PropertyName is nameof(StudentSessionState.SessionId)
+                or nameof(StudentSessionState.ParticipantId))
+            && (trackedQueueSessionId != state.SessionId
+                || trackedQueueParticipantId != state.ParticipantId))
+        {
+            hasActiveQueue = false;
+            trackedQueueSessionId = null;
+            trackedQueueParticipantId = null;
+            QueueId = null;
+            StopProgressSubscription();
+        }
+
+        if (args.PropertyName == nameof(StudentSessionState.LastReceipt))
+            receiptReceived = state.LastReceipt is not null;
+
+        if (args.PropertyName is nameof(StudentSessionState.SessionId)
+            or nameof(StudentSessionState.ParticipantId)
+            or nameof(StudentSessionState.ParticipantStatus)
+            or nameof(StudentSessionState.SessionStatus)
+            or nameof(StudentSessionState.DeliveryType)
+            or nameof(StudentSessionState.SubmissionStatus)
+            or nameof(StudentSessionState.LastReceipt)
+            or nameof(StudentSessionState.ResubmitAllowed))
+            RaiseCommands();
     }
 
     private void EnsureProgressSubscription()
@@ -3243,6 +3340,8 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
         Infrastructure.SubmissionProgressSnapshot snapshot)
     {
         Progress = snapshot.ProgressPercent;
+        hasActiveQueue = !snapshot.IsTerminal;
+        receiptReceived = receiptReceived || snapshot.ReceiptReceived;
         QueueError = snapshot.LastError;
         var statusText = snapshot.Status == Infrastructure.SubmissionQueueStatus.Completed
             && !snapshot.ReceiptReceived
@@ -3287,6 +3386,7 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
 
     public override void Dispose()
     {
+        state.PropertyChanged -= OnSessionStatePropertyChanged;
         StopProgressSubscription();
         base.Dispose();
     }

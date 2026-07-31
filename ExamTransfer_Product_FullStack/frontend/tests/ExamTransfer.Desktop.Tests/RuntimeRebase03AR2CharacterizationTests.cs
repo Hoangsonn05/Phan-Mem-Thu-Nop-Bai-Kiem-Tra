@@ -240,18 +240,19 @@ public sealed class RuntimeRebase03AR2SubmissionFrontendCharacterizationTests
         bool> EligibilityCases => new()
     {
         { false, null, null, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, false },
-        { true, ParticipantStatus.PendingApproval, SessionStatus.Waiting, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, true },
-        { true, ParticipantStatus.Approved, SessionStatus.Waiting, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, true },
+        { true, ParticipantStatus.PendingApproval, SessionStatus.Waiting, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, false },
+        { true, ParticipantStatus.Approved, SessionStatus.Waiting, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, false },
         { true, ParticipantStatus.Approved, SessionStatus.InProgress, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, true },
-        { true, ParticipantStatus.Approved, SessionStatus.Finished, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, true },
-        { true, ParticipantStatus.Approved, SessionStatus.Cancelled, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, true },
-        { true, ParticipantStatus.Approved, SessionStatus.InProgress, ExamDeliveryType.FileSubmission, SubmissionStatus.Submitted, true },
-        { true, ParticipantStatus.Approved, SessionStatus.InProgress, ExamDeliveryType.MultipleChoice, SubmissionStatus.NotStarted, true }
+        { true, ParticipantStatus.Approved, SessionStatus.Collecting, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, true },
+        { true, ParticipantStatus.Approved, SessionStatus.Finished, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, false },
+        { true, ParticipantStatus.Approved, SessionStatus.Cancelled, ExamDeliveryType.FileSubmission, SubmissionStatus.NotStarted, false },
+        { true, ParticipantStatus.Approved, SessionStatus.InProgress, ExamDeliveryType.FileSubmission, SubmissionStatus.Submitted, false },
+        { true, ParticipantStatus.Approved, SessionStatus.InProgress, ExamDeliveryType.MultipleChoice, SubmissionStatus.NotStarted, false }
     };
 
     [Theory]
     [MemberData(nameof(EligibilityCases))]
-    public void SubmitCanExecute_OnlyUsesFileBusyAndHasSession(
+    public void SubmitCanExecute_UsesSharedEligibilityPolicy(
         bool hasSession,
         ParticipantStatus? participant,
         SessionStatus? session,
@@ -275,10 +276,19 @@ public sealed class RuntimeRebase03AR2SubmissionFrontendCharacterizationTests
                 Path.GetTempPath(),
                 $"runtime-rebase-auth-{Guid.NewGuid():N}.bin")),
             new NoOpSubmissionRecoveryService());
-        SetProperty(viewModel, nameof(StudentSubmissionViewModel.SelectedPath), "answer.zip");
-        SetProperty(viewModel, nameof(StudentSubmissionViewModel.IsFileValid), true);
+        var path = Path.Combine(Path.GetTempPath(), $"eligibility-{Guid.NewGuid():N}.zip");
+        try
+        {
+            File.WriteAllBytes(path, [0x50, 0x4B, 0x03, 0x04]);
+            SetProperty(viewModel, nameof(StudentSubmissionViewModel.SelectedPath), path);
+            SetProperty(viewModel, nameof(StudentSubmissionViewModel.IsFileValid), true);
 
-        Assert.Equal(expected, viewModel.SubmitCommand.CanExecute(null));
+            Assert.Equal(expected, viewModel.SubmitCommand.CanExecute(null));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]
@@ -316,7 +326,7 @@ public sealed class RuntimeRebase03AR2SubmissionFrontendCharacterizationTests
     }
 
     [Fact]
-    public void ActiveQueueSnapshot_DoesNotChangeSubmitEligibility()
+    public void ActiveQueueSnapshot_DisablesSubmitEligibility()
     {
         var state = new StudentSessionState
         {
@@ -333,20 +343,29 @@ public sealed class RuntimeRebase03AR2SubmissionFrontendCharacterizationTests
                 Path.GetTempPath(),
                 $"runtime-rebase-auth-{Guid.NewGuid():N}.bin")),
             new NoOpSubmissionRecoveryService());
-        SetProperty(viewModel, nameof(StudentSubmissionViewModel.SelectedPath), "answer.zip");
-        SetProperty(viewModel, nameof(StudentSubmissionViewModel.IsFileValid), true);
-        viewModel.TrackQueue(SubmissionProgressSnapshotTests.QueueItem(
-            SubmissionQueueStatus.Uploading,
-            submissionId: Guid.NewGuid(),
-            chunkSizeBytes: 100,
-            sizeBytes: 400,
-            missingChunks: [2, 3]));
+        var path = Path.Combine(Path.GetTempPath(), $"active-queue-{Guid.NewGuid():N}.zip");
+        try
+        {
+            File.WriteAllBytes(path, [0x50, 0x4B, 0x03, 0x04]);
+            SetProperty(viewModel, nameof(StudentSubmissionViewModel.SelectedPath), path);
+            SetProperty(viewModel, nameof(StudentSubmissionViewModel.IsFileValid), true);
+            viewModel.TrackQueue(SubmissionProgressSnapshotTests.QueueItem(
+                SubmissionQueueStatus.Uploading,
+                submissionId: Guid.NewGuid(),
+                chunkSizeBytes: 100,
+                sizeBytes: 400,
+                missingChunks: [2, 3]));
 
-        Assert.True(viewModel.SubmitCommand.CanExecute(null));
+            Assert.False(viewModel.SubmitCommand.CanExecute(null));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]
-    public void QueuePreparationSource_HasNoSessionParticipantSingleFlightLookup()
+    public void QueuePreparationSource_RechecksPersistentBusinessKeyBeforeCreating()
     {
         var source = ReadRepositoryFile(
             "frontend",
@@ -355,14 +374,13 @@ public sealed class RuntimeRebase03AR2SubmissionFrontendCharacterizationTests
             "Infrastructure",
             "SubmissionQueueStore.cs");
         var prepare = source[
-            source.IndexOf("public static async Task<PendingSubmission> PrepareAsync", StringComparison.Ordinal)
-            ..source.IndexOf("public static async Task<IReadOnlyList<PendingSubmission>> LoadAsync", StringComparison.Ordinal)];
+            source.IndexOf("public static async Task<SubmissionPreparationResult> PrepareOrGetActiveAsync", StringComparison.Ordinal)
+            ..source.IndexOf("public static bool IsActiveQueueStatus", StringComparison.Ordinal)];
 
-        Assert.Contains("var queueId = Guid.NewGuid();", prepare, StringComparison.Ordinal);
-        Assert.Contains("Guid.NewGuid().ToString(\"N\")", prepare, StringComparison.Ordinal);
-        Assert.Contains("Directory.CreateDirectory(queueDirectory)", prepare, StringComparison.Ordinal);
-        Assert.DoesNotContain("SessionId ==", prepare, StringComparison.Ordinal);
-        Assert.DoesNotContain("ParticipantId ==", prepare, StringComparison.Ordinal);
+        Assert.Contains("AcquireBusinessKeyAsync", prepare, StringComparison.Ordinal);
+        Assert.Contains("FindActiveQueue(await LoadAsync(ct), sessionId, participantId)", prepare, StringComparison.Ordinal);
+        Assert.Contains("SubmissionPreparationOutcome.ExistingActive", prepare, StringComparison.Ordinal);
+        Assert.Contains("SubmissionPreparationOutcome.Created", prepare, StringComparison.Ordinal);
     }
 
     private static void SetProperty<T>(object target, string name, T value) =>
