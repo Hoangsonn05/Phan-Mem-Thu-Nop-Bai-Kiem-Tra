@@ -14,38 +14,12 @@ using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SessionService(AppDbContext db, ISessionTokenService tokens, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, ILanAccessPolicy? lanAccessPolicy = null, ICloudAdapter? cloud = null, ICloudSyncSignal? cloudSyncSignal = null, SessionParticipantMutationDispatcher? participantMutations = null, LanParticipantSessionExecution? lanParticipantSessions = null, PublicCloudProjectionExecution? cloudProjection = null) : ISessionService
+public sealed class SessionService(AppDbContext db, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, SessionParticipantMutationDispatcher participantMutations, LanParticipantSessionExecution lanParticipantSessions, PublicCloudProjectionExecution cloudProjection, ICloudSyncSignal? cloudSyncSignal = null) : ISessionService
 {
     private readonly ExamTransferOptions _options = options.Value;
-    private readonly SessionParticipantMutationDispatcher _participantMutations =
-        participantMutations ?? new SessionParticipantMutationDispatcher(
-            db,
-            [
-                new LanSessionParticipantMutationHandler(
-                    db,
-                    tokens,
-                    audit,
-                    outbox,
-                    realtime,
-                    options),
-                new PublicCloudSessionParticipantMutationHandler(
-                    options,
-                    realtime,
-                    cloud)
-            ]);
-    private readonly LanParticipantSessionExecution _lanParticipantSessions =
-        lanParticipantSessions ?? new LanParticipantSessionExecution(
-            db,
-            tokens,
-            audit,
-            outbox,
-            realtime,
-            options,
-            lanAccessPolicy ?? new Security.LanAccessPolicy(options));
-    private readonly PublicCloudProjectionExecution _cloudProjection =
-        cloudProjection ?? new PublicCloudProjectionExecution(
-            db,
-            cloudSyncSignal);
+    private readonly SessionParticipantMutationDispatcher _participantMutations = participantMutations;
+    private readonly LanParticipantSessionExecution _lanParticipantSessions = lanParticipantSessions;
+    private readonly PublicCloudProjectionExecution _cloudProjection = cloudProjection;
 
     public async Task<PagedResult<SessionSummaryDto>> ListAsync(SessionStatus? status, int page, int pageSize, CancellationToken cancellationToken)
     {
@@ -389,20 +363,6 @@ public sealed class SessionService(AppDbContext db, ISessionTokenService tokens,
         }
         throw new ApiException(ErrorCodes.RoomCodeConflict, "Không thể sinh mã phòng không trùng.", 500);
     }
-    private ICloudAdapter RequireCloud() =>
-        cloud ?? throw new ApiException(
-            ErrorCodes.CloudOffline,
-            "PublicCloud chưa được cấu hình cho thao tác giáo viên.",
-            503);
-
-    private ParticipantDto ToMutationDto(
-        SessionParticipant participant,
-        CloudParticipantMutationResult result)
-        => SessionParticipantMutationRules.ToMutationDto(
-            _options,
-            participant,
-            result);
-
     private static object ToCloud(ExamSession x) => new
     {
         id = x.Id,

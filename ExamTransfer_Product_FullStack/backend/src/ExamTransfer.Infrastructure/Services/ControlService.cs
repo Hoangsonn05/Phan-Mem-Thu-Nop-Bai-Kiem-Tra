@@ -13,11 +13,10 @@ public sealed class ControlService(
     IAuditService audit,
     IRealtimePublisher realtime,
     IOutboxService outbox,
-    DeviceStatusReadExecution? deviceStatusRead = null) : IControlService
+    DeviceStatusReadExecution deviceStatusRead) : IControlService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly DeviceStatusReadExecution _deviceStatusRead =
-        deviceStatusRead ?? new DeviceStatusReadExecution(db);
+    private readonly DeviceStatusReadExecution _deviceStatusRead = deviceStatusRead;
 
     public async Task<ControlPolicyDto?> GetPolicyAsync(Guid sessionId, CancellationToken cancellationToken)
     {

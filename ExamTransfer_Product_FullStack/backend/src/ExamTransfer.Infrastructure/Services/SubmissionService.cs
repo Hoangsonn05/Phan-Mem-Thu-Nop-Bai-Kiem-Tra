@@ -3,8 +3,6 @@ using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Execution;
 using ExamTransfer.Infrastructure.Execution.Dispatch;
-using ExamTransfer.Infrastructure.Execution.OnlyLan;
-using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Storage;
 using ExamTransfer.Shared.Contracts;
@@ -13,20 +11,10 @@ using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IReceiptSigner receipts, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ICloudAdapter? cloud = null, SubmissionMutationDispatcher? submissionMutations = null) : ISubmissionService
+public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IReceiptSigner receipts, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, SubmissionMutationDispatcher submissionMutations) : ISubmissionService
 {
     private readonly ExamTransferOptions _options = options.Value;
-    private readonly SubmissionMutationDispatcher _submissionMutations =
-        submissionMutations ?? new SubmissionMutationDispatcher(
-            db,
-            [
-                new LanSubmissionMutationHandler(
-                    db,
-                    audit,
-                    outbox,
-                    realtime),
-                new PublicCloudSubmissionMutationHandler(cloud)
-            ]);
+    private readonly SubmissionMutationDispatcher _submissionMutations = submissionMutations;
 
     public async Task<InitSubmissionResponse> InitAsync(InitSubmissionRequest request, CancellationToken cancellationToken)
     {

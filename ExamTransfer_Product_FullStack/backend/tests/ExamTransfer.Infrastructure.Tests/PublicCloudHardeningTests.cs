@@ -754,7 +754,6 @@ public sealed class PublicCloudTeacherMutationRoutingTests
             outbox,
             realtime,
             options,
-            cloud,
             dispatcher);
     }
 
@@ -972,7 +971,8 @@ public sealed class PublicCloudPullProjectionTests
             verify,
             new AuditService(verify, new HttpContextAccessor()),
             new TestRealtimePublisher(),
-            new OutboxService(verify));
+            new OutboxService(verify),
+            new DeviceStatusReadExecution(verify));
         var device = Assert.Single(await control.GetDeviceStatusAsync(participant.SessionId, CancellationToken.None));
         Assert.Equal(ConnectionState.Online, device.ConnectionState);
         Assert.Equal("Locked", device.LockState);
@@ -1183,14 +1183,21 @@ internal static class PublicCloudTestHarness
             });
         return new SessionService(
             db,
-            tokens,
             audit,
             outbox,
             publisher,
             options,
             NullLogger<SessionService>.Instance,
-            cloud: cloud,
-            participantMutations: participantMutations);
+            participantMutations,
+            new LanParticipantSessionExecution(
+                db,
+                tokens,
+                audit,
+                outbox,
+                publisher,
+                options,
+                new LanAccessPolicy(options)),
+            new PublicCloudProjectionExecution(db));
     }
 
     public static async Task RunPullOnceAsync(string databasePath, ICloudAdapter cloud)

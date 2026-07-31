@@ -1215,10 +1215,42 @@ public sealed class CoreWorkflowPersistenceTests
         var audit = new AuditService(db, new HttpContextAccessor());
         var outbox = new OutboxService(db);
         var paths = new TestStoragePaths(Path.Combine(Path.GetDirectoryName(db.Database.GetDbConnection().DataSource)!, "storage"));
+        var tokens = new SessionTokenService(options);
+        var participantMutations = new SessionParticipantMutationDispatcher(
+            db,
+            new ISessionParticipantMutationHandler[]
+            {
+                new LanSessionParticipantMutationHandler(
+                    db,
+                    tokens,
+                    audit,
+                    outbox,
+                    realtime,
+                    options),
+                new PublicCloudSessionParticipantMutationHandler(
+                    options,
+                    realtime)
+            });
         return new(
             new ClassService(db, new MemoryCache(new MemoryCacheOptions()), audit, outbox),
             new ExamService(db, paths, new ChunkStorage(), audit, outbox, realtime, options, NullLogger<ExamService>.Instance),
-            new SessionService(db, new SessionTokenService(options), audit, outbox, realtime, options, NullLogger<SessionService>.Instance));
+            new SessionService(
+                db,
+                audit,
+                outbox,
+                realtime,
+                options,
+                NullLogger<SessionService>.Instance,
+                participantMutations,
+                new LanParticipantSessionExecution(
+                    db,
+                    tokens,
+                    audit,
+                    outbox,
+                    realtime,
+                    options,
+                    new LanAccessPolicy(options)),
+                new PublicCloudProjectionExecution(db)));
     }
 
     private static SubmissionService SubmissionMutations(
@@ -1253,7 +1285,6 @@ public sealed class CoreWorkflowPersistenceTests
             outbox,
             realtime,
             options,
-            cloud,
             dispatcher);
     }
 

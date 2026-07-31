@@ -1,6 +1,9 @@
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
+using ExamTransfer.Infrastructure.Execution;
+using ExamTransfer.Infrastructure.Execution.Dispatch;
+using ExamTransfer.Infrastructure.Execution.OnlyLan;
 using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
@@ -468,17 +471,47 @@ public sealed class SixFindingsV133BackendTests
         AppDbContext db,
         ICloudAdapter cloud,
         ICloudSyncSignal signal,
-        IOptions<ExamTransferOptions> options) =>
-        new(
+        IOptions<ExamTransferOptions> options)
+    {
+        var audit = new AuditService(db, new HttpContextAccessor());
+        var outbox = new OutboxService(db, signal);
+        var realtime = new NoOpRealtime();
+        var tokens = new SessionTokenService(options);
+        var participantMutations = new SessionParticipantMutationDispatcher(
             db,
-            new SessionTokenService(options),
-            new AuditService(db, new HttpContextAccessor()),
-            new OutboxService(db, signal),
-            new NoOpRealtime(),
+            new ISessionParticipantMutationHandler[]
+            {
+                new LanSessionParticipantMutationHandler(
+                    db,
+                    tokens,
+                    audit,
+                    outbox,
+                    realtime,
+                    options),
+                new PublicCloudSessionParticipantMutationHandler(
+                    options,
+                    realtime,
+                    cloud)
+            });
+        return new SessionService(
+            db,
+            audit,
+            outbox,
+            realtime,
             options,
             NullLogger<SessionService>.Instance,
-            cloud: cloud,
-            cloudSyncSignal: signal);
+            participantMutations,
+            new LanParticipantSessionExecution(
+                db,
+                tokens,
+                audit,
+                outbox,
+                realtime,
+                options,
+                new LanAccessPolicy(options)),
+            new PublicCloudProjectionExecution(db, signal),
+            signal);
+    }
 
     private static async Task<Exam> SeedPublishedExamAsync(AppDbContext db)
     {

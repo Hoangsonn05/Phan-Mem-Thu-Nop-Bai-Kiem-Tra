@@ -784,7 +784,12 @@ public sealed class OnlyLanWorkflowCharacterizationTests
             realtime = new RecordingRealtimePublisher();
             Cloud = new CountingThrowingCloudAdapter();
             Sessions = CreateSessionService(new StaticLanAccessPolicy(true));
-            Controls = new ControlService(db, audit, realtime, outbox);
+            Controls = new ControlService(
+                db,
+                audit,
+                realtime,
+                outbox,
+                new DeviceStatusReadExecution(db));
             Quiz = new QuizService(
                 db,
                 new QuizProjectionOutbox(outbox));
@@ -840,16 +845,21 @@ public sealed class OnlyLanWorkflowCharacterizationTests
                 });
             return new SessionService(
                 Db,
-                tokens,
                 audit,
                 outbox,
                 realtime,
                 Options,
                 NullLogger<SessionService>.Instance,
-                lanPolicy,
-                Cloud,
-                null,
-                participantMutations);
+                participantMutations,
+                new LanParticipantSessionExecution(
+                    Db,
+                    tokens,
+                    audit,
+                    outbox,
+                    realtime,
+                    Options,
+                    lanPolicy),
+                new PublicCloudProjectionExecution(Db));
         }
 
         public async Task<SeededQuiz> SeedPublishedQuizAsync()
