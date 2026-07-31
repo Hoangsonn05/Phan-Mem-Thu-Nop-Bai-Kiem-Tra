@@ -215,6 +215,86 @@ public sealed class TeacherRealtimeTests
     }
 
     [Fact]
+    public async Task LiveMonitor_EarlyRealtimeRefreshStaysStaleUntilAPostCommitLocalPulseArrives()
+    {
+        var session = CreateSession(SessionStatus.InProgress);
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        using var viewModel = new LiveMonitorViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        await WaitForAsync(() => realtime.Subscribed.Contains(session.Id));
+        Assert.Equal(1, backend.SessionDetailRequests);
+        Assert.Empty(viewModel.Participants);
+
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.ParticipantJoined,
+            1,
+            null));
+        await WaitForAsync(() => backend.SessionDetailRequests == 2);
+        Assert.Empty(viewModel.Participants);
+
+        backend.Participants = [CreateParticipant(session.Id)];
+        await Task.Delay(350);
+
+        Assert.Equal(2, backend.SessionDetailRequests);
+        Assert.Empty(viewModel.Participants);
+
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.ParticipantJoined,
+            2,
+            null));
+        await WaitForAsync(() => backend.SessionDetailRequests == 3);
+        Assert.Single(viewModel.Participants);
+    }
+
+    [Fact]
+    public async Task LiveMonitor_OnlyLanNotificationsDebounceAndStopAfterDispose()
+    {
+        var session = CreateSession(SessionStatus.InProgress);
+        Assert.Equal(SessionAccessMode.LanOnly, session.AccessMode);
+        var backend = new TeacherRealtimeBackend(session)
+        {
+            Participants = [CreateParticipant(session.Id)]
+        };
+        var realtime = new FakeTeacherRealtime();
+        var viewModel = new LiveMonitorViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        await WaitForAsync(() => realtime.Subscribed.Contains(session.Id));
+        Assert.Equal(1, backend.SessionDetailRequests);
+
+        for (var index = 0; index < 3; index++)
+        {
+            realtime.Raise(new(
+                session.Id,
+                RealtimeEvents.ParticipantConnectionChanged,
+                index + 1,
+                null));
+        }
+        await WaitForAsync(() => backend.SessionDetailRequests == 2);
+        await Task.Delay(250);
+        Assert.Equal(2, backend.SessionDetailRequests);
+
+        realtime.Raise(new(
+            Guid.NewGuid(),
+            RealtimeEvents.ParticipantConnectionChanged,
+            4,
+            null));
+        await Task.Delay(250);
+        Assert.Equal(2, backend.SessionDetailRequests);
+
+        viewModel.Dispose();
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.ParticipantConnectionChanged,
+            5,
+            null));
+        await Task.Delay(250);
+        Assert.Equal(2, backend.SessionDetailRequests);
+    }
+
+    [Fact]
     public async Task SubmissionCenter_SubmissionAcceptedRefreshesSelectedSessionOnlyAndDebounces()
     {
         var session = CreateSession(SessionStatus.Collecting);
