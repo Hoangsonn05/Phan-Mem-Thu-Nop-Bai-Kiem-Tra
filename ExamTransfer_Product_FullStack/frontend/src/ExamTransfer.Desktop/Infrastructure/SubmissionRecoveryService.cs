@@ -31,6 +31,7 @@ public sealed class SubmissionRecoveryService(
 
     public int PendingCount => Volatile.Read(ref pendingCount);
     public event EventHandler<int>? PendingCountChanged;
+    public event EventHandler<SubmissionProgressSnapshot>? ProgressChanged;
 
     public void Start()
     {
@@ -118,7 +119,7 @@ public sealed class SubmissionRecoveryService(
                 LastError = null,
                 NextRetryAtUtc = DateTimeOffset.UtcNow
             };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
         }
         try
         {
@@ -127,7 +128,7 @@ public sealed class SubmissionRecoveryService(
             client.SetParticipantToken(SubmissionQueueStore.UnprotectToken(current.ProtectedToken));
 
             current = current with { Endpoint = endpoint, QueueStatus = SubmissionQueueStatus.Initializing, LastError = null };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
             var init = ApiGuard.Require(await client.PostAsync<InitSubmissionRequest, InitSubmissionResponse>(
                 "api/v1/submissions/init",
                 new(current.SessionId, current.ParticipantId, current.IdempotencyKey,
@@ -142,7 +143,7 @@ public sealed class SubmissionRecoveryService(
                 MissingChunks = plan.MissingChunks,
                 QueueStatus = SubmissionQueueStatus.Uploading
             };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
 
             await using var stream = new FileStream(current.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read, init.ChunkSizeBytes, true);
             var buffer = new byte[init.ChunkSizeBytes];
@@ -162,18 +163,18 @@ public sealed class SubmissionRecoveryService(
                 ApiGuard.Require(await client.UploadChunkAsync($"api/v1/submissions/{init.SubmissionId}/files/{plan.FileId}/chunks/{index}", chunk, read, null, ct));
                 missing.Remove(index);
                 current = current with { MissingChunks = missing.ToList() };
-                await SubmissionQueueStore.SaveAsync(current, ct);
+                await SaveAndPublishAsync(current, ct);
             }
 
             current = current with { QueueStatus = SubmissionQueueStatus.Finalizing, FinalizeRequested = true };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
             _ = ApiGuard.Require(await client.PostAsync<FinalizeSubmissionRequest, FinalizeSubmissionResponse>($"api/v1/submissions/{init.SubmissionId}/finalize", new(null), ct));
             current = current with { QueueStatus = SubmissionQueueStatus.AwaitingReceipt };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
             var receipt = ApiGuard.Require(await client.GetAsync<ReceiptDto>($"api/v1/submissions/{init.SubmissionId}/receipt", ct));
             await SubmissionQueueStore.StoreReceiptAsync(receipt, ct);
             current = current with { QueueStatus = SubmissionQueueStatus.Completed, ReceiptReceived = true, CompletedAtUtc = DateTimeOffset.UtcNow, LastError = null };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
             UpdateCurrentSession(current, receipt);
             await SubmissionQueueStore.RemoveCompletedAsync(current.QueueId, ct);
             UpdatePendingCount(Math.Max(0, PendingCount - 1));
@@ -204,7 +205,7 @@ public sealed class SubmissionRecoveryService(
         try
         {
             current = current with { QueueStatus = SubmissionQueueStatus.Initializing, LastError = null };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
             var plan = await AppServices.PublicCloud.InitSubmissionAsync(
                 current.SessionId, current.IdempotencyKey, current.FileName,
                 current.SizeBytes, current.Sha256, ct);
@@ -214,10 +215,10 @@ public sealed class SubmissionRecoveryService(
                 ServerFileId = plan.FileId,
                 QueueStatus = SubmissionQueueStatus.Uploading
             };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
             await AppServices.PublicCloud.UploadSubmissionArchiveAsync(plan, current.FilePath, ct);
             current = current with { QueueStatus = SubmissionQueueStatus.Finalizing, FinalizeRequested = true };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
             var receipt = await AppServices.PublicCloud.VerifyAndFinalizeSubmissionAsync(plan, current.IdempotencyKey, ct);
             await SubmissionQueueStore.StoreReceiptAsync(receipt, ct);
             current = current with
@@ -227,7 +228,7 @@ public sealed class SubmissionRecoveryService(
                 CompletedAtUtc = DateTimeOffset.UtcNow,
                 LastError = null
             };
-            await SubmissionQueueStore.SaveAsync(current, ct);
+            await SaveAndPublishAsync(current, ct);
             UpdateCurrentSession(current, receipt);
             await SubmissionQueueStore.RemoveCompletedAsync(current.QueueId, ct);
             UpdatePendingCount(Math.Max(0, PendingCount - 1));
@@ -252,17 +253,37 @@ public sealed class SubmissionRecoveryService(
         return room?.BaseAddress ?? item.Endpoint;
     }
 
-    private static async Task SaveStateAsync(PendingSubmission item, SubmissionQueueStatus status, string error, bool retry, CancellationToken ct)
+    private async Task SaveStateAsync(PendingSubmission item, SubmissionQueueStatus status, string error, bool retry, CancellationToken ct)
     {
         var retryCount = retry ? item.RetryCount + 1 : item.RetryCount;
         var delay = retry ? RetrySchedule[Math.Min(retryCount, RetrySchedule.Length) - 1] : TimeSpan.Zero;
-        await SubmissionQueueStore.SaveAsync(item with
+        await SaveAndPublishAsync(item with
         {
             QueueStatus = status,
             RetryCount = retryCount,
             NextRetryAtUtc = retry ? DateTimeOffset.UtcNow.Add(delay) : null,
             LastError = error
         }, ct);
+    }
+
+    private async Task SaveAndPublishAsync(PendingSubmission item, CancellationToken ct)
+    {
+        await SubmissionQueueStore.SaveAsync(item, ct);
+        var snapshot = SubmissionQueueStore.CreateProgressSnapshot(item);
+        var handlers = ProgressChanged?.GetInvocationList()
+            .Cast<EventHandler<SubmissionProgressSnapshot>>()
+            .ToArray() ?? [];
+        foreach (var handler in handlers)
+        {
+            try
+            {
+                handler(this, snapshot);
+            }
+            catch (Exception ex)
+            {
+                FrontendLogger.Log(ex, "SubmissionRecovery.ProgressChanged");
+            }
+        }
     }
 
     private void UpdateCurrentSession(PendingSubmission item, ReceiptDto receipt)

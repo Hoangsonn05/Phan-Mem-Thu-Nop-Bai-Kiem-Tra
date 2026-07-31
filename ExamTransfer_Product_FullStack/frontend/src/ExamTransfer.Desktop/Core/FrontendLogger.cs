@@ -73,6 +73,47 @@ public static class FrontendLogger
         }
     }
 
+    public static void LogWarning(string message, string source = "Frontend")
+    {
+        LogWarning(message, source, AppendWarning);
+    }
+
+    internal static void LogWarning(string message, string source, Action<string> sink)
+    {
+        ArgumentNullException.ThrowIfNull(sink);
+        var entry = new StringBuilder()
+            .AppendLine("------------------------------------------------------------")
+            .AppendLine($"timestamp_utc: {DateTimeOffset.UtcNow:O}")
+            .AppendLine("level: Warning")
+            .AppendLine($"profile: {AppProfile.DisplayName}")
+            .AppendLine($"source: {source}")
+            .AppendLine($"mode: {CurrentMode}")
+            .AppendLine($"page_key: {CurrentPageKey}")
+            .AppendLine($"message: {message}")
+            .ToString();
+
+        try
+        {
+            sink(entry);
+        }
+        catch (Exception ex) when (ex is IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or System.Security.SecurityException)
+        {
+            Debug.WriteLine($"Frontend warning log could not be written: {ex.Message}");
+        }
+    }
+
+    private static void AppendWarning(string entry)
+    {
+        lock (Sync)
+        {
+            Directory.CreateDirectory(LogDirectory);
+            File.AppendAllText(LogPath, entry, Encoding.UTF8);
+        }
+    }
+
     public static void ShowDebugDialog(Exception exception, string source)
     {
         if (!Debugger.IsAttached)

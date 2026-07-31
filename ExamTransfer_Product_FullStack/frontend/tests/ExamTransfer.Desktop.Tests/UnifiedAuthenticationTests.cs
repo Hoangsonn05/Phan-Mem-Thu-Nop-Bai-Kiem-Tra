@@ -258,6 +258,38 @@ public sealed class UnifiedAuthenticationTests
             uri => uri.IsLoopback || uri.Port == 5048);
     }
 
+    [Fact]
+    public async Task TeacherProfileWithStudentCode_PreservesExistingGuardMapping()
+    {
+        var identity = Guid.NewGuid();
+        var organization = Guid.NewGuid();
+        var backendHandler = new RejectingBackendHandler();
+        var runtime = new RecordingRuntime();
+        var service = Service(
+            new SupabaseAccountHandler(
+                identity,
+                organization,
+                "Teacher",
+                studentCode: "HS001"),
+            backendHandler,
+            runtime,
+            organization,
+            AppContext.BaseDirectory);
+
+        var result = await service.LoginAsync(
+            "teacher@example.test",
+            "correct-password",
+            "device-1",
+            "teacher-pc",
+            "1.3.7",
+            default);
+
+        Assert.Equal(UserRole.Student, result.Account.Role);
+        Assert.Equal(AuthSessionAuthority.Supabase, result.Authority);
+        Assert.Equal(0, backendHandler.RequestCount);
+        Assert.Equal(0, runtime.StartCount);
+    }
+
     [Theory]
     [InlineData("username")]
     [InlineData("student_code")]

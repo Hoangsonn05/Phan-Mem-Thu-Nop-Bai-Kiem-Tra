@@ -3088,39 +3088,37 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
     private readonly IBackendClient api;
     private readonly StudentSessionState state;
     private readonly AppAuthSessionState authState;
+    private readonly ISubmissionRecoveryService submissionRecovery;
     private string? selectedPath;
     private double progress;
+    private Guid? queueId;
+    private string? queueError;
     private string fileName = "Chưa chọn file";
     private string fileType = "-";
     private string fileSize = "-";
     private string sha256 = "Chưa tính";
     private string validationStatus = "Chưa kiểm tra";
     private bool isFileValid;
+    private bool progressSubscribed;
 
-    public StudentSubmissionViewModel(IBackendClient api, StudentSessionState state, AppAuthSessionState authState)
+    public StudentSubmissionViewModel(
+        IBackendClient api,
+        StudentSessionState state,
+        AppAuthSessionState authState,
+        ISubmissionRecoveryService? submissionRecovery = null)
     {
         this.api = api;
         this.state = state;
         this.authState = authState;
+        this.submissionRecovery = submissionRecovery ?? AppServices.SubmissionRecovery;
         PickCommand = new AsyncRelayCommand(PickAsync, () => !IsBusy);
         SubmitCommand = new AsyncRelayCommand(SubmitAsync, () => !IsBusy && IsFileValid && !string.IsNullOrWhiteSpace(SelectedPath) && state.HasSession);
-        
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                while (!DisposeToken.IsCancellationRequested)
-                {
-                    await Task.Delay(500, DisposeToken);
-                    System.Windows.Application.Current.Dispatcher.InvokeAsync(() => PollQueueAsync().SafeFireAndForget());
-                }
-            }
-            catch (TaskCanceledException) { }
-        }, DisposeToken);
     }
 
     public string? SelectedPath { get => selectedPath; private set { if (Set(ref selectedPath, value)) RaiseCommands(); } }
     public double Progress { get => progress; private set => Set(ref progress, value); }
+    public Guid? QueueId { get => queueId; private set => Set(ref queueId, value); }
+    public string? QueueError { get => queueError; private set => Set(ref queueError, value); }
     public string FileName { get => fileName; private set => Set(ref fileName, value); }
     public string FileType { get => fileType; private set => Set(ref fileType, value); }
     public string FileSize { get => fileSize; private set => Set(ref fileSize, value); }
@@ -3146,10 +3144,9 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
                 FileType = Path.GetExtension(pending.FileName).TrimStart('.').ToUpperInvariant();
                 FileSize = FormatBytes(pending.SizeBytes);
                 Sha256 = pending.Sha256;
-                ValidationStatus = QueueStatusText(pending.QueueStatus);
                 IsFileValid = pending.QueueStatus != Infrastructure.SubmissionQueueStatus.FailedPermanent;
-                Status = $"Có 1 bài đã lưu trên máy: {QueueStatusText(pending.QueueStatus)}";
-                AppServices.SubmissionRecovery.Trigger();
+                TrackQueue(pending);
+                submissionRecovery.Trigger();
             }
         }
     }
@@ -3197,10 +3194,81 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
             state.SessionId.Value, state.ParticipantId.Value, state.RoomCode, state.AccessMode, state.ServerId, state.AccessToken, ct);
         SelectedPath = queued.FilePath;
         Sha256 = queued.Sha256;
-        ValidationStatus = "Đã lưu trên máy";
-        Progress = 10;
-        AppServices.SubmissionRecovery.Trigger();
+        TrackQueue(queued);
+        submissionRecovery.Trigger();
     });
+
+    internal void TrackQueue(Infrastructure.PendingSubmission item)
+    {
+        QueueId = item.QueueId;
+        EnsureProgressSubscription();
+        ApplyProgressSnapshot(Infrastructure.SubmissionQueueStore.CreateProgressSnapshot(item));
+    }
+
+    private void EnsureProgressSubscription()
+    {
+        if (progressSubscribed || IsDisposed) return;
+        submissionRecovery.ProgressChanged += OnProgressChanged;
+        progressSubscribed = true;
+    }
+
+    private void StopProgressSubscription()
+    {
+        if (!progressSubscribed) return;
+        submissionRecovery.ProgressChanged -= OnProgressChanged;
+        progressSubscribed = false;
+    }
+
+    private void OnProgressChanged(
+        object? sender,
+        Infrastructure.SubmissionProgressSnapshot snapshot)
+    {
+        if (IsDisposed || snapshot.QueueId != QueueId) return;
+
+        void ApplySafely()
+        {
+            if (IsDisposed || snapshot.QueueId != QueueId) return;
+            try
+            {
+                ApplyProgressSnapshot(snapshot);
+            }
+            catch (Exception ex)
+            {
+                FrontendLogger.Log(ex, "StudentSubmission.ProgressChanged");
+            }
+        }
+
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher?.CheckAccess() == false)
+            _ = dispatcher.BeginInvoke(ApplySafely);
+        else
+            ApplySafely();
+    }
+
+    private void ApplyProgressSnapshot(
+        Infrastructure.SubmissionProgressSnapshot snapshot)
+    {
+        Progress = snapshot.ProgressPercent;
+        QueueError = snapshot.LastError;
+        var statusText = snapshot.Status == Infrastructure.SubmissionQueueStatus.Completed
+            && !snapshot.ReceiptReceived
+            ? QueueStatusText(Infrastructure.SubmissionQueueStatus.AwaitingReceipt)
+            : QueueStatusText(snapshot.Status);
+        ValidationStatus = string.IsNullOrWhiteSpace(snapshot.LastError)
+            ? statusText
+            : snapshot.LastError;
+        Status = string.IsNullOrWhiteSpace(snapshot.LastError)
+            ? $"Trạng thái bài nộp: {statusText}"
+            : $"Bài nộp cần xử lý: {snapshot.LastError}";
+        StatusTone = snapshot.IsCompleted
+            ? "success"
+            : snapshot.IsTerminal || !string.IsNullOrWhiteSpace(snapshot.LastError)
+                ? "danger"
+                : "info";
+        RaiseCommands();
+        if (snapshot.IsTerminal)
+            StopProgressSubscription();
+    }
 
     private static string FormatBytes(long bytes) => $"{bytes / 1024d / 1024d:N2} MB";
     private static string QueueStatusText(Infrastructure.SubmissionQueueStatus status) => status switch
@@ -3221,6 +3289,12 @@ public sealed class StudentSubmissionViewModel : ProductPageBase
     {
         (PickCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         (SubmitCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+    }
+
+    public override void Dispose()
+    {
+        StopProgressSubscription();
+        base.Dispose();
     }
 }
 

@@ -54,6 +54,18 @@ public sealed record PendingSubmission(
     DateTimeOffset? CompletedAtUtc = null,
     string? OriginalSourcePath = null);
 
+public sealed record SubmissionProgressSnapshot(
+    Guid QueueId,
+    SubmissionQueueStatus Status,
+    double ProgressPercent,
+    Guid? SubmissionId,
+    bool ReceiptReceived,
+    string? LastError,
+    bool IsCompleted,
+    bool IsTerminal,
+    int CompletedChunks,
+    int TotalChunks);
+
 public static class SubmissionQueueStore
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
@@ -140,6 +152,58 @@ public static class SubmissionQueueStore
         await Gate.WaitAsync(ct);
         try { return await ReadCoreAsync(ct); }
         finally { Gate.Release(); }
+    }
+
+    public static SubmissionProgressSnapshot CreateProgressSnapshot(PendingSubmission item)
+    {
+        var totalChunks = item.ChunkSizeBytes > 0 && item.SizeBytes > 0
+            ? checked((int)Math.Ceiling(item.SizeBytes / (double)item.ChunkSizeBytes))
+            : 0;
+        var missingChunks = totalChunks == 0
+            ? 0
+            : Math.Clamp(item.MissingChunks.Distinct().Count(), 0, totalChunks);
+        var completedChunks = totalChunks - missingChunks;
+        var uploadProgress = totalChunks > 0
+            ? 15d + (70d * completedChunks / totalChunks)
+            : 15d;
+        var lastKnownProgress = item.FinalizeRequested
+            ? 90d
+            : item.SubmissionId.HasValue
+                ? uploadProgress
+                : 10d;
+        var completed = item.ReceiptReceived;
+        var terminal = completed
+            || item.QueueStatus is SubmissionQueueStatus.Expired
+                or SubmissionQueueStatus.FailedPermanent;
+        var progress = completed
+            ? 100d
+            : item.QueueStatus switch
+            {
+                SubmissionQueueStatus.Prepared => 10d,
+                SubmissionQueueStatus.Initializing => 15d,
+                SubmissionQueueStatus.Uploading => uploadProgress,
+                SubmissionQueueStatus.Finalizing => 90d,
+                SubmissionQueueStatus.AwaitingReceipt
+                    or SubmissionQueueStatus.Completed => 95d,
+                SubmissionQueueStatus.WaitingForConnection
+                    or SubmissionQueueStatus.NeedsLogin
+                    or SubmissionQueueStatus.NeedsRejoin
+                    or SubmissionQueueStatus.Expired
+                    or SubmissionQueueStatus.FailedPermanent => lastKnownProgress,
+                _ => lastKnownProgress
+            };
+
+        return new SubmissionProgressSnapshot(
+            item.QueueId,
+            item.QueueStatus,
+            progress,
+            item.SubmissionId,
+            item.ReceiptReceived,
+            item.LastError,
+            completed,
+            terminal,
+            completedChunks,
+            totalChunks);
     }
 
     public static async Task SaveAsync(PendingSubmission item, CancellationToken ct)

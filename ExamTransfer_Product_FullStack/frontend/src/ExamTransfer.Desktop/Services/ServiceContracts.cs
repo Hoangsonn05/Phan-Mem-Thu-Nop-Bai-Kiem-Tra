@@ -88,6 +88,7 @@ public interface ISubmissionRecoveryService : IDisposable
 {
     int PendingCount { get; }
     event EventHandler<int>? PendingCountChanged;
+    event EventHandler<ExamTransfer.Desktop.Infrastructure.SubmissionProgressSnapshot>? ProgressChanged;
     void Start();
     void Trigger();
 }
