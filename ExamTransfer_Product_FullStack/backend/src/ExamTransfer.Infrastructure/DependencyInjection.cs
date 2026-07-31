@@ -75,6 +75,7 @@ public static class DependencyInjection
             ISessionParticipantMutationHandler,
             PublicCloudSessionParticipantMutationHandler>();
         services.AddScoped<SessionParticipantMutationDispatcher>();
+        services.AddScoped<LanParticipantSessionExecution>();
         services.AddScoped<ISessionService, SessionService>();
         services.AddScoped<
             ISubmissionMutationHandler,

@@ -259,6 +259,7 @@ public sealed class OnlyLanWorkflowCharacterizationTests
         var session = await fixture.CreateAndOpenLanSessionAsync(seeded.Exam.Id, "LANJOIN");
         var request = JoinRequest(session.Summary.RoomCode, seeded.Student, "student-device-rejoin");
 
+        var beforeJoin = DateTimeOffset.UtcNow;
         var first = await fixture.Sessions.JoinAsync(
             request,
             seeded.Student.Id,
@@ -266,6 +267,29 @@ public sealed class OnlyLanWorkflowCharacterizationTests
             seeded.Student.DisplayName,
             "192.168.10.44",
             CancellationToken.None);
+        var afterJoin = DateTimeOffset.UtcNow;
+        var tokenPrincipal = new SessionTokenService(fixture.Options).Validate(first.AccessToken);
+        Assert.NotNull(tokenPrincipal);
+        Assert.Equal(session.Summary.Id, tokenPrincipal.SessionId);
+        Assert.Equal(first.ParticipantId, tokenPrincipal.ParticipantId);
+        Assert.Equal(seeded.Student.Id, tokenPrincipal.UserId);
+        Assert.Equal(request.DeviceId, tokenPrincipal.DeviceId);
+        Assert.Equal(ParticipantStatus.PendingApproval, tokenPrincipal.ParticipantStatus);
+        Assert.InRange(
+            first.TokenExpiresAtUtc,
+            beforeJoin.AddMinutes(210),
+            afterJoin.AddMinutes(210));
+        Assert.Contains(
+            fixture.OutboxCalls,
+            x => x.EntityType == "session_participants"
+                && x.EntityId == first.ParticipantId.ToString()
+                && x.Operation == "upsert");
+        Assert.Contains(RealtimeEvents.ParticipantJoined, fixture.RealtimeEvents);
+        Assert.True(await fixture.Db.AuditLogsSet.AnyAsync(
+            x => x.Action == "ParticipantJoined"
+                && x.SessionId == session.Summary.Id
+                && x.EntityId == first.ParticipantId.ToString()));
+
         var rejoined = await fixture.Sessions.JoinAsync(
             request,
             seeded.Student.Id,
@@ -333,6 +357,108 @@ public sealed class OnlyLanWorkflowCharacterizationTests
             CancellationToken.None));
         Assert.Equal(ErrorCodes.PublicCloudRouteRequired, publicRoute.Code);
         Assert.Equal(409, publicRoute.StatusCode);
+        Assert.False(await fixture.Db.SessionParticipantsSet.AnyAsync(
+            x => x.SessionId == publicSession.Summary.Id));
+        Assert.Equal(0, fixture.Cloud.CallCount);
+    }
+
+    [Fact]
+    public async Task Heartbeat_EnforcesDeviceAndRestoresDisconnectedParticipantWithoutTouchingOthers()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var seeded = await fixture.SeedPublishedQuizAsync();
+        var session = await fixture.CreateAndOpenLanSessionAsync(seeded.Exam.Id, "LANBEAT");
+        var first = await fixture.Sessions.JoinAsync(
+            JoinRequest(session.Summary.RoomCode, seeded.Student, "heartbeat-device"),
+            seeded.Student.Id,
+            seeded.Student.StudentCode!,
+            seeded.Student.DisplayName,
+            "192.168.10.46",
+            CancellationToken.None);
+        var other = await fixture.Sessions.JoinAsync(
+            new JoinSessionRequest(
+                session.Summary.RoomCode,
+                "LAN-OTHER",
+                "Other Student",
+                null,
+                "other-heartbeat-device",
+                "other-machine",
+                "characterization",
+                Guid.NewGuid().ToString("N")),
+            Guid.NewGuid(),
+            "LAN-OTHER",
+            "Other Student",
+            "192.168.10.47",
+            CancellationToken.None);
+        await fixture.Sessions.ApproveAsync(
+            session.Summary.Id,
+            first.ParticipantId,
+            Guid.NewGuid(),
+            CancellationToken.None);
+
+        fixture.Db.ChangeTracker.Clear();
+        var firstBeforeMismatch = await fixture.Db.SessionParticipantsSet
+            .AsNoTracking()
+            .SingleAsync(x => x.Id == first.ParticipantId);
+        var sequenceBeforeMismatch = await fixture.Db.ExamSessionsSet
+            .Where(x => x.Id == session.Summary.Id)
+            .Select(x => x.Sequence)
+            .SingleAsync();
+        var mismatch = await Assert.ThrowsAsync<ApiException>(() =>
+            fixture.Sessions.HeartbeatAsync(
+                session.Summary.Id,
+                first.ParticipantId,
+                "wrong-device",
+                new HeartbeatRequest("Ready", DateTimeOffset.UtcNow, 0),
+                CancellationToken.None));
+        Assert.Equal(ErrorCodes.Forbidden, mismatch.Code);
+        Assert.Equal(403, mismatch.StatusCode);
+
+        fixture.Db.ChangeTracker.Clear();
+        var firstAfterMismatch = await fixture.Db.SessionParticipantsSet
+            .Include(x => x.Session)
+            .SingleAsync(x => x.Id == first.ParticipantId);
+        Assert.Equal(firstBeforeMismatch.LastSeenUtc, firstAfterMismatch.LastSeenUtc);
+        Assert.Equal(sequenceBeforeMismatch, firstAfterMismatch.Session.Sequence);
+
+        var otherLastSeen = await fixture.Db.SessionParticipantsSet
+            .Where(x => x.Id == other.ParticipantId)
+            .Select(x => x.LastSeenUtc)
+            .SingleAsync();
+        firstAfterMismatch.Status = ParticipantStatus.Disconnected;
+        firstAfterMismatch.LastSeenUtc = DateTimeOffset.UtcNow.AddMinutes(-5);
+        firstAfterMismatch.Session.Sequence++;
+        await fixture.Db.SaveChangesAsync();
+        var sequenceBeforeHeartbeat = firstAfterMismatch.Session.Sequence;
+        var realtimeCountBeforeHeartbeat = fixture.RealtimeEvents.Count;
+        var beforeHeartbeat = DateTimeOffset.UtcNow;
+
+        var response = await fixture.Sessions.HeartbeatAsync(
+            session.Summary.Id,
+            first.ParticipantId,
+            "heartbeat-device",
+            new HeartbeatRequest("Ready", beforeHeartbeat.AddHours(-1), 0),
+            CancellationToken.None);
+        var afterHeartbeat = DateTimeOffset.UtcNow;
+
+        fixture.Db.ChangeTracker.Clear();
+        var persisted = await fixture.Db.SessionParticipantsSet
+            .Include(x => x.Session)
+            .SingleAsync(x => x.Id == first.ParticipantId);
+        Assert.InRange(response.ServerNowUtc, beforeHeartbeat, afterHeartbeat);
+        Assert.Equal(response.ServerNowUtc, persisted.LastSeenUtc);
+        Assert.Equal(ParticipantStatus.Approved, persisted.Status);
+        Assert.Equal(sequenceBeforeHeartbeat + 1, persisted.Session.Sequence);
+        Assert.Equal(
+            otherLastSeen,
+            await fixture.Db.SessionParticipantsSet
+                .Where(x => x.Id == other.ParticipantId)
+                .Select(x => x.LastSeenUtc)
+                .SingleAsync());
+        Assert.Equal(realtimeCountBeforeHeartbeat + 1, fixture.RealtimeEvents.Count);
+        Assert.Equal(
+            RealtimeEvents.ParticipantConnectionChanged,
+            fixture.RealtimeEvents[^1]);
     }
 
     [Fact]
