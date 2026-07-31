@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.LocalServer.Controllers;
@@ -168,7 +169,8 @@ public sealed class QuizDocumentImportTests
             default);
         var failing = new QuizService(
             fixture.Db,
-            new FailingSourceOutbox(new OutboxService(fixture.Db)),
+            new QuizProjectionOutbox(
+                new FailingSourceOutbox(new OutboxService(fixture.Db))),
             fixture.Paths);
 
         await Assert.ThrowsAsync<IOException>(() => failing.CommitImportAsync(
@@ -471,7 +473,10 @@ public sealed class QuizDocumentImportTests
             Db = db;
             Paths = paths;
             Exam = exam;
-            Service = new QuizService(db, new OutboxService(db), paths);
+            Service = new QuizService(
+                db,
+                new QuizProjectionOutbox(new OutboxService(db)),
+                paths);
         }
 
         public AppDbContext Db { get; }

@@ -94,6 +94,7 @@ public static class DependencyInjection
         services.AddScoped<IExportService, ExportService>();
         services.AddScoped<IBackupService, BackupService>();
         services.AddScoped<ISystemService, SystemService>();
+        services.AddScoped<QuizProjectionOutbox>();
         services.AddScoped<IQuizService, QuizService>();
         services.AddSingleton<ILanAccessPolicy, LanAccessPolicy>();
         return services;

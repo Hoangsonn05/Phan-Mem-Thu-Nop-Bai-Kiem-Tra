@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Xml.Linq;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
@@ -15,7 +16,7 @@ namespace ExamTransfer.Infrastructure.Services;
 
 public sealed class QuizService(
     AppDbContext db,
-    IOutboxService outbox,
+    QuizProjectionOutbox projectionOutbox,
     IStoragePaths? paths = null,
     ILogger<QuizService>? logger = null) : IQuizService
 {
@@ -205,18 +206,20 @@ public sealed class QuizService(
             await db.SaveChangesAsync(cancellationToken);
 
             foreach (var choice in replacedChoices)
-                await outbox.EnqueueAsync("quiz_choices", choice.Id.ToString(), "delete", new { id = choice.Id }, cancellationToken: cancellationToken);
+                await projectionOutbox.EnqueueChoiceDeleteAsync(choice.Id, cancellationToken);
             foreach (var question in replacedQuestions)
-                await outbox.EnqueueAsync("quiz_questions", question.Id.ToString(), "delete", new { id = question.Id }, cancellationToken: cancellationToken);
+                await projectionOutbox.EnqueueQuestionDeleteAsync(question.Id, cancellationToken);
             foreach (var question in await db.QuizQuestionsSet.AsNoTracking().Include(x => x.Choices)
                          .Where(x => x.ExamId == exam.Id && x.Version == exam.Version).ToListAsync(cancellationToken))
             {
-                await outbox.EnqueueAsync("quiz_questions", question.Id.ToString(), "upsert", QuestionCloud(question), cancellationToken: cancellationToken);
+                await projectionOutbox.EnqueueQuestionUpsertAsync(question, cancellationToken);
                 foreach (var choice in question.Choices)
-                    await outbox.EnqueueAsync("quiz_choices", choice.Id.ToString(), "upsert", ChoiceCloud(choice), cancellationToken: cancellationToken);
+                    await projectionOutbox.EnqueueChoiceUpsertAsync(choice, cancellationToken);
             }
-            await outbox.EnqueueAsync("quiz_import_sources", sourceEntity.Id.ToString(), "upsert",
-                SourceCloud(sourceEntity), committedPath, cancellationToken);
+            await projectionOutbox.EnqueueSourceUpsertAsync(
+                sourceEntity,
+                committedPath,
+                cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             TryDelete(preview.TemporaryPath, "file preview tạm");
             foreach (var oldLocalPath in oldLocalPaths.Where(x =>
@@ -294,7 +297,7 @@ public sealed class QuizService(
         };
         db.QuizAttemptsSet.Add(attempt);
         await db.SaveChangesAsync(cancellationToken);
-        await outbox.EnqueueAsync("quiz_attempts", attempt.Id.ToString(), "upsert", AttemptCloud(attempt), cancellationToken: cancellationToken);
+        await projectionOutbox.EnqueueAttemptUpsertAsync(attempt, cancellationToken);
         return ToStudentDto(attempt);
     }
 
@@ -340,7 +343,8 @@ public sealed class QuizService(
             answer.ClientUpdatedAtUtc = incoming.ClientUpdatedAtUtc;
         }
         await db.SaveChangesAsync(cancellationToken);
-        foreach (var answer in attempt.Answers) await outbox.EnqueueAsync("quiz_answers", answer.Id.ToString(), "upsert", AnswerCloud(answer), cancellationToken: cancellationToken);
+        foreach (var answer in attempt.Answers)
+            await projectionOutbox.EnqueueAnswerUpsertAsync(answer, cancellationToken);
         return new(attempt.Id, attempt.Answers.Select(ToAnswerDto).ToList(), DateTimeOffset.UtcNow);
     }
 
@@ -370,7 +374,7 @@ public sealed class QuizService(
         attempt.GradedAtUtc = attempt.FinalizedAtUtc;
         attempt.FinalizeIdempotencyKey = request.IdempotencyKey.Trim();
         await db.SaveChangesAsync(cancellationToken);
-        await outbox.EnqueueAsync("quiz_attempts", attempt.Id.ToString(), "upsert", AttemptCloud(attempt), cancellationToken: cancellationToken);
+        await projectionOutbox.EnqueueAttemptUpsertAsync(attempt, cancellationToken);
         return ToStudentDto(attempt);
     }
 
@@ -434,25 +438,6 @@ public sealed class QuizService(
                 ? value.GetInt32()
                 : 0;
     private static QuizQuestionDto ToQuestionDto(QuizQuestion x) => new(x.Id, x.Text, x.Order, x.Points, x.Multiple, x.Choices.OrderBy(c => c.Order).Select(c => new QuizChoiceDto(c.Id, c.Text, c.Order)).ToList());
-    private static object QuestionCloud(QuizQuestion x) => new { id = x.Id, exam_id = x.ExamId, version = x.Version, sort_order = x.Order, question_text = x.Text, points = x.Points, multiple = x.Multiple, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
-    private static object ChoiceCloud(QuizChoice x) => new { id = x.Id, question_id = x.QuestionId, sort_order = x.Order, choice_text = x.Text, is_correct = x.IsCorrect, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
-    private static object AttemptCloud(QuizAttempt x) => new { id = x.Id, session_id = x.SessionId, participant_id = x.ParticipantId, exam_version = x.ExamVersion, result_policy = x.ResultPolicySnapshot.ToString(), status = x.Status.ToString(), started_at = x.StartedAtUtc, deadline_at = x.DeadlineUtc, finalized_at = x.FinalizedAtUtc, auto_score = x.AutoScore, score = x.Score, max_score = x.MaxScore, grading_status = x.GradingStatus.ToString(), general_comment = x.GeneralComment, grader_id = x.GraderId, graded_at = x.GradedAtUtc, returned_at = x.ReturnedAtUtc, snapshot_json = x.SnapshotJson, finalize_idempotency_key = x.FinalizeIdempotencyKey, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
-    private static object AnswerCloud(QuizAnswer x) => new { id = x.Id, attempt_id = x.AttemptId, question_id = x.QuestionId, choice_ids = x.ChoiceIdsJson, revision = x.Revision, client_updated_at = x.ClientUpdatedAtUtc, created_at = x.CreatedAtUtc, updated_at = x.UpdatedAtUtc };
-    private static object SourceCloud(QuizImportSource x) => new
-    {
-        id = x.Id,
-        exam_id = x.ExamId,
-        exam_version = x.ExamVersion,
-        original_name = x.OriginalName,
-        mime_type = x.MimeType,
-        size_bytes = x.SizeBytes,
-        sha256 = x.Sha256,
-        status = x.Status,
-        created_by = x.CreatedBy,
-        imported_at = x.ImportedAtUtc,
-        created_at = x.CreatedAtUtc,
-        updated_at = x.UpdatedAtUtc
-    };
 
     private void AddQuestions(Exam exam, QuizImportDocument document)
     {

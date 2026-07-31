@@ -980,7 +980,9 @@ public sealed class PublicCloudPullProjectionTests
         Assert.Equal(DeviceCommandStatus.Failed, device.LastCommandStatus);
         Assert.Equal("Command failed in acceptance fixture", device.LastCommandError);
 
-        var attempts = await new QuizService(verify, new OutboxService(verify))
+        var attempts = await new QuizService(
+                verify,
+                new QuizProjectionOutbox(new OutboxService(verify)))
             .ListAttemptsForSessionAsync(participant.SessionId, CancellationToken.None);
         var attempt = Assert.Single(attempts);
         Assert.Equal(attemptId, attempt.Id);

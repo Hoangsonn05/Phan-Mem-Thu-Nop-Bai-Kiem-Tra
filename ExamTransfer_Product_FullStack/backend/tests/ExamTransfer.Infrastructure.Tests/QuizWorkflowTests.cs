@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.Shared.Contracts;
@@ -33,7 +34,9 @@ public sealed class QuizWorkflowTests
         };
         db.ExamsSet.Add(exam);
         await db.SaveChangesAsync();
-        var service = new QuizService(db, new OutboxService(db));
+        var service = new QuizService(
+            db,
+            new QuizProjectionOutbox(new OutboxService(db)));
         var teacherId = Guid.NewGuid();
         var preview = await service.PreviewImportAsync(
             exam.Id,

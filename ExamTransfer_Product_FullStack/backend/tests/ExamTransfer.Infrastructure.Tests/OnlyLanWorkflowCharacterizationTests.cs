@@ -785,7 +785,9 @@ public sealed class OnlyLanWorkflowCharacterizationTests
             Cloud = new CountingThrowingCloudAdapter();
             Sessions = CreateSessionService(new StaticLanAccessPolicy(true));
             Controls = new ControlService(db, audit, realtime, outbox);
-            Quiz = new QuizService(db, outbox);
+            Quiz = new QuizService(
+                db,
+                new QuizProjectionOutbox(outbox));
         }
 
         public AppDbContext Db { get; }
