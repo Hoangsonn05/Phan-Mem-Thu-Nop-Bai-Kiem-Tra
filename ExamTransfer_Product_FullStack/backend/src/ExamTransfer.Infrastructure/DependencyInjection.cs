@@ -89,6 +89,7 @@ public static class DependencyInjection
         services.AddScoped<IGradeService, GradeService>();
         services.AddScoped<IQuizGradingService, QuizGradingService>();
         services.AddScoped<ISubmissionPreviewService, SubmissionPreviewService>();
+        services.AddScoped<DeviceStatusReadExecution>();
         services.AddScoped<IControlService, ControlService>();
         services.AddScoped<IExportService, ExportService>();
         services.AddScoped<IBackupService, BackupService>();
