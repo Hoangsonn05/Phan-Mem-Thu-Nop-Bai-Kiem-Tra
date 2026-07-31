@@ -217,7 +217,7 @@ public sealed class LanRoomJoinAndLifecycleTests
     }
 
     [Fact]
-    public void LanPostJoinSynchronizationFailure_RetainsIdentityButReportsJoinAsNetworkFailure()
+    public void LanPostJoinSynchronizationFailure_RetainsIdentityAndReturnsTypedSyncFailure()
     {
         var sessionId = Guid.NewGuid();
         var participantId = Guid.NewGuid();
@@ -249,14 +249,23 @@ public sealed class LanRoomJoinAndLifecycleTests
         Assert.Equal(sessionId, state.SessionId);
         Assert.Equal(participantId, state.ParticipantId);
         Assert.Equal("participant-token", state.AccessToken);
-        Assert.Contains("NETWORK_ERROR", viewModel.Status, StringComparison.Ordinal);
-        Assert.Equal("danger", viewModel.StatusTone);
+        Assert.Contains(
+            StudentJoinErrorCodes.PostJoinSynchronizationFailed,
+            viewModel.Status,
+            StringComparison.Ordinal);
+        Assert.Equal("warning", viewModel.StatusTone);
+        Assert.Equal(
+            StudentJoinErrorCodes.PostJoinSynchronizationFailed,
+            viewModel.LastJoinOutcome?.Code);
+        Assert.True(viewModel.LastJoinOutcome?.AuthorityMutationCommitted);
+        Assert.True(state.JoinMutationCommitted);
+        Assert.True(state.PostJoinSynchronizationPending);
         Assert.Equal(1, handler.JoinCalls);
         auth.Clear();
     }
 
     [Fact]
-    public void LanRejoinAfterPostJoinFailure_ReissuesMutationWithNewRequestIdentity()
+    public void LanRetryAfterPostJoinFailure_RunsOnlySynchronization()
     {
         var sessionId = Guid.NewGuid();
         var participantId = Guid.NewGuid();
@@ -266,12 +275,17 @@ public sealed class LanRoomJoinAndLifecycleTests
         api.SetAccountToken("server-account-token");
         var auth = StudentAuth();
         var state = new StudentSessionState();
+        var completionCalls = 0;
         using var viewModel = new StudentConnectViewModel(
             api,
             state,
             auth,
             new RecordingDiscovery(room),
-            _ => throw new IOException("simulated post-join timeline failure"));
+            _ =>
+            {
+                completionCalls++;
+                throw new IOException("simulated post-join timeline failure");
+            });
         viewModel.RoomCode = room.RoomCode;
 
         viewModel.JoinCommand.Execute(null);
@@ -280,17 +294,17 @@ public sealed class LanRoomJoinAndLifecycleTests
             TimeSpan.FromSeconds(3)));
         viewModel.JoinCommand.Execute(null);
         Assert.True(SpinWait.SpinUntil(
-            () => !viewModel.IsBusy && handler.JoinCalls == 2,
+            () => !viewModel.IsBusy && completionCalls == 2,
             TimeSpan.FromSeconds(3)));
 
-        Assert.Equal(2, handler.JoinNonces.Count);
-        Assert.Equal(2, handler.JoinNonces.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(1, handler.JoinCalls);
+        Assert.Single(handler.JoinNonces);
         Assert.Equal(participantId, state.ParticipantId);
         auth.Clear();
     }
 
     [Fact]
-    public void PublicCloudPostJoinSynchronizationFailure_RetainsIdentityAndReissuesRpcOnRetry()
+    public void PublicCloudPostJoinSynchronizationFailure_RetainsIdentityAndRetriesOnlySynchronization()
     {
         var auth = StudentAuth();
         var state = new StudentSessionState();
@@ -345,17 +359,72 @@ public sealed class LanRoomJoinAndLifecycleTests
         Assert.Equal(examId, state.ExamId);
         Assert.Equal(participantId, state.ParticipantId);
         Assert.Equal("cloud-access-token", state.AccessToken);
-        Assert.Contains("NETWORK_ERROR", viewModel.Status, StringComparison.Ordinal);
+        Assert.Contains(
+            StudentJoinErrorCodes.PostJoinSynchronizationFailed,
+            viewModel.Status,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            StudentJoinErrorCodes.PostJoinSynchronizationFailed,
+            viewModel.LastJoinOutcome?.Code);
+
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && completionCalls == 2,
+            TimeSpan.FromSeconds(3)));
+
+        Assert.Equal(2, completionCalls);
+        Assert.Equal(1, joinCalls);
+        Assert.Equal(sessionId, state.SessionId);
+        Assert.Equal(examId, state.ExamId);
+        Assert.Equal(participantId, state.ParticipantId);
+        auth.Clear();
+    }
+
+    [Fact]
+    public void PublicCloudTrueRoomNotFound_RetryReissuesAuthoritativeMutation()
+    {
+        var auth = StudentAuth();
+        var state = new StudentSessionState();
+        var joinCalls = 0;
+        var completionCalls = 0;
+        using var viewModel = new StudentConnectViewModel(
+            new BackendClient("http://localhost:5048"),
+            state,
+            auth,
+            new RecordingDiscovery(null),
+            _ => throw new InvalidOperationException("LAN path must not run."),
+            () => true,
+            (_, _) =>
+            {
+                joinCalls++;
+                throw new PublicCloudApiException(
+                    "OPEN_PUBLIC_SESSION_NOT_FOUND",
+                    "room not found",
+                    HttpStatusCode.NotFound);
+            },
+            (_, _) =>
+            {
+                completionCalls++;
+                return Task.CompletedTask;
+            });
+        viewModel.SelectedAccessMode = SessionAccessMode.PublicCloud;
+        viewModel.RoomCode = "ROOM42";
+
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && joinCalls == 1,
+            TimeSpan.FromSeconds(3)));
+        Assert.False(state.HasSession);
+        Assert.False(state.JoinMutationCommitted);
+        Assert.Equal(StudentJoinErrorCodes.RoomNotFound, viewModel.LastJoinOutcome?.Code);
+        Assert.Contains("OPEN_PUBLIC_SESSION_NOT_FOUND", viewModel.Status, StringComparison.Ordinal);
 
         viewModel.JoinCommand.Execute(null);
         Assert.True(SpinWait.SpinUntil(
             () => !viewModel.IsBusy && joinCalls == 2,
             TimeSpan.FromSeconds(3)));
-
-        Assert.Equal(2, completionCalls);
-        Assert.Equal(sessionId, state.SessionId);
-        Assert.Equal(examId, state.ExamId);
-        Assert.Equal(participantId, state.ParticipantId);
+        Assert.Equal(0, completionCalls);
+        Assert.False(state.HasSession);
         auth.Clear();
     }
 

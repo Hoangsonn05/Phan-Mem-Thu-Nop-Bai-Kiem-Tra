@@ -32,6 +32,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         pendingSubmissionCount = AppServices.SubmissionRecovery.PendingCount;
         AppServices.SubmissionRecovery.PendingCountChanged += OnPendingSubmissionCountChanged;
         AppServices.StudentExamFlow.NavigationRequested += OnStudentExamNavigationRequested;
+        AppServices.StudentRealtime.EventReceived += OnStudentRealtimeEvent;
+        AppServices.StudentRealtime.NotificationReceived += OnStudentRealtimeNotification;
         CurrentPage = CreateLoginPage();
         FrontendLogger.SetContext("Login", "Auth");
         RestoreAuthAsync().SafeFireAndForget("MainViewModel.RestoreAuthAsync");
@@ -141,6 +143,38 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Application.Current.Dispatcher.Invoke(Navigate);
         else
             Navigate();
+    }
+
+    private void OnStudentRealtimeEvent(object? sender, string eventName)
+    {
+        if (!StudentExamFlowCoordinator.IsLifecycleProgressionEvent(eventName))
+            return;
+        ResolveStudentLifecycleAsync().SafeFireAndForget("MainViewModel.StudentLifecycle.Event");
+    }
+
+    private void OnStudentRealtimeNotification(
+        object? sender,
+        StudentRealtimeNotification notification)
+    {
+        if (notification.SessionId != AppServices.StudentState.SessionId
+            || (notification.ParticipantId.HasValue
+                && notification.ParticipantId != AppServices.StudentState.ParticipantId)
+            || (notification.Revision > 0
+                && notification.Revision <= AppServices.StudentState.Revision)
+            || !StudentExamFlowCoordinator.IsLifecycleProgressionEvent(notification.EventName))
+            return;
+        ResolveStudentLifecycleAsync().SafeFireAndForget(
+            "MainViewModel.StudentLifecycle.Notification");
+    }
+
+    private async Task ResolveStudentLifecycleAsync()
+    {
+        if (!authState.IsStudent || !AppServices.StudentState.HasSession)
+            return;
+        _ = await AppServices.StudentExamFlow.ResolveAsync(
+            StudentExamEntryPoint.CurrentExam,
+            false,
+            CancellationToken.None);
     }
 
     private async Task RestoreAuthAsync()
@@ -596,6 +630,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         accountHeartbeatCts?.Dispose();
         AppServices.SubmissionRecovery.PendingCountChanged -= OnPendingSubmissionCountChanged;
         AppServices.StudentExamFlow.NavigationRequested -= OnStudentExamNavigationRequested;
+        AppServices.StudentRealtime.EventReceived -= OnStudentRealtimeEvent;
+        AppServices.StudentRealtime.NotificationReceived -= OnStudentRealtimeNotification;
         DisposePage(CurrentPage);
     }
 }
@@ -631,7 +667,7 @@ public static class AppServices
     public static IUnifiedAuthenticationService Authentication { get; } =
         new UnifiedAuthenticationService(Backend, PublicCloud, LocalServerLifecycle);
     public static IStudentExamFlowCoordinator StudentExamFlow { get; } =
-        new StudentExamFlowCoordinator(Backend, PublicCloud, StudentState);
+        new StudentExamFlowCoordinator(Backend, PublicCloud, StudentState, Toasts);
     public static IStudentHeartbeatService StudentHeartbeat { get; } =
         new ExamTransfer.Desktop.Infrastructure.StudentHeartbeatService(Backend, StudentState, ServerClock);
     public static IStudentRealtimeService StudentRealtime { get; } =

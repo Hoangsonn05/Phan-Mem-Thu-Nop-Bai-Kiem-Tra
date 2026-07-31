@@ -55,8 +55,27 @@ public sealed class RuntimeRebase03AR2FlowCharacterizationTests
         },
         {
             Snapshot(participant: ParticipantStatus.Approved, status: SessionStatus.Collecting),
-            StudentExamFlowState.ApprovedWaiting,
-            "S-03",
+            StudentExamFlowState.ReadyToStartFileExam,
+            "S-05",
+            false
+        },
+        {
+            Snapshot(
+                participant: ParticipantStatus.Approved,
+                status: SessionStatus.Collecting,
+                delivery: ExamDeliveryType.MultipleChoice,
+                attempt: QuizAttemptStatus.InProgress),
+            StudentExamFlowState.InProgressQuiz,
+            "S-06",
+            false
+        },
+        {
+            Snapshot(
+                participant: ParticipantStatus.Approved,
+                status: SessionStatus.Collecting,
+                delivery: ExamDeliveryType.MultipleChoice),
+            StudentExamFlowState.CollectingSummary,
+            "S-04",
             false
         },
         {
@@ -98,7 +117,7 @@ public sealed class RuntimeRebase03AR2FlowCharacterizationTests
     [InlineData(SessionStatus.Finished)]
     [InlineData(SessionStatus.Cancelled)]
     [InlineData(SessionStatus.Archived)]
-    public void TerminalSessionState_DoesNotStopStudentExamTicker(SessionStatus terminal)
+    public void TerminalSessionState_StopsStudentExamTickerAndKeepsZero(SessionStatus terminal)
     {
         var now = new DateTimeOffset(2026, 7, 31, 8, 0, 0, TimeSpan.Zero);
         var source = new FakeMonotonicTimeSource();
@@ -122,15 +141,15 @@ public sealed class RuntimeRebase03AR2FlowCharacterizationTests
         SetField(viewModel, "publicSessionStatus", terminal.ToString());
 
         ticker.Fire();
-        Assert.Equal("00:20:00", viewModel.TimeLeft);
+        Assert.Equal("00:00:00", viewModel.TimeLeft);
         var initialProgress = viewModel.TimeProgress;
 
         source.Advance(TimeSpan.FromMinutes(1));
         ticker.Fire();
 
-        Assert.True(ticker.IsRunning);
-        Assert.Equal("00:19:00", viewModel.TimeLeft);
-        Assert.NotEqual(initialProgress, viewModel.TimeProgress);
+        Assert.False(ticker.IsRunning);
+        Assert.Equal("00:00:00", viewModel.TimeLeft);
+        Assert.Equal(initialProgress, viewModel.TimeProgress);
         Assert.Equal(terminal, state.SessionStatus);
         var route = StudentExamFlowCoordinator.ResolveSnapshot(Snapshot(
             participant: ParticipantStatus.Approved,
@@ -138,12 +157,54 @@ public sealed class RuntimeRebase03AR2FlowCharacterizationTests
         Assert.Equal("S-04", route.RouteKey);
     }
 
+    [Fact]
+    public void TerminalTimer_RejectsOlderActiveSnapshot_ButAcceptsNewerAuthorityRevision()
+    {
+        var now = new DateTimeOffset(2026, 7, 31, 8, 0, 0, TimeSpan.Zero);
+        var clock = new ServerClock(new FakeMonotonicTimeSource());
+        clock.Synchronize(now);
+        var ticker = new FakeCountdownTicker();
+        var state = ActiveState(
+            SessionStatus.Finished,
+            ParticipantStatus.Approved,
+            ExamDeliveryType.FileSubmission,
+            SubmissionStatus.NotStarted);
+        state.Revision = 10;
+        using var viewModel = new StudentExamViewModel(
+            new RecordingBackendClient(now),
+            state,
+            new FakeStudentHeartbeatService(),
+            new FakeStudentRealtimeService(),
+            clock,
+            ticker);
+
+        Assert.False(viewModel.TryApplyLifecycleSnapshot(
+            SessionStatus.InProgress,
+            9,
+            now.AddMinutes(-40),
+            now.AddMinutes(20),
+            now));
+        Assert.False(ticker.IsRunning);
+        Assert.Equal("00:00:00", viewModel.TimeLeft);
+
+        Assert.True(viewModel.TryApplyLifecycleSnapshot(
+            SessionStatus.InProgress,
+            11,
+            now.AddMinutes(-40),
+            now.AddMinutes(20),
+            now));
+        Assert.True(ticker.IsRunning);
+        Assert.Equal("00:20:00", viewModel.TimeLeft);
+        Assert.Equal(11, state.Revision);
+    }
+
     private static StudentExamFlowSnapshot Snapshot(
         ParticipantStatus participant,
         SessionStatus status,
         ExamDeliveryType delivery = ExamDeliveryType.FileSubmission,
-        SubmissionStatus submission = SubmissionStatus.NotStarted) =>
-        new(true, status, participant, delivery, submission, null);
+        SubmissionStatus submission = SubmissionStatus.NotStarted,
+        QuizAttemptStatus? attempt = null) =>
+        new(true, status, participant, delivery, submission, attempt);
 
     private static StudentSessionState ActiveState(
         SessionStatus status,

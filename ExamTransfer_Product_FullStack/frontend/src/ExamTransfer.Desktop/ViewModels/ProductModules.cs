@@ -2808,7 +2808,7 @@ public sealed class StudentWaitingViewModel : ProductPageBase
             || notification.SessionId != state.SessionId
             || (notification.ParticipantId.HasValue
                 && notification.ParticipantId != state.ParticipantId)
-            || !IsProgressionEvent(notification.EventName)
+            || !StudentExamFlowCoordinator.IsLifecycleProgressionEvent(notification.EventName)
             || (notification.Revision > 0
                 && notification.Revision <= lastResolvedRevision))
             return;
@@ -2817,21 +2817,12 @@ public sealed class StudentWaitingViewModel : ProductPageBase
 
     private void OnRealtimeEvent(object? sender, string eventName)
     {
-        if (!active || IsDisposed || !IsProgressionEvent(eventName))
+        if (!active
+            || IsDisposed
+            || !StudentExamFlowCoordinator.IsLifecycleProgressionEvent(eventName))
             return;
         QueueRealtimeResolve();
     }
-
-    private static bool IsProgressionEvent(string eventName) =>
-        eventName is
-            RealtimeEvents.ParticipantApproved or
-            "ParticipantRejected" or
-            RealtimeEvents.SessionStateChanged or
-            "SessionStarted" or
-            "SessionCollecting" or
-            "SessionFinished" or
-            "SessionCancelled" or
-            "Reconnected";
 
     private void QueueRealtimeResolve()
     {

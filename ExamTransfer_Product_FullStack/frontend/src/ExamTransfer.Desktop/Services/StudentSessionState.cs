@@ -30,6 +30,8 @@ public sealed class StudentSessionState : ObservableObject
     private QuizAttemptDto? currentAttempt;
     private long revision;
     private string? routeIntent;
+    private bool joinMutationCommitted;
+    private bool postJoinSynchronizationPending;
 
     public Guid? SessionId { get => sessionId; set => Set(ref sessionId, value); }
     public Guid? ParticipantId { get => participantId; set => Set(ref participantId, value); }
@@ -56,21 +58,72 @@ public sealed class StudentSessionState : ObservableObject
     public QuizAttemptDto? CurrentAttempt { get => currentAttempt; set => Set(ref currentAttempt, value); }
     public long Revision { get => revision; set => Set(ref revision, value); }
     public string? RouteIntent { get => routeIntent; set => Set(ref routeIntent, value); }
+    public bool JoinMutationCommitted
+    {
+        get => joinMutationCommitted;
+        private set => Set(ref joinMutationCommitted, value);
+    }
+    public bool PostJoinSynchronizationPending
+    {
+        get => postJoinSynchronizationPending;
+        private set => Set(ref postJoinSynchronizationPending, value);
+    }
 
     public bool HasSession => SessionId.HasValue && ParticipantId.HasValue;
     public event EventHandler? SessionChanged;
 
     public void ApplyJoin(JoinSessionResponse response, string room, string code, string name, SessionAccessMode mode = SessionAccessMode.LanOnly, string? discoveredServerId = null)
+        => ApplyJoin(
+            response.SessionId,
+            response.ParticipantId,
+            response.AccessToken,
+            room,
+            code,
+            name,
+            mode,
+            discoveredServerId);
+
+    public void ApplyJoin(
+        Guid joinedSessionId,
+        Guid joinedParticipantId,
+        string joinedAccessToken,
+        string room,
+        string code,
+        string name,
+        SessionAccessMode mode,
+        string? discoveredServerId = null)
     {
-        SessionId = response.SessionId;
-        ParticipantId = response.ParticipantId;
-        AccessToken = response.AccessToken;
+        SessionId = joinedSessionId;
+        ParticipantId = joinedParticipantId;
+        AccessToken = joinedAccessToken;
         RoomCode = room;
         StudentCode = code;
         DisplayName = name;
         AccessMode = mode;
         ServerId = discoveredServerId;
+        JoinMutationCommitted = true;
+        PostJoinSynchronizationPending = true;
         SessionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public bool CanResumePostJoinSynchronization(SessionAccessMode mode, string room) =>
+        JoinMutationCommitted
+        && PostJoinSynchronizationPending
+        && HasSession
+        && !string.IsNullOrWhiteSpace(AccessToken)
+        && AccessMode == mode
+        && string.Equals(
+            RoomCodeRules.Normalize(RoomCode),
+            RoomCodeRules.Normalize(room),
+            StringComparison.OrdinalIgnoreCase);
+
+    public void MarkPostJoinSynchronizationSucceeded() =>
+        PostJoinSynchronizationPending = false;
+
+    public void MarkPostJoinSynchronizationFailed()
+    {
+        if (JoinMutationCommitted && HasSession)
+            PostJoinSynchronizationPending = true;
     }
 
     public void Reset()
@@ -98,6 +151,8 @@ public sealed class StudentSessionState : ObservableObject
         CurrentAttempt = null;
         Revision = 0;
         RouteIntent = null;
+        JoinMutationCommitted = false;
+        PostJoinSynchronizationPending = false;
         SessionChanged?.Invoke(this, EventArgs.Empty);
     }
 }

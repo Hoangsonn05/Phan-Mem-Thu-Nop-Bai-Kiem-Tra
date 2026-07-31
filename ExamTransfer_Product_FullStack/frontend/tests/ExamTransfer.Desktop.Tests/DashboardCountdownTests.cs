@@ -71,7 +71,8 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
     public ClassDetailDto? ClassDetailResponse { get; init; }
     public ExamSummaryDto? ExamSummaryResponse { get; init; }
     public ExamDetailDto? ExamDetailResponse { get; init; }
-    public SessionDetailDto? SessionDetailResponse { get; init; }
+    public SessionDetailDto? SessionDetailResponse { get; set; }
+    public ParticipantDto? ParticipantResponse { get; set; }
     public IReadOnlyList<ClassSummaryDto>? ClassResponses { get; init; }
     public IReadOnlyList<ExamSummaryDto>? ExamResponses { get; init; }
     public IReadOnlyList<SessionSummaryDto>? SessionResponses { get; init; }
@@ -126,7 +127,11 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
             SessionResponses is null
                 ? null
                 : ApiResponse<PagedResult<SessionSummaryDto>>.Ok(new(SessionResponses, 1, 50, SessionResponses.Count), "test"));
-    public Task<ApiResponse<SessionDetailDto>?> GetSessionAsync(Guid id, CancellationToken ct = default) => Task.FromResult<ApiResponse<SessionDetailDto>?>(null);
+    public Task<ApiResponse<SessionDetailDto>?> GetSessionAsync(Guid id, CancellationToken ct = default) =>
+        Task.FromResult<ApiResponse<SessionDetailDto>?>(
+            SessionDetailResponse is null
+                ? null
+                : ApiResponse<SessionDetailDto>.Ok(SessionDetailResponse, "test"));
     public Task<ApiResponse<PagedResult<SubmissionSummaryDto>>?> GetSubmissionsAsync(Guid sessionId, CancellationToken ct = default) => Task.FromResult<ApiResponse<PagedResult<SubmissionSummaryDto>>?>(null);
     public Task<ApiResponse<CloudSyncStatusDto>?> GetCloudStatusAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<CloudSyncStatusDto>?>(null);
     public Task<ApiResponse<SettingsDto>?> GetSettingsAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<SettingsDto>?>(null);
@@ -138,6 +143,9 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
         if (ExamDetailResponse is not null && typeof(T) == typeof(ExamDetailDto))
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ExamDetailResponse, "test"));
+        if (ParticipantResponse is not null && typeof(T) == typeof(ParticipantDto))
+            return Task.FromResult<ApiResponse<T>?>(
+                ApiResponse<T>.Ok((T)(object)ParticipantResponse, "test"));
         return Task.FromResult<ApiResponse<T>?>(null);
     }
     public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)

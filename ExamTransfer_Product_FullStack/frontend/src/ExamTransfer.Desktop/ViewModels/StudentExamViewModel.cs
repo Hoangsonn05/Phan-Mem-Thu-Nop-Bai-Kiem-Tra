@@ -68,7 +68,15 @@ public sealed class StudentExamViewModel : ProductPageBase
         RefreshWorkspaceCommand = new AsyncRelayCommand(LoadWorkspaceAsync, () => !IsBusy);
 
         ticker.Tick += OnTick;
-        ticker.Start();
+        if (IsTerminal(state.SessionStatus))
+        {
+            remaining = TimeSpan.Zero;
+            ticker.Stop();
+        }
+        else
+        {
+            ticker.Start();
+        }
     }
 
     public ObservableCollection<ExamStep> Steps { get; } = new()
@@ -151,20 +159,30 @@ public sealed class StudentExamViewModel : ProductPageBase
                     token);
                 if (timeline.ParticipantId != state.ParticipantId)
                     throw new InvalidDataException("PublicCloud timeline không thuộc thí sinh hiện tại.");
-                ApplyPublicTimeline(timeline);
-                Connection = $"Đã xác thực PublicCloud · {timeline.SessionStatus}";
+                _ = ApplyPublicTimeline(timeline);
+                Connection = $"Đã xác thực PublicCloud · {state.SessionStatus}";
                 UpdateSteps();
                 RaiseTime();
                 return;
             }
 
             api.SetParticipantToken(state.AccessToken);
-            Session = ApiGuard.Require(await api.GetSessionAsync(state.SessionId!.Value, token));
-            Participant = ApiGuard.Require(await api.GetAsync<ParticipantDto>(
+            var loadedSession = ApiGuard.Require(await api.GetSessionAsync(state.SessionId!.Value, token));
+            var loadedParticipant = ApiGuard.Require(await api.GetAsync<ParticipantDto>(
                 $"api/v1/sessions/{state.SessionId}/participants/{state.ParticipantId}", token));
-            state.ExamId = Session.Summary.ExamId;
-            serverClock.Synchronize(Session.Summary.ServerNowUtc);
-            UpdateRemaining();
+            if (!TryApplyLifecycleSnapshot(
+                    loadedSession.Summary.Status,
+                    loadedSession.Summary.Sequence,
+                    loadedSession.Summary.StartTimeUtc,
+                    loadedParticipant.EffectiveDeadlineUtc
+                        ?? loadedSession.Summary.EffectiveDeadlineUtc,
+                    loadedSession.Summary.ServerNowUtc))
+                return;
+            Session = loadedSession;
+            Participant = loadedParticipant;
+            state.ExamId = loadedSession.Summary.ExamId;
+            state.ParticipantStatus = loadedParticipant.Status;
+            state.SubmissionStatus = loadedParticipant.SubmissionStatus;
             Connection = $"Đã xác thực · {Session.Summary.Status}";
             UpdateSteps();
             RaiseTime();
@@ -219,6 +237,7 @@ public sealed class StudentExamViewModel : ProductPageBase
     {
         var payload = notification.TimeExtended;
         if (IsDisposed
+            || IsTerminal(state.SessionStatus)
             || notification.EventName != RealtimeEvents.TimeExtended
             || notification.SessionId != state.SessionId
             || payload is null
@@ -241,21 +260,85 @@ public sealed class StudentExamViewModel : ProductPageBase
         return true;
     }
 
-    private void ApplyPublicTimeline(PublicStudentTimeline timeline)
+    private bool ApplyPublicTimeline(PublicStudentTimeline timeline)
     {
         if (!timeline.EffectiveDeadlineUtc.HasValue)
             throw new InvalidDataException("PublicCloud chưa trả deadline tuyệt đối.");
-        if (!timelineCoordinator.TryApply(
+        if (!Enum.TryParse<SessionStatus>(
+                timeline.SessionStatus,
+                true,
+                out var sessionStatus))
+            throw new InvalidDataException("PublicCloud trả trạng thái phiên không hợp lệ.");
+        if (!TryApplyLifecycleSnapshot(
+                sessionStatus,
                 timeline.Revision,
-                timeline.EffectiveDeadlineUtc.Value,
+                timeline.StartedAtUtc,
+                timeline.EffectiveDeadlineUtc,
                 timeline.ServerNowUtc))
-            return;
-        publicDeadlineUtc = timeline.EffectiveDeadlineUtc;
-        publicStartedAtUtc = timeline.StartedAtUtc;
-        publicSessionStatus = timeline.SessionStatus;
-        UpdateRemaining();
+            return false;
         Raise(nameof(Title));
         Raise(nameof(CandidateCount));
+        return true;
+    }
+
+    internal bool TryApplyLifecycleSnapshot(
+        SessionStatus sessionStatus,
+        long revision,
+        DateTimeOffset? startedAtUtc,
+        DateTimeOffset? deadlineUtc,
+        DateTimeOffset serverNowUtc)
+    {
+        if (revision < state.Revision
+            || (revision == state.Revision
+                && IsTerminal(state.SessionStatus)
+                && !IsTerminal(sessionStatus)))
+            return false;
+
+        if (IsTerminal(sessionStatus))
+        {
+            serverClock.Synchronize(serverNowUtc);
+            state.SessionStatus = sessionStatus;
+            state.Revision = revision;
+            if (state.AccessMode == SessionAccessMode.PublicCloud)
+            {
+                publicStartedAtUtc = startedAtUtc;
+                publicDeadlineUtc = deadlineUtc;
+                publicSessionStatus = sessionStatus.ToString();
+            }
+            remaining = TimeSpan.Zero;
+            ticker.Stop();
+            RaiseTime();
+            RaiseCommands();
+            return true;
+        }
+
+        if (deadlineUtc.HasValue)
+        {
+            if (!timelineCoordinator.TryApply(
+                    revision,
+                    deadlineUtc.Value,
+                    serverNowUtc))
+                return false;
+        }
+        else
+        {
+            serverClock.Synchronize(serverNowUtc);
+        }
+
+        state.SessionStatus = sessionStatus;
+        state.Revision = revision;
+        if (state.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            publicStartedAtUtc = startedAtUtc;
+            publicDeadlineUtc = deadlineUtc;
+            publicSessionStatus = sessionStatus.ToString();
+        }
+        remaining = ServerCountdown.Remaining(serverClock, deadlineUtc);
+        if (!ticker.IsRunning)
+            ticker.Start();
+        RaiseTime();
+        RaiseCommands();
+        return true;
     }
 
     private void RequestSnapshotResync()
@@ -309,6 +392,13 @@ public sealed class StudentExamViewModel : ProductPageBase
     private void OnTick(object? sender, EventArgs e)
     {
         if (IsDisposed) return;
+        if (IsTerminal(state.SessionStatus))
+        {
+            remaining = TimeSpan.Zero;
+            ticker.Stop();
+            RaiseTime();
+            return;
+        }
         UpdateRemaining();
         RaiseTime();
         UpdateSteps();
@@ -316,6 +406,9 @@ public sealed class StudentExamViewModel : ProductPageBase
 
     private void UpdateRemaining() =>
         remaining = ServerCountdown.Remaining(serverClock, EffectiveDeadlineUtc);
+
+    private static bool IsTerminal(SessionStatus? status) =>
+        status is SessionStatus.Finished or SessionStatus.Cancelled or SessionStatus.Archived;
 
     private void StartWorkspaceWatcher()
     {

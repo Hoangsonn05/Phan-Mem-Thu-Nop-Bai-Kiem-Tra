@@ -29,6 +29,8 @@ public sealed class StudentConnectViewModel : ProductPageBase
     private string validationMessage = "Nhập mã phòng để tham gia trong mạng LAN.";
     private OpenRoomCard? selectedRoom;
     private ServerCard? selectedServer;
+    private StudentJoinOutcome? lastJoinOutcome;
+    private ExamTransfer.Desktop.Infrastructure.PublicCloudJoinResult? committedPublicCloudJoin;
 
     public StudentConnectViewModel(
         IBackendClient api,
@@ -171,6 +173,11 @@ public sealed class StudentConnectViewModel : ProductPageBase
 
     public ICommand ScanCommand { get; }
     public ICommand JoinCommand { get; }
+    public StudentJoinOutcome? LastJoinOutcome
+    {
+        get => lastJoinOutcome;
+        private set => Set(ref lastJoinOutcome, value);
+    }
 
     protected override Task LoadAsync(CancellationToken ct) => ScanAsync(ct);
 
@@ -251,12 +258,28 @@ public sealed class StudentConnectViewModel : ProductPageBase
             FrontendLogger.LogMessage(
                 $"selected_mode={SelectedAccessMode}; room={MaskRoomCode(RoomCode)}; phase=dispatch",
                 "StudentConnect.Join");
-            await StudentConnectJoinRouter.DispatchAsync(
-                SelectedAccessMode,
-                JoinLanAsync,
-                JoinPublicCloudAsync,
-                DisposeToken);
-            if (!IsDisposed)
+            var requestedCode = RoomCodeRules.Normalize(RoomCode);
+            if (state.CanResumePostJoinSynchronization(
+                    SelectedAccessMode,
+                    requestedCode))
+            {
+                FrontendLogger.LogMessage(
+                    $"mode={SelectedAccessMode}; phase=post_join_retry; session_id={state.SessionId}; "
+                    + $"participant_id={state.ParticipantId}; authority_mutation_committed=yes",
+                    "StudentLifecycle.PostJoin");
+                LastJoinOutcome = await CompleteCommittedJoinAsync(
+                    SelectedAccessMode,
+                    DisposeToken);
+            }
+            else
+            {
+                await StudentConnectJoinRouter.DispatchAsync(
+                    SelectedAccessMode,
+                    JoinLanAsync,
+                    JoinPublicCloudAsync,
+                    DisposeToken);
+            }
+            if (!IsDisposed && LastJoinOutcome?.Succeeded == true)
             {
                 Status = "Đã gửi yêu cầu, chờ giáo viên duyệt.";
                 StatusTone = "success";
@@ -264,23 +287,36 @@ public sealed class StudentConnectViewModel : ProductPageBase
         }
         catch (LanJoinException ex)
         {
-            ReportJoinFailure(ex.Code, ex.Message, ex);
+            ReportJoinFailure(ex.Code, ex.Message, ex, ClassifyJoinFailure(ex.Code));
         }
         catch (BackendApiException ex)
         {
-            ReportJoinFailure(MapBackendCode(ex.ApiCode), ex.Message, ex);
+            var displayCode = MapBackendCode(ex.ApiCode);
+            ReportJoinFailure(displayCode, ex.Message, ex, ClassifyJoinFailure(displayCode));
         }
         catch (ExamTransfer.Desktop.Infrastructure.PublicCloudApiException ex)
         {
-            ReportJoinFailure(ex.Code, PublicCloudErrorMessage(ex.Code), ex);
+            ReportJoinFailure(
+                ex.Code,
+                PublicCloudErrorMessage(ex.Code),
+                ex,
+                ClassifyJoinFailure(ex.Code));
         }
         catch (HttpRequestException ex)
         {
-            ReportJoinFailure("NETWORK_ERROR", "Không thể kết nối tới máy giáo viên.", ex);
+            ReportJoinFailure(
+                "NETWORK_ERROR",
+                "Không thể kết nối tới máy giáo viên.",
+                ex,
+                StudentJoinErrorCodes.JoinMutationFailed);
         }
         catch (Exception ex)
         {
-            ReportJoinFailure("NETWORK_ERROR", "Không thể hoàn tất yêu cầu tham gia.", ex);
+            ReportJoinFailure(
+                "JOIN_REJECTED",
+                "Không thể hoàn tất yêu cầu tham gia.",
+                ex,
+                StudentJoinErrorCodes.JoinMutationFailed);
         }
         finally
         {
@@ -399,7 +435,7 @@ public sealed class StudentConnectViewModel : ProductPageBase
         state.ParticipantStatus = response.Status;
         state.SessionStatus = room.Room.SessionState;
         api.SetParticipantToken(response.AccessToken);
-        await completeLanJoin(ct);
+        LastJoinOutcome = await CompleteCommittedJoinAsync(SessionAccessMode.LanOnly, ct);
     }
 
     private async Task EnsureLocalAccountAsync(string expectedServerId, CancellationToken ct)
@@ -475,16 +511,18 @@ public sealed class StudentConnectViewModel : ProductPageBase
 
         Status = "Đang xác minh phòng...";
         var cloudJoin = await joinPublicCloud(requestedCode, ct);
+        committedPublicCloudJoin = cloudJoin;
         Status = "Đang gửi yêu cầu tham gia...";
         state.Reset();
-        state.SessionId = cloudJoin.SessionId;
-        state.ParticipantId = cloudJoin.ParticipantId;
+        state.ApplyJoin(
+            cloudJoin.SessionId,
+            cloudJoin.ParticipantId,
+            cloudJoin.AccessToken,
+            cloudJoin.RoomCode,
+            StudentCode.Trim(),
+            DisplayName.Trim(),
+            SessionAccessMode.PublicCloud);
         state.ExamId = cloudJoin.ExamId;
-        state.AccessToken = cloudJoin.AccessToken;
-        state.RoomCode = cloudJoin.RoomCode;
-        state.StudentCode = StudentCode.Trim();
-        state.DisplayName = DisplayName.Trim();
-        state.AccessMode = SessionAccessMode.PublicCloud;
         state.AdmissionMode = SessionAdmissionMode.OpenRequest;
         state.ExamTitle = cloudJoin.ExamTitle;
         state.Subject = cloudJoin.Subject;
@@ -495,27 +533,102 @@ public sealed class StudentConnectViewModel : ProductPageBase
         state.ParticipantStatus = cloudJoin.ParticipantStatus;
         state.SessionStatus = cloudJoin.SessionStatus;
         api.SetParticipantToken(null);
-        await completePublicCloudJoin(cloudJoin, ct);
+        LastJoinOutcome = await CompleteCommittedJoinAsync(SessionAccessMode.PublicCloud, ct);
+    }
+
+    private async Task<StudentJoinOutcome> CompleteCommittedJoinAsync(
+        SessionAccessMode mode,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (mode == SessionAccessMode.PublicCloud)
+            {
+                var snapshot = committedPublicCloudJoin ?? new(
+                    state.SessionId!.Value,
+                    state.ExamId ?? Guid.Empty,
+                    state.ParticipantId!.Value,
+                    state.ParticipantStatus ?? ParticipantStatus.PendingApproval,
+                    state.SessionStatus ?? SessionStatus.Waiting,
+                    state.RoomCode,
+                    state.ExamTitle,
+                    state.Subject,
+                    state.DurationMinutes,
+                    state.DeliveryType,
+                    state.SupervisionMode,
+                    state.ResultPolicy,
+                    null,
+                    null,
+                    1,
+                    state.AccessToken!);
+                await completePublicCloudJoin(snapshot, ct);
+            }
+            else
+            {
+                await completeLanJoin(ct);
+            }
+
+            state.MarkPostJoinSynchronizationSucceeded();
+            return new(
+                StudentJoinErrorCodes.Succeeded,
+                StudentJoinPhase.Completed,
+                state.JoinMutationCommitted);
+        }
+        catch (StudentPostJoinSynchronizationException ex)
+        {
+            return ReportPostJoinFailure(ex.Outcome, ex);
+        }
+        catch (Exception ex)
+        {
+            var outcome = new StudentJoinOutcome(
+                StudentJoinErrorCodes.PostJoinSynchronizationFailed,
+                StudentJoinPhase.LifecycleResolution,
+                state.JoinMutationCommitted,
+                StudentJoinErrorCodes.LifecycleResolutionFailed);
+            FrontendLogger.Log(ex, "StudentLifecycle.PostJoin.CustomCompletion");
+            return ReportPostJoinFailure(outcome, ex);
+        }
+    }
+
+    private StudentJoinOutcome ReportPostJoinFailure(
+        StudentJoinOutcome outcome,
+        Exception exception)
+    {
+        state.MarkPostJoinSynchronizationFailed();
+        FrontendLogger.LogMessage(
+            $"mode={state.AccessMode}; phase={outcome.Phase}; session_id={state.SessionId}; "
+            + $"participant_id={state.ParticipantId}; authority_mutation_committed="
+            + $"{(state.JoinMutationCommitted ? "yes" : "no")}; "
+            + $"exception_source={exception.GetType().Name}",
+            "StudentLifecycle.PostJoin");
+        if (!IsDisposed)
+        {
+            Status = "Đã tham gia phòng, nhưng chưa đồng bộ được trạng thái phòng chờ. "
+                + "Ứng dụng sẽ tiếp tục thử đồng bộ. "
+                + $"(Mã lỗi: {StudentJoinErrorCodes.PostJoinSynchronizationFailed})";
+            StatusTone = "warning";
+        }
+        return outcome;
     }
 
     private static async Task CompletePublicCloudJoinAsync(
-        ExamTransfer.Desktop.Infrastructure.PublicCloudJoinResult cloudJoin,
+        ExamTransfer.Desktop.Infrastructure.PublicCloudJoinResult _,
         CancellationToken ct)
     {
-        await AppServices.StudentRealtime.StartAsync(ct);
-        _ = await AppServices.StudentExamFlow.ResolveAsync(
-            StudentExamEntryPoint.CurrentExam,
-            false,
+        var outcome = await AppServices.StudentExamFlow.SynchronizeAfterJoinAsync(
+            AppServices.StudentRealtime,
             ct);
+        if (!outcome.Succeeded)
+            throw new StudentPostJoinSynchronizationException(outcome);
     }
 
     private static async Task CompleteLanJoinAsync(CancellationToken ct)
     {
-        await AppServices.StudentRealtime.StartAsync(ct);
-        _ = await AppServices.StudentExamFlow.ResolveAsync(
-            StudentExamEntryPoint.CurrentExam,
-            false,
+        var outcome = await AppServices.StudentExamFlow.SynchronizeAfterJoinAsync(
+            AppServices.StudentRealtime,
             ct);
+        if (!outcome.Succeeded)
+            throw new StudentPostJoinSynchronizationException(outcome);
     }
 
     private void UpdateValidation()
@@ -540,15 +653,38 @@ public sealed class StudentConnectViewModel : ProductPageBase
         }
     }
 
-    private void ReportJoinFailure(string code, string message, Exception exception)
+    private void ReportJoinFailure(
+        string code,
+        string message,
+        Exception exception,
+        string typedCode)
     {
+        LastJoinOutcome = new(
+            typedCode,
+            StudentJoinPhase.AuthoritativeMutation,
+            false,
+            code);
         FrontendLogger.Log(exception, $"StudentConnect.Join.{code}");
         FrontendLogger.LogMessage(
-            $"selected_mode={SelectedAccessMode}; room={MaskRoomCode(RoomCode)}; typed_error={code}",
+            $"mode={SelectedAccessMode}; phase={StudentJoinPhase.AuthoritativeMutation}; "
+            + $"session_id={state.SessionId}; participant_id={state.ParticipantId}; "
+            + $"authority_mutation_committed=no; exception_source={exception.GetType().Name}; "
+            + $"typed_error={typedCode}; cause={code}; room={MaskRoomCode(RoomCode)}",
             "StudentConnect.Join");
         Status = $"{message} (Mã lỗi: {code})";
         StatusTone = "danger";
     }
+
+    private static string ClassifyJoinFailure(string code) => code switch
+    {
+        "AUTH_REQUIRED" or "UNAUTHORIZED" or "FORBIDDEN"
+            or "PUBLICCLOUD_AUTH_EXPIRED" or "PUBLICCLOUD_AUTH_INVALID" =>
+            StudentJoinErrorCodes.AuthenticationRequired,
+        "DISCOVERY_TIMEOUT" or "ROOM_NOT_WAITING" or "OPEN_PUBLIC_SESSION_NOT_FOUND"
+            or "NOT_FOUND" => StudentJoinErrorCodes.RoomNotFound,
+        "PARTICIPANT_REJECTED" => StudentJoinErrorCodes.ParticipantRejected,
+        _ => StudentJoinErrorCodes.JoinMutationFailed
+    };
 
     private static string MapBackendCode(string code) => code switch
     {
@@ -635,6 +771,12 @@ public sealed class LanJoinException : Exception
         : base(message, innerException) => Code = code;
 
     public string Code { get; }
+}
+
+public sealed class StudentPostJoinSynchronizationException(StudentJoinOutcome outcome)
+    : Exception(outcome.CauseCode ?? outcome.Code)
+{
+    public StudentJoinOutcome Outcome { get; } = outcome;
 }
 
 public sealed record ServerCard(string Name, string Teacher, string Ip, int Port, int LatencyMs, string Status, string Tone, int Connected, int Capacity, string Fingerprint, string Version)

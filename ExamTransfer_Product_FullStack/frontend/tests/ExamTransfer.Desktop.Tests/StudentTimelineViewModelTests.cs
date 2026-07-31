@@ -167,6 +167,14 @@ internal sealed class FixedStudentExamFlowCoordinator(
             "resume"));
     }
 
+    public Task<StudentJoinOutcome> SynchronizeAfterJoinAsync(
+        IStudentRealtimeService realtime,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new StudentJoinOutcome(
+            StudentJoinErrorCodes.Succeeded,
+            StudentJoinPhase.Completed,
+            true));
+
     public void ReturnToCurrentExam() { }
 }
 
