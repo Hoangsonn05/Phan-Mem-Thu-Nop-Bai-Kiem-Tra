@@ -180,7 +180,10 @@ public sealed class StudentResultsTests
         Assert.Contains("StudentResultsViewModel", window, StringComparison.Ordinal);
         Assert.Contains("StudentResultsView", window, StringComparison.Ordinal);
         Assert.Contains("DownloadAttachmentCommand", view, StringComparison.Ordinal);
-        Assert.Contains("authenticated account", requirements, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("## B-09", requirements, StringComparison.Ordinal);
+        Assert.Contains("tài khoản đã xác thực", requirements, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không nhận hoặc gửi `StudentId`", requirements, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("chỉ liệt kê kết quả ở trạng thái `Returned`", requirements, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("ReturnedAtUtc", requirements, StringComparison.Ordinal);
         Assert.Contains("participant", requirements, StringComparison.OrdinalIgnoreCase);
     }
