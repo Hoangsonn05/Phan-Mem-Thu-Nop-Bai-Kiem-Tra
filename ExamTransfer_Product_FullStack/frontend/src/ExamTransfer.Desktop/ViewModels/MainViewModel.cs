@@ -646,6 +646,7 @@ public static class AppServices
     public static IDialogService Dialogs { get; } = new DialogService();
     public static IClipboardService Clipboard { get; } = new ClipboardService();
     public static IToastService Toasts { get; } = new ToastService();
+    public static INotificationCenter Notifications { get; } = new NotificationCenter();
     public static ILocalPreferenceService Preferences { get; } = new LocalPreferenceService();
     public static AppAuthSessionState AuthState { get; } = new();
     public static StudentSessionState StudentState { get; } = new();
