@@ -21,6 +21,7 @@ public sealed class GradingCenterViewModel : ProductPageBase
     private SubmissionFilePresentationModel? selectedFile;
     private GradeDto? grade;
     private QuizGradeDetailDto? quizGrade;
+    private QuizReviewPresentationModel? quizReview;
     private bool isDetailLoading;
 
     public GradingCenterViewModel(
@@ -46,7 +47,7 @@ public sealed class GradingCenterViewModel : ProductPageBase
     public ObservableCollection<EssaySubmissionReviewRow> Queue { get; } = [];
     public ObservableCollection<SubmissionFilePresentationModel> Files { get; } = [];
     public ObservableCollection<RubricScoreDto> Rubric { get; } = [];
-    public ObservableCollection<QuizQuestionReviewDto> QuizQuestions { get; } = [];
+    public ObservableCollection<QuizQuestionReviewRow> QuizQuestions { get; } = [];
     public GradingEditorState Editor { get; } = new();
 
     public EssaySubmissionReviewRow? SelectedWorkItem
@@ -76,6 +77,7 @@ public sealed class GradingCenterViewModel : ProductPageBase
 
     public GradeDto? Grade { get => grade; private set => Set(ref grade, value); }
     public QuizGradeDetailDto? QuizGrade { get => quizGrade; private set => Set(ref quizGrade, value); }
+    public QuizReviewPresentationModel? QuizReview { get => quizReview; private set => Set(ref quizReview, value); }
     public bool IsDetailLoading
     {
         get => isDetailLoading;
@@ -123,6 +125,7 @@ public sealed class GradingCenterViewModel : ProductPageBase
         Detail = null;
         Grade = null;
         QuizGrade = null;
+        QuizReview = null;
         Files.Clear();
         Rubric.Clear();
         QuizQuestions.Clear();
@@ -156,10 +159,8 @@ public sealed class GradingCenterViewModel : ProductPageBase
                 var loadedQuiz = ApiGuard.Require(await api.GetAsync<QuizGradeDetailDto>(
                     $"api/v1/grading/quiz-attempts/{row.SubmissionId}", cancellationToken));
                 if (!IsCurrentSelection(row, version)) return;
-                QuizGrade = loadedQuiz;
-                QuizQuestions.ReplaceWith(loadedQuiz.Questions);
                 Detail = new(row, loadedQuiz.Status);
-                Editor.Load(loadedQuiz.Score, loadedQuiz.MaxScore, loadedQuiz.GeneralComment, loadedQuiz.Status);
+                ApplyQuizGrade(loadedQuiz);
             }
             else
             {
@@ -211,9 +212,7 @@ public sealed class GradingCenterViewModel : ProductPageBase
                     new(score, Editor.Comment, QuizGrade?.RowVersion ?? string.Empty, Guid.NewGuid()),
                     ct));
                 if (!ReferenceEquals(row, SelectedWorkItem)) return;
-                QuizGrade = updated;
-                QuizQuestions.ReplaceWith(updated.Questions);
-                ApplyGrade(updated.Status, updated.Score, updated.MaxScore, updated.GeneralComment);
+                ApplyQuizGrade(updated);
                 return;
             }
 
@@ -250,8 +249,7 @@ public sealed class GradingCenterViewModel : ProductPageBase
                     new("Kết quả đã được công bố.", QuizGrade?.RowVersion ?? string.Empty, Guid.NewGuid()),
                     ct));
                 if (!ReferenceEquals(row, SelectedWorkItem)) return;
-                QuizGrade = returned;
-                ApplyGrade(returned.Status, returned.Score, returned.MaxScore, returned.GeneralComment);
+                ApplyQuizGrade(returned);
                 return;
             }
 
@@ -279,8 +277,7 @@ public sealed class GradingCenterViewModel : ProductPageBase
                     new("Điều chỉnh theo rà soát của giáo viên.", QuizGrade?.RowVersion ?? string.Empty, Guid.NewGuid()),
                     ct));
                 if (!ReferenceEquals(row, SelectedWorkItem)) return;
-                QuizGrade = reopened;
-                ApplyGrade(reopened.Status, reopened.Score, reopened.MaxScore, reopened.GeneralComment, true);
+                ApplyQuizGrade(reopened, true);
                 return;
             }
 
@@ -302,6 +299,14 @@ public sealed class GradingCenterViewModel : ProductPageBase
         Detail?.ApplyStatus(status, reopened);
         Editor.Load(score, maximum, generalComment, status);
         RaiseCommands();
+    }
+
+    private void ApplyQuizGrade(QuizGradeDetailDto updated, bool reopened = false)
+    {
+        QuizGrade = updated;
+        QuizReview = new(updated, reopened);
+        QuizQuestions.ReplaceWith(QuizReview.Questions);
+        ApplyGrade(updated.Status, updated.Score, updated.MaxScore, updated.GeneralComment, reopened);
     }
 
     private bool CanDownloadFile() =>
