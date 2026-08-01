@@ -535,6 +535,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "S-08" => new StudentReceiptViewModel(api, AppServices.StudentState),
             "S-09" => new StudentHistoryViewModel(AppServices.StudentState),
             "S-10" => new StudentSettingsViewModel(AppServices.Preferences),
+            "S-11" => new StudentResultsViewModel(
+                AppServices.StudentResults,
+                authState,
+                AppServices.StudentState,
+                AppServices.StudentRealtime,
+                AppServices.Folders),
             _ => new ErrorPageViewModel("Màn hình chưa được ánh xạ.", item.Key, FrontendLogger.LogPath, RetrySelected, GoHome)
         };
 
@@ -658,6 +664,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             new("S-07", "Nộp bài", "Làm bài", "Chunk upload, resume, finalize và xác nhận", "\uE898"),
             new("S-08", "Biên nhận", "Kết quả", "Mã biên nhận, thời gian server và hash", "\uF0E3"),
             new("S-09", "Lịch sử cục bộ", "Kết quả", "Các phiên và bài đã nộp trên máy", "\uE81C"),
+            new("S-11", "Kết quả đã trả", "Kết quả", "Điểm, nhận xét và attachment chính thức", "\uE9D9"),
             new("S-10", "Cài đặt", "Hệ thống", "Profile, mạng, thư mục, thông báo và log", "\uE713")
         };
 
@@ -702,6 +709,8 @@ public static class AppServices
 
     public static IBackendClient Backend { get; } =
         new ExamTransfer.Desktop.Infrastructure.BackendClient(BaseUrl);
+    public static IStudentResultsService StudentResults { get; } =
+        new StudentResultsService(Backend, PublicCloud, StudentState);
     public static IUnifiedAuthenticationService Authentication { get; } =
         new UnifiedAuthenticationService(Backend, PublicCloud, LocalServerLifecycle);
     public static IStudentExamFlowCoordinator StudentExamFlow { get; } =

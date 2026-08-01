@@ -45,6 +45,7 @@
         <DataTemplate DataType="{x:Type vm:StudentSubmissionViewModel}"><views:StudentSubmissionView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentReceiptViewModel}"><views:StudentReceiptView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentHistoryViewModel}"><views:StudentHistoryView /></DataTemplate>
+        <DataTemplate DataType="{x:Type vm:StudentResultsViewModel}"><views:StudentResultsView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentSettingsViewModel}"><views:StudentSettingsView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:ErrorPageViewModel}"><views:ErrorPageView /></DataTemplate>
     </Window.Resources>
