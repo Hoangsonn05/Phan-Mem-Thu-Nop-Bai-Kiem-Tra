@@ -1476,7 +1476,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     private readonly RealtimeRefreshDebouncer realtimeRefresh =
         new(TimeSpan.FromMilliseconds(150), "SubmissionCenter.RealtimeRefresh");
     private SessionSummaryDto? selectedSession;
-    private SubmissionSummaryDto? selectedSubmission;
+    private SubmissionSelectionRow? selectedSubmission;
     private string reason = "File nộp chưa đúng quy định.";
 
     public SubmissionCenterViewModel(
@@ -1492,11 +1492,22 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         RejectCommand = new AsyncRelayCommand(RejectAsync, () => !IsBusy && SelectedSubmission is not null);
         ResubmitCommand = new AsyncRelayCommand(ResubmitAsync, () => !IsBusy && SelectedSubmission is not null);
         CopyReceiptCommand = new RelayCommand(CopyReceipt);
-        DownloadCommand = new AsyncRelayCommand(DownloadAsync, () => !IsBusy && SelectedSubmission?.Files.Count > 0);
+        DownloadCommand = new AsyncRelayCommand(
+            DownloadAsync,
+            () => !IsBusy && SelectedSubmission?.CanDownload == true);
+        SelectAllCommand = new RelayCommand(
+            SelectAll,
+            () => !IsBusy && Submissions.Count > 0 && !AllVisibleSelected);
+        ClearSelectionCommand = new RelayCommand(
+            ClearSelection,
+            () => !IsBusy && HasSelection);
+        DownloadSelectedCommand = new RelayCommand(
+            ShowDownloadSelectionReady,
+            () => !IsBusy && HasDownloadableSelection);
     }
 
     public ObservableCollection<SessionSummaryDto> Sessions { get; } = new();
-    public ObservableCollection<SubmissionSummaryDto> Submissions { get; } = new();
+    public ObservableCollection<SubmissionSelectionRow> Submissions { get; } = new();
     public SessionSummaryDto? SelectedSession
     {
         get => selectedSession;
@@ -1510,14 +1521,24 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             RaiseCommands();
         }
     }
-    public SubmissionSummaryDto? SelectedSubmission { get => selectedSubmission; set { if (Set(ref selectedSubmission, value)) RaiseCommands(); } }
+    public SubmissionSelectionRow? SelectedSubmission { get => selectedSubmission; set { if (Set(ref selectedSubmission, value)) RaiseCommands(); } }
     public string Reason { get => reason; set => Set(ref reason, value); }
+    public int SelectedCount => Submissions.Count(row => row.IsSelected);
+    public int DownloadableSelectedCount =>
+        Submissions.Count(row => row.IsSelected && row.CanDownload);
+    public bool HasSelection => SelectedCount > 0;
+    public bool HasDownloadableSelection => DownloadableSelectedCount > 0;
+    public bool AllVisibleSelected =>
+        Submissions.Count > 0 && Submissions.All(row => row.IsSelected);
     public ICommand RefreshCommand { get; }
     public ICommand LoadCommand { get; }
     public ICommand RejectCommand { get; }
     public ICommand ResubmitCommand { get; }
     public ICommand CopyReceiptCommand { get; }
     public ICommand DownloadCommand { get; }
+    public ICommand SelectAllCommand { get; }
+    public ICommand ClearSelectionCommand { get; }
+    public ICommand DownloadSelectedCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
@@ -1539,17 +1560,35 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     private async Task LoadSubmissionsCoreAsync(CancellationToken ct)
     {
         if (SelectedSession is null) return;
+        var selectedIds = Submissions
+            .Where(row => row.IsSelected)
+            .Select(row => row.SubmissionId)
+            .ToHashSet();
+        var focusedId = SelectedSubmission?.SubmissionId;
         var data = ApiGuard.Require(await api.GetSubmissionsAsync(SelectedSession.Id, ct));
-        Submissions.ReplaceWith(data.Items);
-        SelectedSubmission = Submissions.FirstOrDefault();
+        UnsubscribeSubmissionRows();
+        var refreshedRows = data.Items
+            .Select(item => new SubmissionSelectionRow(item)
+            {
+                IsSelected = selectedIds.Contains(item.Id)
+            })
+            .ToList();
+        foreach (var row in refreshedRows)
+            row.PropertyChanged += OnSubmissionRowPropertyChanged;
+        Submissions.ReplaceWith(refreshedRows);
+        SelectedSubmission = focusedId.HasValue
+            ? Submissions.FirstOrDefault(row => row.SubmissionId == focusedId.Value)
+                ?? Submissions.FirstOrDefault()
+            : Submissions.FirstOrDefault();
+        RaiseSelectionState();
     }
 
     private Task RejectAsync() => RunAsync("Đang từ chối bài", "Bài nộp đã bị từ chối và vẫn được lưu lịch sử", async ct =>
     {
-        if (SelectedSubmission is null || !AppServices.Dialogs.Confirm("Từ chối bài nộp", $"Từ chối attempt {SelectedSubmission.AttemptNumber} của {SelectedSubmission.DisplayName}?")) return;
-        var mutationKey = $"reject-submission:{SelectedSubmission.Id:N}";
+        if (SelectedSubmission is null || !AppServices.Dialogs.Confirm("Từ chối bài nộp", $"Từ chối attempt {SelectedSubmission.AttemptNumber} của {SelectedSubmission.StudentName}?")) return;
+        var mutationKey = $"reject-submission:{SelectedSubmission.SubmissionId:N}";
         var mutationId = GetMutationRequestId(mutationKey);
-        _ = ApiGuard.Require(await api.PostAsync<RejectSubmissionRequest, object>($"api/v1/submissions/{SelectedSubmission.Id}/reject", new(Reason, mutationId), ct));
+        _ = ApiGuard.Require(await api.PostAsync<RejectSubmissionRequest, object>($"api/v1/submissions/{SelectedSubmission.SubmissionId}/reject", new(Reason, mutationId), ct));
         CompleteMutationRequest(mutationKey);
         await LoadSubmissionsCoreAsync(ct);
     });
@@ -1567,11 +1606,54 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     {
         await RunAsync("Đang tải bài nộp", "File bài nộp đã được lưu", async ct =>
         {
-            if (SelectedSubmission?.Files.FirstOrDefault() is not { } file) return;
+            if (SelectedSubmission?.Submission.Files.FirstOrDefault(
+                    file => file.TransferStatus == TransferStatus.Completed) is not { } file) return;
             var folder = AppServices.Folders.PickFolder();
             if (folder is null) return;
-            await api.DownloadFileAsync($"api/v1/submissions/{SelectedSubmission.Id}/files/{file.Id}/content", Path.Combine(folder, file.Name), null, ct);
+            await api.DownloadFileAsync($"api/v1/submissions/{SelectedSubmission.SubmissionId}/files/{file.Id}/content", Path.Combine(folder, file.Name), null, ct);
         });
+    }
+
+    private void SelectAll()
+    {
+        foreach (var row in Submissions)
+            row.IsSelected = true;
+    }
+
+    private void ClearSelection()
+    {
+        foreach (var row in Submissions)
+            row.IsSelected = false;
+    }
+
+    private void ShowDownloadSelectionReady()
+    {
+        Status = $"Đã chọn {DownloadableSelectedCount} bài có file hoàn tất để tải.";
+        StatusTone = "primary";
+    }
+
+    private void OnSubmissionRowPropertyChanged(
+        object? sender,
+        System.ComponentModel.PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName == nameof(SubmissionSelectionRow.IsSelected))
+            RaiseSelectionState();
+    }
+
+    private void RaiseSelectionState()
+    {
+        Raise(nameof(SelectedCount));
+        Raise(nameof(DownloadableSelectedCount));
+        Raise(nameof(HasSelection));
+        Raise(nameof(HasDownloadableSelection));
+        Raise(nameof(AllVisibleSelected));
+        RaiseCommands();
+    }
+
+    private void UnsubscribeSubmissionRows()
+    {
+        foreach (var row in Submissions)
+            row.PropertyChanged -= OnSubmissionRowPropertyChanged;
     }
 
     private void CopyReceipt()
@@ -1610,6 +1692,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     {
         if (IsDisposed)
             return;
+        UnsubscribeSubmissionRows();
         realtime.NotificationReceived -= OnRealtimeNotification;
         realtimeRefresh.Dispose();
         realtimeBinding
@@ -1620,7 +1703,10 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, DownloadCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, DownloadCommand }.OfType<AsyncRelayCommand>())
+            command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { SelectAllCommand, ClearSelectionCommand, DownloadSelectedCommand }.OfType<RelayCommand>())
+            command.RaiseCanExecuteChanged();
     }
 }
 
