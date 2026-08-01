@@ -294,13 +294,14 @@ public sealed class StudentConnectViewModel : ProductPageBase
             var displayCode = MapBackendCode(ex.ApiCode);
             ReportJoinFailure(displayCode, ex.Message, ex, ClassifyJoinFailure(displayCode));
         }
-        catch (ExamTransfer.Desktop.Infrastructure.PublicCloudApiException ex)
+        catch (Exception ex) when (SelectedAccessMode == SessionAccessMode.PublicCloud)
         {
+            var error = MapPublicJoinError(ex);
             ReportJoinFailure(
-                ex.Code,
-                PublicCloudErrorMessage(ex.Code),
+                error.Code,
+                error.Message,
                 ex,
-                ClassifyJoinFailure(ex.Code));
+                error.TypedCode);
         }
         catch (HttpRequestException ex)
         {
@@ -506,7 +507,7 @@ public sealed class StudentConnectViewModel : ProductPageBase
                 ?? "PUBLICCLOUD_NOT_CONFIGURED";
             throw new LanJoinException(
                 configurationCode,
-                PublicCloudErrorMessage(configurationCode));
+                MapPublicJoinCode(configurationCode).Message);
         }
 
         Status = "Đang xác minh phòng...";
@@ -694,17 +695,81 @@ public sealed class StudentConnectViewModel : ProductPageBase
         _ => "JOIN_REJECTED"
     };
 
-    private static string PublicCloudErrorMessage(string code) => code switch
+    internal static PublicJoinErrorPresentation MapPublicJoinError(Exception exception) =>
+        exception switch
+        {
+            ExamTransfer.Desktop.Infrastructure.PublicCloudApiException apiException =>
+                MapPublicJoinCode(apiException.Code),
+            OperationCanceledException or TimeoutException =>
+                new(
+                    "PUBLICCLOUD_TIMEOUT",
+                    "PublicCloud không phản hồi trong thời gian cho phép. "
+                    + "Hãy kiểm tra kết nối và thử lại.",
+                    StudentJoinErrorCodes.JoinMutationFailed),
+            HttpRequestException =>
+                new(
+                    "PUBLICCLOUD_NETWORK_UNAVAILABLE",
+                    "Không thể kết nối tới PublicCloud. "
+                    + "Hãy kiểm tra kết nối mạng và thử lại.",
+                    StudentJoinErrorCodes.JoinMutationFailed),
+            _ =>
+                new(
+                    "PUBLICCLOUD_UNKNOWN_ERROR",
+                    "Không thể hoàn tất yêu cầu PublicCloud.",
+                    StudentJoinErrorCodes.JoinMutationFailed)
+        };
+
+    private static PublicJoinErrorPresentation MapPublicJoinCode(string code)
     {
-        "PUBLICCLOUD_NOT_CONFIGURED" => "PublicCloud chưa được cấu hình trên bản cài đặt này.",
-        "PUBLICCLOUD_INVALID_URL" => "Địa chỉ PublicCloud không hợp lệ hoặc không dùng HTTPS.",
-        "PUBLICCLOUD_INVALID_PUBLISHABLE_KEY" => "Publishable key PublicCloud không hợp lệ.",
-        "PUBLICCLOUD_SCHEMA_INCOMPATIBLE" => "PublicCloud chưa đạt schema capability 23.",
-        "OPEN_PUBLIC_SESSION_NOT_FOUND" => "Không tìm thấy phòng PublicCloud sau thời gian chờ đồng bộ.",
-        "PUBLICCLOUD_AUTH_EXPIRED" or "PUBLICCLOUD_AUTH_INVALID" =>
-            "Phiên đăng nhập PublicCloud đã hết hạn; hãy đăng nhập lại.",
-        _ => "Không thể hoàn tất yêu cầu PublicCloud."
-    };
+        var normalizedCode = string.IsNullOrWhiteSpace(code)
+            ? "PUBLICCLOUD_UNKNOWN_ERROR"
+            : code.Trim();
+        return normalizedCode switch
+        {
+            "P0003" or "OPEN_PUBLIC_ROOM_CODE_AMBIGUOUS" =>
+                new(
+                    normalizedCode,
+                    "Mã phòng đang bị trùng trên hệ thống.\n"
+                    + "Giáo viên cần đóng phòng cũ hoặc tạo mã phòng mới.",
+                    StudentJoinErrorCodes.JoinMutationFailed),
+            "OPEN_PUBLIC_SESSION_NOT_FOUND" or "NOT_FOUND" =>
+                new(
+                    normalizedCode,
+                    "Không tìm thấy phòng PublicCloud. Hãy kiểm tra mã phòng và thử lại.",
+                    StudentJoinErrorCodes.RoomNotFound),
+            "PUBLICCLOUD_AUTH_EXPIRED" or "PUBLICCLOUD_AUTH_INVALID"
+                or "AUTHENTICATION_REQUIRED" =>
+                new(
+                    normalizedCode,
+                    "Phiên đăng nhập PublicCloud đã hết hạn; hãy đăng nhập lại.",
+                    StudentJoinErrorCodes.AuthenticationRequired),
+            "PUBLICCLOUD_NOT_CONFIGURED" =>
+                new(
+                    normalizedCode,
+                    "PublicCloud chưa được cấu hình trên bản cài đặt này.",
+                    StudentJoinErrorCodes.JoinMutationFailed),
+            "PUBLICCLOUD_INVALID_URL" =>
+                new(
+                    normalizedCode,
+                    "Địa chỉ PublicCloud không hợp lệ hoặc không dùng HTTPS.",
+                    StudentJoinErrorCodes.JoinMutationFailed),
+            "PUBLICCLOUD_INVALID_PUBLISHABLE_KEY" =>
+                new(
+                    normalizedCode,
+                    "Publishable key PublicCloud không hợp lệ.",
+                    StudentJoinErrorCodes.JoinMutationFailed),
+            "PUBLICCLOUD_SCHEMA_INCOMPATIBLE" =>
+                new(
+                    normalizedCode,
+                    "PublicCloud chưa đạt schema capability 23.",
+                    StudentJoinErrorCodes.JoinMutationFailed),
+            _ =>
+                new(
+                    normalizedCode,
+                    "Không thể hoàn tất yêu cầu PublicCloud.",
+                    StudentJoinErrorCodes.JoinMutationFailed)
+        };
+    }
 
     private static string MaskRoomCode(string roomCode)
     {
@@ -730,6 +795,11 @@ public sealed class StudentConnectViewModel : ProductPageBase
         (JoinCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
     }
 }
+
+internal sealed record PublicJoinErrorPresentation(
+    string Code,
+    string Message,
+    string TypedCode);
 
 public sealed record OpenRoomCard(OpenSessionDiscoveryDto Room)
 {

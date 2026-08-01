@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Input;
 using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
+using ExamTransfer.Shared.Contracts;
 
 namespace ExamTransfer.Desktop.ViewModels;
 
@@ -31,7 +32,6 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
         RefreshCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
         ShowEmptyMetrics();
         ticker.Tick += OnTick;
-        ticker.Start();
     }
 
     public ObservableCollection<MetricCard> Metrics { get; } = new();
@@ -171,7 +171,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
             ? new ActiveSessionCard(
                 session.Title,
                 session.RoomCode,
-                session.Status.ToString(),
+                session.Status,
                 session.Counts.Total,
                 session.Counts.Connected,
                 session.Counts.Submitted,
@@ -180,6 +180,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
             : null;
         Raise(nameof(ActiveSession));
         Raise(nameof(HasActiveSession));
+        UpdateTickerState();
 
         hasSuccessfulLoad = true;
         Status = data.Warnings.Count == 0
@@ -204,6 +205,8 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
             Raise(nameof(HasActiveSession));
             Raise(nameof(HasActivities));
         }
+
+        UpdateTickerState();
 
         Alerts.Add(new("Không thể làm mới dữ liệu", message, "danger", "\uE783"));
         Status = hasSuccessfulLoad
@@ -234,12 +237,32 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
 
     private void OnTick(object? sender, EventArgs e)
     {
+        if (disposed || ActiveSession?.IsCountdownVisible != true)
+        {
+            return;
+        }
+
+        ActiveSession.RefreshTime();
+    }
+
+    private void UpdateTickerState()
+    {
         if (disposed)
         {
             return;
         }
 
-        ActiveSession?.RefreshTime();
+        if (ActiveSession?.IsCountdownVisible == true)
+        {
+            if (!ticker.IsRunning)
+            {
+                ticker.Start();
+            }
+        }
+        else if (ticker.IsRunning)
+        {
+            ticker.Stop();
+        }
     }
 }
 
@@ -255,7 +278,7 @@ public sealed class ActiveSessionCard : ObservableObject
     public ActiveSessionCard(
         string title,
         string roomCode,
-        string status,
+        SessionStatus status,
         int total,
         int connected,
         int submitted,
@@ -268,14 +291,38 @@ public sealed class ActiveSessionCard : ObservableObject
         Total = total;
         Connected = connected;
         Submitted = submitted;
-        this.effectiveDeadlineUtc = effectiveDeadlineUtc;
         this.serverClock = serverClock;
-        timeLeft = ServerCountdown.Format(ServerCountdown.Remaining(serverClock, effectiveDeadlineUtc));
+        this.effectiveDeadlineUtc = SupportsCountdown(status)
+            ? effectiveDeadlineUtc
+            : null;
+        timeLeft = IsTerminal
+            ? StatusDisplayText
+            : ServerCountdown.Format(ServerCountdown.Remaining(serverClock, this.effectiveDeadlineUtc));
     }
 
     public string Title { get; }
     public string RoomCode { get; }
-    public string Status { get; }
+    public SessionStatus Status { get; }
+    public string StatusDisplayText => Status switch
+    {
+        SessionStatus.Draft => "Bản nháp",
+        SessionStatus.Waiting => "Đang chờ",
+        SessionStatus.Distributing => "Đang phát đề",
+        SessionStatus.InProgress => "Đang diễn ra",
+        SessionStatus.Paused => "Tạm dừng",
+        SessionStatus.Collecting => "Đang thu bài",
+        SessionStatus.Finished => "Đã kết thúc",
+        SessionStatus.Cancelled => "Đã hủy",
+        SessionStatus.Archived => "Đã lưu trữ",
+        _ => Status.ToString()
+    };
+    public bool IsTerminal => Status is
+        SessionStatus.Finished or
+        SessionStatus.Cancelled or
+        SessionStatus.Archived;
+    public bool IsCountdownVisible =>
+        SupportsCountdown(Status) && effectiveDeadlineUtc.HasValue;
+    public string TimeLeftLabel => IsTerminal ? StatusDisplayText : "Thời gian còn lại";
     public int Total { get; }
     public int Connected { get; }
     public int Submitted { get; }
@@ -285,10 +332,31 @@ public sealed class ActiveSessionCard : ObservableObject
 
     public void UpdateDeadline(DateTimeOffset? deadlineUtc)
     {
+        if (!SupportsCountdown(Status))
+        {
+            return;
+        }
+
         effectiveDeadlineUtc = deadlineUtc;
+        Raise(nameof(IsCountdownVisible));
         RefreshTime();
     }
 
-    public void RefreshTime() =>
-        TimeLeft = ServerCountdown.Format(ServerCountdown.Remaining(serverClock, effectiveDeadlineUtc));
+    public void RefreshTime()
+    {
+        if (IsTerminal)
+        {
+            return;
+        }
+
+        TimeLeft = IsCountdownVisible
+            ? ServerCountdown.Format(ServerCountdown.Remaining(serverClock, effectiveDeadlineUtc))
+            : "--:--:--";
+    }
+
+    private static bool SupportsCountdown(SessionStatus status) => status is
+        SessionStatus.Waiting or
+        SessionStatus.InProgress or
+        SessionStatus.Paused or
+        SessionStatus.Collecting;
 }

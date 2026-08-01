@@ -8,6 +8,129 @@ namespace ExamTransfer.Desktop.Tests;
 
 public sealed class DashboardCountdownTests
 {
+    [Theory]
+    [InlineData(SessionStatus.Finished, "Đã kết thúc")]
+    [InlineData(SessionStatus.Cancelled, "Đã hủy")]
+    [InlineData(SessionStatus.Archived, "Đã lưu trữ")]
+    public async Task TerminalSession_ShowsLocalizedStateAndStopsCountdown(
+        SessionStatus status,
+        string expectedText)
+    {
+        var source = new FakeMonotonicTimeSource();
+        var clock = new ServerClock(source);
+        var ticker = new FakeCountdownTicker();
+        var serverUtc = new DateTimeOffset(2026, 7, 25, 5, 0, 0, TimeSpan.Zero);
+        var api = new RecordingBackendClient(serverUtc, status);
+        using var viewModel = new DashboardViewModel(api, clock, ticker);
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        var card = Assert.IsType<ActiveSessionCard>(viewModel.ActiveSession);
+        Assert.Equal(status, card.Status);
+        Assert.Equal(expectedText, card.StatusDisplayText);
+        Assert.True(card.IsTerminal);
+        Assert.False(card.IsCountdownVisible);
+        Assert.Equal(expectedText, card.TimeLeftLabel);
+        Assert.Equal(expectedText, card.TimeLeft);
+        Assert.False(ticker.IsRunning);
+
+        var terminalTime = card.TimeLeft;
+        source.Advance(TimeSpan.FromMinutes(5));
+        ticker.Fire();
+
+        Assert.Equal(terminalTime, card.TimeLeft);
+    }
+
+    [Theory]
+    [InlineData(SessionStatus.Waiting, "Đang chờ")]
+    [InlineData(SessionStatus.InProgress, "Đang diễn ra")]
+    [InlineData(SessionStatus.Paused, "Tạm dừng")]
+    [InlineData(SessionStatus.Collecting, "Đang thu bài")]
+    public async Task CountdownState_UsesDeadlineAndTicker(
+        SessionStatus status,
+        string expectedText)
+    {
+        var source = new FakeMonotonicTimeSource();
+        var clock = new ServerClock(source);
+        var ticker = new FakeCountdownTicker();
+        var serverUtc = new DateTimeOffset(2026, 7, 25, 5, 0, 0, TimeSpan.Zero);
+        var api = new RecordingBackendClient(
+            serverUtc,
+            status,
+            serverUtc.AddSeconds(100));
+        using var viewModel = new DashboardViewModel(api, clock, ticker);
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        var card = Assert.IsType<ActiveSessionCard>(viewModel.ActiveSession);
+        Assert.Equal(expectedText, card.StatusDisplayText);
+        Assert.False(card.IsTerminal);
+        Assert.True(card.IsCountdownVisible);
+        Assert.Equal("Thời gian còn lại", card.TimeLeftLabel);
+        Assert.Equal("00:01:40", card.TimeLeft);
+        Assert.True(ticker.IsRunning);
+
+        source.Advance(TimeSpan.FromSeconds(10));
+        ticker.Fire();
+
+        Assert.Equal("00:01:30", card.TimeLeft);
+    }
+
+    [Fact]
+    public async Task NoRecentSession_HasNoCardAndDoesNotStartTicker()
+    {
+        var source = new FakeMonotonicTimeSource();
+        var clock = new ServerClock(source);
+        var ticker = new FakeCountdownTicker();
+        var serverUtc = new DateTimeOffset(2026, 7, 25, 5, 0, 0, TimeSpan.Zero);
+        var api = new RecordingBackendClient(serverUtc, sessionStatus: null);
+        using var viewModel = new DashboardViewModel(api, clock, ticker);
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.Null(viewModel.ActiveSession);
+        Assert.False(viewModel.HasActiveSession);
+        Assert.False(ticker.IsRunning);
+    }
+
+    [Fact]
+    public async Task PastDeadline_ClampsAtZeroAndNeverDisplaysNegativeTime()
+    {
+        var source = new FakeMonotonicTimeSource();
+        var clock = new ServerClock(source);
+        var ticker = new FakeCountdownTicker();
+        var serverUtc = new DateTimeOffset(2026, 7, 25, 5, 0, 0, TimeSpan.Zero);
+        var api = new RecordingBackendClient(
+            serverUtc,
+            SessionStatus.InProgress,
+            serverUtc.AddSeconds(-5));
+        using var viewModel = new DashboardViewModel(api, clock, ticker);
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        var card = Assert.IsType<ActiveSessionCard>(viewModel.ActiveSession);
+        Assert.Equal("00:00:00", card.TimeLeft);
+        Assert.DoesNotContain('-', card.TimeLeft);
+
+        source.Advance(TimeSpan.FromMinutes(1));
+        ticker.Fire();
+
+        Assert.Equal("00:00:00", card.TimeLeft);
+        Assert.DoesNotContain('-', card.TimeLeft);
+    }
+
+    [Fact]
+    public void ProductionXaml_HidesEntireCountdownForNonCountdownState()
+    {
+        var xaml = File.ReadAllText(FindFile(
+            "frontend", "src", "ExamTransfer.Desktop", "Views", "DashboardView.xaml"));
+
+        Assert.Contains("ActiveSession.StatusDisplayText", xaml, StringComparison.Ordinal);
+        Assert.Contains("ActiveSession.IsCountdownVisible", xaml, StringComparison.Ordinal);
+        Assert.Contains("ActiveSession.TimeLeftLabel", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("{Binding ActiveSession.Status}", xaml, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task TickUpdatesObservableTimeWithoutNetworkAndDisposeStopsCallbacks()
     {
@@ -21,6 +144,7 @@ public sealed class DashboardCountdownTests
         await viewModel.InitializeAsync(CancellationToken.None);
         Assert.Equal("00:01:40", viewModel.ActiveSession?.TimeLeft);
         Assert.Equal(1, api.DashboardRequests);
+        Assert.True(ticker.IsRunning);
 
         source.Advance(TimeSpan.FromSeconds(10));
         ticker.Fire();
@@ -36,6 +160,22 @@ public sealed class DashboardCountdownTests
         Assert.True(ticker.Disposed);
         Assert.Equal(afterDispose, viewModel.ActiveSession?.TimeLeft);
         Assert.Equal(1, api.DashboardRequests);
+    }
+
+    private static string FindFile(params string[] segments)
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            var candidate = Path.Combine([current.FullName, .. segments]);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+            current = current.Parent;
+        }
+
+        throw new FileNotFoundException(string.Join(Path.DirectorySeparatorChar, segments));
     }
 }
 
@@ -64,7 +204,10 @@ internal sealed class FakeCountdownTicker : ICountdownTicker
     }
 }
 
-internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBackendClient
+internal sealed class RecordingBackendClient(
+    DateTimeOffset serverUtc,
+    SessionStatus? sessionStatus = SessionStatus.InProgress,
+    DateTimeOffset? effectiveDeadlineUtc = null) : IBackendClient
 {
     public int DashboardRequests { get; private set; }
     public QuizAttemptDto? QuizAttemptResponse { get; init; }
@@ -86,21 +229,26 @@ internal sealed class RecordingBackendClient(DateTimeOffset serverUtc) : IBacken
     public Task<ApiResponse<DashboardSummaryDto>?> GetDashboardAsync(CancellationToken ct = default)
     {
         DashboardRequests++;
-        var session = new SessionSummaryDto(
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            "Kỳ thi",
-            "ROOM",
-            SessionStatus.InProgress,
-            serverUtc,
-            serverUtc.AddMinutes(-1),
-            null,
-            serverUtc.AddSeconds(100),
-            new SessionCountsDto(10, 0, 10, 8, 2, 0, 0),
-            1,
-            "v1");
+        IReadOnlyList<SessionSummaryDto> sessions = sessionStatus is { } status
+            ?
+            [
+                new SessionSummaryDto(
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    "Kỳ thi",
+                    "ROOM",
+                    status,
+                    serverUtc,
+                    serverUtc.AddMinutes(-1),
+                    null,
+                    effectiveDeadlineUtc ?? serverUtc.AddSeconds(100),
+                    new SessionCountsDto(10, 0, 10, 8, 2, 0, 0),
+                    1,
+                    "v1")
+            ]
+            : [];
         return Task.FromResult<ApiResponse<DashboardSummaryDto>?>(ApiResponse<DashboardSummaryDto>.Ok(
-            new DashboardSummaryDto(1, 1, 1, 0, 0, [session], []),
+            new DashboardSummaryDto(1, 1, sessions.Count, 0, 0, sessions, []),
             "test"));
     }
 

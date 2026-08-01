@@ -233,7 +233,7 @@
                                                            FontSize="11"
                                                            FontWeight="SemiBold" />
                                             </Border>
-                                            <TextBlock Text="{Binding ActiveSession.Status}"
+                                            <TextBlock Text="{Binding ActiveSession.StatusDisplayText}"
                                                        Foreground="{DynamicResource OnPrimaryMutedBrush}"
                                                        FontSize="12"
                                                        Margin="10,3,0,0" />
@@ -244,7 +244,17 @@
                                                 VerticalAlignment="Center"
                                                 HorizontalAlignment="Right"
                                                 Margin="24,0,0,0">
-                                        <TextBlock Text="THỜI GIAN CÒN LẠI"
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding ActiveSession.IsCountdownVisible}" Value="False">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <TextBlock Text="{Binding ActiveSession.TimeLeftLabel}"
                                                    Foreground="{DynamicResource OnPrimaryMutedBrush}"
                                                    FontSize="10"
                                                    FontWeight="Bold"

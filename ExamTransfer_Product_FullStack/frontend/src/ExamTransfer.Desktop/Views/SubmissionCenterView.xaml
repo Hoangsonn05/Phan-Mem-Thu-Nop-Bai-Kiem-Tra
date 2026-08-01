@@ -149,6 +149,10 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <Grid Margin="18,16,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock Text="&#xE7B8;"
                                        Style="{StaticResource IconText}"
@@ -156,7 +160,27 @@
                                        Foreground="{DynamicResource PrimaryBrush}"
                                        Margin="0,0,8,0" />
                             <TextBlock Text="Bài nộp theo phiên"
-                                       Style="{StaticResource SectionTitleText}" />
+                                        Style="{StaticResource SectionTitleText}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <CheckBox Content="Chọn tất cả"
+                                      IsChecked="{Binding AllVisibleSelected, Mode=OneWay}"
+                                      Command="{Binding SelectAllCommand}"
+                                      VerticalAlignment="Center" />
+                            <Button Content="Bỏ chọn"
+                                    Command="{Binding ClearSelectionCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    MinHeight="32"
+                                    Margin="12,0,0,0" />
+                            <TextBlock Margin="12,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Style="{StaticResource BodyText}">
+                                <Run Text="Đã chọn " />
+                                <Run Text="{Binding SelectedCount, Mode=OneWay}" FontWeight="SemiBold" />
+                                <Run Text=" bài" />
+                            </TextBlock>
                         </StackPanel>
                     </Grid>
                     <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
@@ -164,11 +188,23 @@
                               ItemsSource="{Binding Submissions}"
                               SelectedItem="{Binding SelectedSubmission}">
                         <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="CHỌN" Width="60">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="MÃ" Binding="{Binding StudentCode}" Width="80" />
-                            <DataGridTextColumn Header="HỌ TÊN" Binding="{Binding DisplayName}" Width="*" />
+                            <DataGridTextColumn Header="HỌ TÊN" Binding="{Binding StudentName}" Width="*" />
                             <DataGridTextColumn Header="LẦN" Binding="{Binding AttemptNumber}" Width="55" />
                             <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="110" />
-                            <DataGridCheckBoxColumn Header="MUỘN" Binding="{Binding IsLate}" Width="55" />
+                            <DataGridCheckBoxColumn Header="MUỘN"
+                                                    Binding="{Binding IsLate, Mode=OneWay}"
+                                                    IsReadOnly="True"
+                                                    Width="55" />
                             <DataGridTextColumn Header="BIÊN NHẬN" Binding="{Binding ReceiptCode}" Width="120" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -192,8 +228,8 @@
                             <TextBlock Text="Lý do" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
                             <TextBox Text="{Binding Reason}" Height="80" AcceptsReturn="True" />
                             <Separator Margin="0,14" />
-                            <Button Content="Tải file đầu tiên"
-                                    Command="{Binding DownloadCommand}"
+                            <Button Content="Tải bài đã chọn"
+                                    Command="{Binding DownloadSelectedCommand}"
                                     Style="{StaticResource SecondaryButton}"
                                     Margin="0,0,0,8" />
                             <Button Content="Sao chép mã biên nhận"

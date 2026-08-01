@@ -278,6 +278,11 @@ public sealed class StudentQuizViewModel : ProductPageBase
         Raise(nameof(ProgressText));
     }
 
+    internal Task RefreshAuthoritativeReviewAsync(CancellationToken cancellationToken) =>
+        Attempt is null || IsDisposed
+            ? Task.CompletedTask
+            : LoadReviewCoreAsync(cancellationToken);
+
     private DateTimeOffset RequiredServerNowUtc()
     {
         if (serverClock.TryGetUtcNow(out var serverNowUtc))

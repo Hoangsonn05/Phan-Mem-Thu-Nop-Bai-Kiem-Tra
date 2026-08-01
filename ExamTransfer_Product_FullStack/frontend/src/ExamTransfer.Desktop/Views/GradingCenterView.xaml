@@ -12,253 +12,197 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- ═══ Header ═══ -->
-        <Border Grid.Row="0"
-                Background="{DynamicResource SurfaceBrush}"
-                BorderBrush="{DynamicResource BorderBrush}"
-                BorderThickness="1"
-                CornerRadius="12"
-                Padding="20,14">
+        <Border Grid.Row="0" Style="{StaticResource Card}">
             <Grid>
-                <StackPanel VerticalAlignment="Center">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="&#xE9D9;"
-                                   Style="{StaticResource IconText}"
-                                   FontSize="20"
-                                   Foreground="{DynamicResource PrimaryBrush}"
-                                   Margin="0,0,10,0"
-                                   VerticalAlignment="Center" />
-                        <TextBlock Text="Chấm bài"
-                                   Style="{StaticResource PageTitleText}"
-                                   VerticalAlignment="Center" />
-                    </StackPanel>
-                    <TextBlock Text="Mở bài nộp chính thức, nhập điểm, rubric, nhận xét và công bố kết quả."
-                               Style="{StaticResource BodyText}"
-                               Margin="30,4,0,0" />
+                <StackPanel>
+                    <TextBlock Text="Chấm bài tự luận và tệp" Style="{StaticResource PageTitleText}" />
+                    <TextBlock Text="Lưu bản chấm và trả kết quả là hai thao tác độc lập."
+                               Style="{StaticResource BodyText}" Margin="0,4,0,0" />
                 </StackPanel>
-                <Button Content="Làm mới hàng đợi"
-                        Command="{Binding RefreshCommand}"
+                <Button Content="Làm mới" Command="{Binding RefreshCommand}"
                         Style="{StaticResource SecondaryButton}"
-                        HorizontalAlignment="Right"
-                        VerticalAlignment="Center" />
+                        HorizontalAlignment="Right" VerticalAlignment="Center" />
             </Grid>
         </Border>
 
-        <!-- ═══ Main content ═══ -->
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.15*" />
+                <ColumnDefinition Width="1.2*" />
                 <ColumnDefinition Width="16" />
-                <ColumnDefinition Width="0.95*" />
+                <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <!-- Queue card -->
             <Border Grid.Column="0" Style="{StaticResource Card}" Padding="0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <Grid Margin="18,16,18,0">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="&#xE8A4;"
-                                       Style="{StaticResource IconText}"
-                                       FontSize="15"
-                                       Foreground="{DynamicResource PrimaryBrush}"
-                                       Margin="0,0,8,0" />
-                            <TextBlock Text="Hàng đợi chấm"
-                                       Style="{StaticResource SectionTitleText}" />
-                        </StackPanel>
-                        <Border HorizontalAlignment="Right"
-                                VerticalAlignment="Center"
-                                Background="{DynamicResource SurfaceSubtleBrush}"
-                                BorderBrush="{DynamicResource BorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="6"
-                                Padding="8,4,10,4">
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Text="&#xE946;" 
-                                           Style="{StaticResource IconText}" 
-                                           FontSize="12" 
-                                           Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,6,0"
-                                           VerticalAlignment="Center"/>
-                                <TextBlock Text="Chọn bài để chấm" 
-                                           FontSize="11" 
-                                           FontWeight="Medium" 
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           VerticalAlignment="Center" />
-                            </StackPanel>
-                        </Border>
-                    </Grid>
-                    <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
-                    <DataGrid Grid.Row="1"
-                              ItemsSource="{Binding Queue}"
+                    <TextBlock Text="Danh sách bài cần chấm" Style="{StaticResource SectionTitleText}"
+                               Margin="18,16,18,12" />
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding Queue}"
                               SelectedItem="{Binding SelectedWorkItem}">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="MÃ" Binding="{Binding StudentCode}" Width="85" />
-                            <DataGridTextColumn Header="HỌ TÊN" Binding="{Binding DisplayName}" Width="*" />
-                            <DataGridTextColumn Header="LOẠI" Binding="{Binding Type}" Width="110" />
-                            <DataGridTextColumn Header="BÀI" Binding="{Binding ExamTitle}" Width="*" />
-                            <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="110" />
+                            <DataGridTextColumn Header="MÃ HS" Binding="{Binding StudentCode}" Width="82" />
+                            <DataGridTextColumn Header="HỌC SINH" Binding="{Binding StudentName}" Width="*" />
+                            <DataGridTextColumn Header="LẦN" Binding="{Binding AttemptNumber}" Width="48" />
+                            <DataGridTextColumn Header="NỘP LÚC" Binding="{Binding SubmittedAtUtc, StringFormat={}{0:dd/MM HH:mm}}" Width="100" />
+                            <DataGridCheckBoxColumn Header="TRỄ" Binding="{Binding IsLate}" Width="44" IsReadOnly="True" />
+                            <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding StatusText}" Width="90" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <Border Grid.Row="2"
-                            Background="{DynamicResource SurfaceSubtleBrush}"
-                            BorderBrush="{DynamicResource BorderBrush}"
-                            BorderThickness="0,1,0,0"
-                            CornerRadius="0,0,12,12"
-                            Padding="18,12">
-                        <Button Content="Mở bài đã chọn"
-                                Command="{Binding OpenCommand}"
-                                Style="{StaticResource PrimaryButton}"
-                                MinHeight="42" />
-                    </Border>
                 </Grid>
             </Border>
 
-            <!-- Score + Rubric panel -->
             <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                                <TextBlock Text="&#xE9D9;"
-                                           Style="{StaticResource IconText}"
-                                           FontSize="15"
-                                           Foreground="{DynamicResource PrimaryBrush}"
-                                           Margin="0,0,8,0" />
-                                <TextBlock Text="Điểm và nhận xét"
-                                           Style="{StaticResource SectionTitleText}" />
-                            </StackPanel>
+                            <TextBlock Text="Chi tiết bài nộp" Style="{StaticResource SectionTitleText}" />
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="12" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="Học sinh" Style="{StaticResource LabelText}" />
+                                <TextBlock Grid.Column="2" Text="{Binding Detail.StudentName}" />
+                                <TextBlock Grid.Row="1" Text="Mã / lần nộp" Style="{StaticResource LabelText}" Margin="0,7,0,0" />
+                                <TextBlock Grid.Row="1" Grid.Column="2" Margin="0,7,0,0">
+                                    <Run Text="{Binding Detail.StudentCode}" /><Run Text=" · Lần " /><Run Text="{Binding Detail.AttemptNumber}" />
+                                </TextBlock>
+                                <TextBlock Grid.Row="2" Text="Thời gian" Style="{StaticResource LabelText}" Margin="0,7,0,0" />
+                                <TextBlock Grid.Row="2" Grid.Column="2" Text="{Binding Detail.SubmittedAtUtc, StringFormat={}{0:dd/MM/yyyy HH:mm:ss}}" Margin="0,7,0,0" />
+                                <TextBlock Grid.Row="3" Text="Trạng thái" Style="{StaticResource LabelText}" Margin="0,7,0,0" />
+                                <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding Detail.StatusText}" Margin="0,7,0,0" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
 
-                            <Grid>
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0"
+                            Visibility="{Binding IsFileSubmission, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <StackPanel>
+                            <TextBlock Text="Tệp bài làm" Style="{StaticResource SectionTitleText}" />
+                            <DataGrid ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile}"
+                                      Height="145" Margin="0,10,0,0">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="TÊN TỆP" Binding="{Binding Name}" Width="*" />
+                                    <DataGridTextColumn Header="KÍCH THƯỚC" Binding="{Binding SizeBytes}" Width="90" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <Button Content="Tải tệp" Command="{Binding DownloadFileCommand}"
+                                        Style="{StaticResource SecondaryButton}" />
+                                <Button Content="Mở tệp đã tải" Command="{Binding OpenLocalFileCommand}"
+                                        Style="{StaticResource GhostButton}" Margin="8,0,0,0" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Điểm và nhận xét" Style="{StaticResource SectionTitleText}" />
+                            <Grid Margin="0,12,0,0">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition />
-                                    <ColumnDefinition Width="12" />
+                                    <ColumnDefinition Width="14" />
                                     <ColumnDefinition />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
-                                    <TextBlock Text="ĐIỂM" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
-                                    <TextBox Text="{Binding Score}"
-                                             FontSize="24"
-                                             FontWeight="Bold"
-                                             Foreground="{DynamicResource PrimaryBrush}" />
+                                    <TextBlock Text="ĐIỂM" Style="{StaticResource LabelText}" />
+                                    <TextBox Text="{Binding Editor.ScoreText, UpdateSourceTrigger=PropertyChanged}"
+                                             FontSize="22" FontWeight="Bold" />
                                 </StackPanel>
-                                <TextBlock Grid.Column="1" Text="/"
-                                           FontSize="24" FontWeight="Light"
-                                           Foreground="{DynamicResource TextMutedBrush}"
-                                           HorizontalAlignment="Center"
-                                           VerticalAlignment="Bottom"
-                                           Margin="0,0,0,8" />
                                 <StackPanel Grid.Column="2">
-                                    <TextBlock Text="THANG ĐIỂM" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
-                                    <TextBox Text="{Binding MaxScore}"
-                                             IsReadOnly="True"
-                                             FontSize="24"
-                                             FontWeight="Bold"
-                                             Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBlock Text="THANG ĐIỂM" Style="{StaticResource LabelText}" />
+                                    <TextBox Text="{Binding Editor.MaxScore}" IsReadOnly="True"
+                                             FontSize="22" FontWeight="Bold" />
                                 </StackPanel>
                             </Grid>
-
-                            <TextBlock Text="Nhận xét chung" Style="{StaticResource LabelText}" Margin="0,16,0,6" />
-                            <TextBox Text="{Binding Comment}" Height="110" AcceptsReturn="True" />
-                            <Separator Margin="0,14" />
-                            <Button Content="Lưu điểm"
-                                    Command="{Binding SaveCommand}"
-                                    Style="{StaticResource PrimaryButton}"
-                                    MinHeight="42" />
-                            <Button Content="Trả kết quả"
-                                    Command="{Binding ReturnCommand}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    Margin="0,8,0,0" />
-                            <Button Content="Mở lại để chỉnh sửa"
-                                    Command="{Binding ReopenCommand}"
-                                    Style="{StaticResource GhostButton}"
-                                    Margin="0,4,0,0"
-                                    HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding Editor.ValidationMessage}"
+                                       Foreground="{DynamicResource DangerBrush}" Margin="0,5,0,0" />
+                            <TextBlock Text="NHẬN XÉT" Style="{StaticResource LabelText}" Margin="0,12,0,6" />
+                            <TextBox Text="{Binding Editor.Comment, UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True" TextWrapping="Wrap" Height="110"
+                                     VerticalScrollBarVisibility="Auto" />
+                            <Button Content="Lưu bản chấm" Command="{Binding SaveGradeCommand}"
+                                    Style="{StaticResource PrimaryButton}" Margin="0,14,0,0" MinHeight="42" />
+                            <Button Content="Trả kết quả" Command="{Binding ReturnGradeCommand}"
+                                    Style="{StaticResource SecondaryButton}" Margin="0,8,0,0" />
+                            <Button Content="Mở lại để chỉnh sửa" Command="{Binding ReopenGradeCommand}"
+                                    Style="{StaticResource GhostButton}" Margin="0,5,0,0" HorizontalAlignment="Left" />
                         </StackPanel>
                     </Border>
 
-                    <Border Style="{StaticResource Card}" Margin="0,14,0,0" Padding="0">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="180" />
-                            </Grid.RowDefinitions>
-                            <StackPanel Orientation="Horizontal" Margin="18,16,18,10">
-                                <TextBlock Text="&#xE9D0;"
-                                           Style="{StaticResource IconText}"
-                                           FontSize="14"
-                                           Foreground="{DynamicResource TextMutedBrush}"
-                                           Margin="0,0,8,0" />
-                                <TextBlock Text="Rubric" Style="{StaticResource SectionTitleText}" />
-                            </StackPanel>
-                            <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
-                            <DataGrid Grid.Row="1" ItemsSource="{Binding Rubric}">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="TIÊU CHÍ" Binding="{Binding Title}" Width="*" />
-                                    <DataGridTextColumn Header="ĐIỂM" Binding="{Binding Score}" Width="70" />
-                                    <DataGridTextColumn Header="TỐI ĐA" Binding="{Binding MaxScore}" Width="70" />
-                                </DataGrid.Columns>
-                            </DataGrid>
-                        </Grid>
-                    </Border>
-                    <Border Style="{StaticResource Card}"
-                            Margin="0,14,0,0"
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0"
                             Visibility="{Binding IsQuizAttempt, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <StackPanel>
-                            <TextBlock Text="Chi tiết câu trắc nghiệm"
-                                       Style="{StaticResource SectionTitleText}" />
-                            <TextBlock Text="{Binding QuizGrade.AutoScore, StringFormat=Tính tự động: {0}/10}"
-                                       Style="{StaticResource CaptionText}"
-                                       Margin="0,6,0,10" />
-                            <DataGrid ItemsSource="{Binding QuizQuestions}" Height="260">
+                            <Grid>
+                                <TextBlock Text="Chi tiết bài trắc nghiệm" Style="{StaticResource SectionTitleText}" />
+                                <TextBlock Text="{Binding QuizReview.StatusText}"
+                                           Style="{StaticResource CaptionText}"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition />
+                                    <ColumnDefinition Width="10" />
+                                    <ColumnDefinition />
+                                    <ColumnDefinition Width="10" />
+                                    <ColumnDefinition />
+                                </Grid.ColumnDefinitions>
+                                <Border Background="{DynamicResource SurfaceSubtleBrush}" CornerRadius="8" Padding="10">
+                                    <StackPanel>
+                                        <TextBlock Text="ĐIỂM TỰ ĐỘNG" Style="{StaticResource LabelText}" />
+                                        <TextBlock Text="{Binding QuizReview.AutoScore}" FontSize="20" FontWeight="Bold" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="2" Background="{DynamicResource SurfaceSubtleBrush}" CornerRadius="8" Padding="10">
+                                    <StackPanel>
+                                        <TextBlock Text="ĐIỂM CUỐI" Style="{StaticResource LabelText}" />
+                                        <TextBlock Text="{Binding QuizReview.FinalScore}" FontSize="20" FontWeight="Bold" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="4" Background="{DynamicResource SurfaceSubtleBrush}" CornerRadius="8" Padding="10">
+                                    <StackPanel>
+                                        <TextBlock Text="TỐI ĐA" Style="{StaticResource LabelText}" />
+                                        <TextBlock Text="{Binding QuizReview.MaxScore}" FontSize="20" FontWeight="Bold" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                            <TextBlock Text="{Binding QuizReview.EmptyStateText}"
+                                       Visibility="{Binding QuizReview.HasNoQuestions, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                       Style="{StaticResource BodyText}" TextAlignment="Center"
+                                       Margin="0,22,0,8" />
+                            <DataGrid ItemsSource="{Binding QuizQuestions}" Height="300" Margin="0,10,0,0"
+                                      RowHeight="Auto">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="45" />
-                                    <DataGridTextColumn Header="CÂU HỎI" Binding="{Binding Text}" Width="*" />
-                                    <DataGridTextColumn Header="ĐIỂM" Binding="{Binding EarnedPoints}" Width="70" />
+                                    <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="38" />
+                                    <DataGridTextColumn Header="CÂU HỎI" Binding="{Binding Text}" Width="1.2*" />
+                                    <DataGridTextColumn Header="PHƯƠNG ÁN" Binding="{Binding OptionsText}" Width="*" />
+                                    <DataGridTextColumn Header="HỌC SINH CHỌN" Binding="{Binding StudentSelectionText}" Width="*" />
+                                    <DataGridTextColumn Header="ĐÁP ÁN ĐÚNG" Binding="{Binding CorrectAnswerText}" Width="*" />
+                                    <DataGridTextColumn Header="KẾT QUẢ" Binding="{Binding OutcomeText}" Width="80" />
+                                    <DataGridTextColumn Header="ĐIỂM" Binding="{Binding EarnedPoints}" Width="58" />
+                                    <DataGridTextColumn Header="TỐI ĐA" Binding="{Binding Points}" Width="58" />
                                 </DataGrid.Columns>
                             </DataGrid>
-                        </StackPanel>
-                    </Border>
-                    <Border Style="{StaticResource Card}"
-                            Margin="0,14,0,0"
-                            Visibility="{Binding IsFileSubmission, Converter={StaticResource BooleanToVisibilityConverter}}">
-                        <StackPanel>
-                            <TextBlock Text="Preview bài nộp (chỉ đọc)"
-                                       Style="{StaticResource SectionTitleText}" />
-                            <ComboBox ItemsSource="{Binding PreviewEntries}"
-                                      SelectedItem="{Binding SelectedPreviewEntry}"
-                                      DisplayMemberPath="Name"
-                                      Margin="0,10,0,0" />
-                            <Button Content="Mở preview"
-                                    Command="{Binding OpenPreviewCommand}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    Margin="0,8,0,0" />
-                            <TextBox Text="{Binding PreviewContent}"
-                                     IsReadOnly="True"
-                                     AcceptsReturn="True"
-                                     TextWrapping="NoWrap"
-                                     FontFamily="Consolas"
-                                     Height="260"
-                                     Margin="0,10,0,0"
-                                     VerticalScrollBarVisibility="Auto"
-                                     HorizontalScrollBarVisibility="Auto" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
             </ScrollViewer>
         </Grid>
 
-        <!-- Status bar -->
-        <Border Grid.Row="4" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
+        <Border Grid.Row="4" Padding="12,10" CornerRadius="8" BorderThickness="1"
                 BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
-            <StackPanel Orientation="Horizontal">
-                <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
-                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
-            </StackPanel>
+            <TextBlock Text="{Binding Status}" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}"
+                       TextWrapping="Wrap" />
         </Border>
     </Grid>
 </UserControl>
