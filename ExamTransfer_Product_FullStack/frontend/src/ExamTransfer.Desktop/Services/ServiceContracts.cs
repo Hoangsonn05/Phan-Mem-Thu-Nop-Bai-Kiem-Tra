@@ -97,6 +97,11 @@ public interface ISubmissionRecoveryService : IDisposable
 public interface IFileDialogService { string? PickFile(string filter); }
 public interface IFolderDialogService { string? PickFolder(); }
 public interface IDialogService { bool Confirm(string title, string message); }
+public interface ILocalFileLauncher
+{
+    bool Exists(string path);
+    void Open(string path);
+}
 public interface IToastService { void Show(string message, string tone = "info"); }
 public interface IClipboardService { void SetText(string text); }
 public interface ILocalPreferenceService { string? Get(string key); void Set(string key, string value); }
