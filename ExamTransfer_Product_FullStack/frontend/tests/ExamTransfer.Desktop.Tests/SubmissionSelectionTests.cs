@@ -79,7 +79,7 @@ public sealed class SubmissionSelectionTests
         Assert.True(viewModel.HasSelection);
         Assert.False(viewModel.HasDownloadableSelection);
         Assert.True(viewModel.ClearSelectionCommand.CanExecute(null));
-        Assert.False(viewModel.DownloadSelectedCommand.CanExecute(null));
+        Assert.True(viewModel.DownloadSelectedCommand.CanExecute(null));
         Assert.True(viewModel.Submissions[1].IsLate);
 
         viewModel.Submissions[0].IsSelected = true;

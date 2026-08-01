@@ -228,8 +228,8 @@
                             <TextBlock Text="Lý do" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
                             <TextBox Text="{Binding Reason}" Height="80" AcceptsReturn="True" />
                             <Separator Margin="0,14" />
-                            <Button Content="Tải file đầu tiên"
-                                    Command="{Binding DownloadCommand}"
+                            <Button Content="Tải bài đã chọn"
+                                    Command="{Binding DownloadSelectedCommand}"
                                     Style="{StaticResource SecondaryButton}"
                                     Margin="0,0,0,8" />
                             <Button Content="Sao chép mã biên nhận"

@@ -1471,6 +1471,8 @@ public sealed class LobbyViewModel : ProductPageBase
 public sealed class SubmissionCenterViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
+    private readonly IFolderDialogService folders;
+    private readonly SubmissionBatchDownloader submissionDownloader;
     private readonly IRealtimeService realtime;
     private readonly TeacherRealtimeSessionBinding realtimeBinding;
     private readonly RealtimeRefreshDebouncer realtimeRefresh =
@@ -1481,9 +1483,12 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
 
     public SubmissionCenterViewModel(
         IBackendClient api,
-        IRealtimeService? realtime = null)
+        IRealtimeService? realtime = null,
+        IFolderDialogService? folders = null)
     {
         this.api = api;
+        this.folders = folders ?? AppServices.Folders;
+        submissionDownloader = new(api);
         this.realtime = realtime ?? new RealtimeService(AppServices.BaseUrl);
         realtimeBinding = new TeacherRealtimeSessionBinding(this.realtime);
         this.realtime.NotificationReceived += OnRealtimeNotification;
@@ -1492,18 +1497,15 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         RejectCommand = new AsyncRelayCommand(RejectAsync, () => !IsBusy && SelectedSubmission is not null);
         ResubmitCommand = new AsyncRelayCommand(ResubmitAsync, () => !IsBusy && SelectedSubmission is not null);
         CopyReceiptCommand = new RelayCommand(CopyReceipt);
-        DownloadCommand = new AsyncRelayCommand(
-            DownloadAsync,
-            () => !IsBusy && SelectedSubmission?.CanDownload == true);
         SelectAllCommand = new RelayCommand(
             SelectAll,
             () => !IsBusy && Submissions.Count > 0 && !AllVisibleSelected);
         ClearSelectionCommand = new RelayCommand(
             ClearSelection,
             () => !IsBusy && HasSelection);
-        DownloadSelectedCommand = new RelayCommand(
-            ShowDownloadSelectionReady,
-            () => !IsBusy && HasDownloadableSelection);
+        DownloadSelectedCommand = new AsyncRelayCommand(
+            DownloadSelectedAsync,
+            () => !IsBusy && HasSelection);
     }
 
     public ObservableCollection<SessionSummaryDto> Sessions { get; } = new();
@@ -1535,7 +1537,6 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     public ICommand RejectCommand { get; }
     public ICommand ResubmitCommand { get; }
     public ICommand CopyReceiptCommand { get; }
-    public ICommand DownloadCommand { get; }
     public ICommand SelectAllCommand { get; }
     public ICommand ClearSelectionCommand { get; }
     public ICommand DownloadSelectedCommand { get; }
@@ -1602,16 +1603,27 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         CompleteMutationRequest(mutationKey);
     });
 
-    private async Task DownloadAsync()
+    private async Task DownloadSelectedAsync()
     {
-        await RunAsync("Đang tải bài nộp", "File bài nộp đã được lưu", async ct =>
-        {
-            if (SelectedSubmission?.Submission.Files.FirstOrDefault(
-                    file => file.TransferStatus == TransferStatus.Completed) is not { } file) return;
-            var folder = AppServices.Folders.PickFolder();
-            if (folder is null) return;
-            await api.DownloadFileAsync($"api/v1/submissions/{SelectedSubmission.SubmissionId}/files/{file.Id}/content", Path.Combine(folder, file.Name), null, ct);
-        });
+        var destinationFolder = folders.PickFolder();
+        if (destinationFolder is null)
+            return;
+
+        var selectionSnapshot = Submissions
+            .Where(row => row.IsSelected)
+            .Select(row => row.Submission)
+            .ToArray();
+        SubmissionDownloadResult? result = null;
+        await RunAsync(
+            "Đang tải các bài đã chọn",
+            () => BuildDownloadSummary(result),
+            async ct => result = await submissionDownloader.DownloadAsync(
+                selectionSnapshot,
+                destinationFolder,
+                ct));
+
+        if (!IsDisposed && result?.FailedFileCount > 0)
+            StatusTone = "warning";
     }
 
     private void SelectAll()
@@ -1626,10 +1638,22 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             row.IsSelected = false;
     }
 
-    private void ShowDownloadSelectionReady()
+    private static string BuildDownloadSummary(SubmissionDownloadResult? result)
     {
-        Status = $"Đã chọn {DownloadableSelectedCount} bài có file hoàn tất để tải.";
-        StatusTone = "primary";
+        if (result is null)
+            return "Không có kết quả tải bài.";
+        if (result.HasNoCompletedFiles)
+            return "Các bài đã chọn không có file Completed để tải.";
+
+        var summary = $"Hoàn tất: {result.FullySuccessfulSubmissionCount} bài thành công hoàn toàn, " +
+            $"{result.SuccessfulFileCount} file thành công, {result.FailedFileCount} file lỗi.";
+        if (result.Failures.Count == 0)
+            return summary;
+
+        var failures = string.Join(
+            Environment.NewLine,
+            result.Failures.Select(failure => $"- {failure.DisplayName}: {failure.Error}"));
+        return summary + Environment.NewLine + "File lỗi:" + Environment.NewLine + failures;
     }
 
     private void OnSubmissionRowPropertyChanged(
@@ -1703,9 +1727,9 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, DownloadCommand }.OfType<AsyncRelayCommand>())
+        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, DownloadSelectedCommand }.OfType<AsyncRelayCommand>())
             command.RaiseCanExecuteChanged();
-        foreach (var command in new[] { SelectAllCommand, ClearSelectionCommand, DownloadSelectedCommand }.OfType<RelayCommand>())
+        foreach (var command in new[] { SelectAllCommand, ClearSelectionCommand }.OfType<RelayCommand>())
             command.RaiseCanExecuteChanged();
     }
 }
