@@ -18,7 +18,23 @@
 **WORKTREE**: Clean (with untracked report and SQL script)
 
 **DECISION**: 
-Option D (Target cleanup). Session `56666af9-b930-444f-83cb-dd072a3bdf6e` is selected as the authoritative session (participant `720eaf21...` is kept). The other two active duplicate sessions (`a5c5c4e5...` and `33367b33...`) are marked for cleanup (Waiting -> Cancelled -> Archived).
+OPTION D — NO AUTHORITATIVE SESSION AMONG THE THREE ACTIVE DUPLICATES.
+- `56666af9-b930-444f-83cb-dd072a3bdf6e`: cleanup target; Waiting -> Cancelled -> Archived after verified backup/restore.
+- `a5c5c4e5-6631-4d9d-a868-055f897a6b57`: cleanup target; Waiting -> Cancelled -> Archived after verified backup/restore.
+- `33367b33-927b-4235-bad6-bf8dcec8ddc0`: cleanup target; Waiting -> Cancelled -> Archived after verified backup/restore.
+
+Participant rule:
+- preserve participant `720eaf21...` on `56666af9...`;
+- participant remains historical data even when its session becomes terminal;
+- do not move, delete, approve, reject or reassign it.
+
+No-touch rule:
+- preserve `77cb9b9f...`;
+- preserve `66cc9c26...`;
+- future cleanup must use exact target-ID allowlist, never room code alone.
+
+SAME CODE ACROSS ORGANIZATIONS:
+ALLOW.
 
 **TARGET SESSION IDS**:
 - `56666af9-b930-444f-83cb-dd072a3bdf6e`
@@ -32,7 +48,7 @@ Option D (Target cleanup). Session `56666af9-b930-444f-83cb-dd072a3bdf6e` is sel
 **PRE-BACKUP DRIFT**:
 Verified via read-only SQL against Management API (no drift).
 Exactly 3 target sessions remaining in `Waiting` state with `accepting_participants = true`.
-The participant `720eaf21...` is still attached to the authoritative session.
+The participant `720eaf21...` is still attached to `56666af9-b930-444f-83cb-dd072a3bdf6e`.
 No submissions, grades, or quiz attempts on the target sessions.
 Guard sessions remain in `Finished` state and retain their respective participants and submissions.
 
