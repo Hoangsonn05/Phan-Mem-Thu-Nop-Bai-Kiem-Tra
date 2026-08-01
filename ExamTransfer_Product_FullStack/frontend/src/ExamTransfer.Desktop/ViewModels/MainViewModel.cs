@@ -12,6 +12,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private readonly IBackendClient api;
     private readonly AppAuthSessionState authState;
+    private readonly StudentRealtimeNotificationRouter studentRealtimeRouter;
     private CancellationTokenSource? accountHeartbeatCts;
     private AppMode mode;
     private NavigationItem? selected;
@@ -26,6 +27,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         api = AppServices.Backend;
         authState = AppServices.AuthState;
+        studentRealtimeRouter = new(
+            new StudentRealtimeNotificationAdapter(),
+            AppServices.Notifications,
+            RefreshStudentRealtimeStateAsync);
         RefreshCommand = new AsyncRelayCommand(CheckAsync);
         ToggleThemeCommand = new RelayCommand(ToggleTheme);
         LogoutCommand = new AsyncRelayCommand(LogoutAsync, () => authState.IsAuthenticated);
@@ -147,6 +152,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnStudentRealtimeEvent(object? sender, string eventName)
     {
+        if (AppServices.StudentState.AccessMode == SessionAccessMode.LanOnly
+            && StudentRealtimeNotificationAdapter.IsSupportedEventName(eventName))
+            return;
         if (!StudentExamFlowCoordinator.IsLifecycleProgressionEvent(eventName))
             return;
         ResolveStudentLifecycleAsync().SafeFireAndForget("MainViewModel.StudentLifecycle.Event");
@@ -156,26 +164,55 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         object? sender,
         StudentRealtimeNotification notification)
     {
-        if (notification.SessionId != AppServices.StudentState.SessionId
-            || (notification.ParticipantId.HasValue
-                && notification.ParticipantId != AppServices.StudentState.ParticipantId)
-            || (notification.Revision > 0
-                && notification.Revision <= AppServices.StudentState.Revision)
-            || !StudentExamFlowCoordinator.IsLifecycleProgressionEvent(notification.EventName))
+        var state = AppServices.StudentState;
+        if (!state.SessionId.HasValue || !state.ParticipantId.HasValue)
             return;
-        ResolveStudentLifecycleAsync().SafeFireAndForget(
-            "MainViewModel.StudentLifecycle.Notification");
+        studentRealtimeRouter.RouteAsync(
+                notification,
+                new(
+                    state.SessionId.Value,
+                    state.ParticipantId.Value,
+                    state.Revision,
+                    state.AccessMode),
+                CancellationToken.None)
+            .SafeFireAndForget("MainViewModel.StudentRealtimeNotification");
     }
 
-    private async Task ResolveStudentLifecycleAsync()
+    private async Task ResolveStudentLifecycleAsync(CancellationToken cancellationToken = default)
     {
         if (!authState.IsStudent || !AppServices.StudentState.HasSession)
             return;
         _ = await AppServices.StudentExamFlow.ResolveAsync(
             StudentExamEntryPoint.CurrentExam,
             false,
-            CancellationToken.None);
+            cancellationToken);
     }
+
+    private async Task RefreshStudentRealtimeStateAsync(
+        StudentRealtimeRoute route,
+        CancellationToken cancellationToken)
+    {
+        await ResolveStudentLifecycleAsync(cancellationToken);
+        if (route.RefreshTarget != StudentRealtimeRefreshTarget.Results
+            || !IsQuizResultEvent(route.SourceEventName)
+            || CurrentPage is not StudentQuizViewModel quiz)
+            return;
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            await dispatcher
+                .InvokeAsync(() => quiz.RefreshAuthoritativeReviewAsync(cancellationToken))
+                .Task
+                .Unwrap();
+            return;
+        }
+        await quiz.RefreshAuthoritativeReviewAsync(cancellationToken);
+    }
+
+    private static bool IsQuizResultEvent(string eventName) =>
+        eventName.StartsWith(RealtimeEvents.QuizGradeReturned, StringComparison.Ordinal)
+        || eventName.StartsWith(RealtimeEvents.QuizGradeReopened, StringComparison.Ordinal);
 
     private async Task RestoreAuthAsync()
     {
