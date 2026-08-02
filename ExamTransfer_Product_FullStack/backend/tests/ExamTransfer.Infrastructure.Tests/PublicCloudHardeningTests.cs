@@ -751,6 +751,71 @@ public sealed class PublicCloudTeacherMutationRoutingTests
         Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
     }
 
+    [Fact]
+    public async Task PublicCloudRealtime_teacher_message_uses_rpc_without_local_write_or_signalr_fallback()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        var cloud = new RecordingCloudAdapter();
+        var realtime = new RecordingRealtimePublisher();
+        var service = PublicCloudTestHarness.CreateSessionService(
+            database.Context,
+            cloud,
+            realtime);
+
+        var result = await service.SendMessageAsync(
+            participant.SessionId,
+            new SendMessageRequest(participant.Id, MessageType.Warning, "PublicCloud message"),
+            CancellationToken.None);
+
+        Assert.Equal(1, cloud.SendMessageCalls);
+        Assert.NotEqual(Guid.Empty, cloud.LastSendMessageRequestId);
+        Assert.Equal(participant.Id, cloud.LastMessageParticipantId);
+        Assert.Equal("PublicCloud message", result.Content);
+        Assert.Empty(await database.Context.MessagesSet.ToListAsync());
+        Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+        Assert.Equal(0, realtime.PublishCount);
+    }
+
+    [Fact]
+    public async Task PublicCloudRealtime_teacher_message_rpc_failure_does_not_fallback_or_write_local_state()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        var cloud = new RecordingCloudAdapter { FailSendMessage = true };
+        var service = PublicCloudTestHarness.CreateSessionService(database.Context, cloud);
+
+        await Assert.ThrowsAsync<ApiException>(() => service.SendMessageAsync(
+            participant.SessionId,
+            new SendMessageRequest(null, MessageType.Information, "No fallback"),
+            CancellationToken.None));
+
+        Assert.Equal(1, cloud.SendMessageCalls);
+        Assert.Empty(await database.Context.MessagesSet.ToListAsync());
+        Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+    }
+
+    [Fact]
+    public void PublicCloudRealtime_migration_keeps_typed_transactional_and_rls_contracts()
+    {
+        var migration = PublicCloudTestHarness.ReadRepositoryFile(
+            "backend/supabase/migrations/20260802145519_complete_publiccloud_student_realtime.sql");
+
+        foreach (var eventType in Enum.GetNames<StudentNotificationEventType>())
+            Assert.Contains($"'{eventType}'", migration, StringComparison.Ordinal);
+        Assert.Contains("enable row level security", migration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("participant.user_id = (select auth.uid())", migration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("session.access_mode = 'PublicCloud'", migration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("mutation_request_id", migration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("supabase_realtime", migration, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("using (true)", migration, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("service_role key", migration, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static SubmissionService CreateSubmissionService(
         AppDbContext db,
         ICloudAdapter cloud)
@@ -790,6 +855,7 @@ public sealed class PublicCloudTeacherMutationRoutingTests
     private sealed class RecordingRealtimePublisher : IRealtimePublisher
     {
         public List<PublishedEvent> SessionEvents { get; } = [];
+        public int PublishCount { get; private set; }
 
         public Task PublishSessionAsync<T>(
             Guid sessionId,
@@ -798,6 +864,7 @@ public sealed class PublicCloudTeacherMutationRoutingTests
             T payload,
             CancellationToken cancellationToken = default)
         {
+            PublishCount++;
             SessionEvents.Add(new(sessionId, eventName, sequence, payload!));
             return Task.CompletedTask;
         }
@@ -808,8 +875,11 @@ public sealed class PublicCloudTeacherMutationRoutingTests
             string eventName,
             long sequence,
             T payload,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            PublishCount++;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed record PublishedEvent(Guid SessionId, string EventName, long Sequence, object Payload);
@@ -1221,7 +1291,8 @@ internal static class PublicCloudTestHarness
                 publisher,
                 options,
                 new LanAccessPolicy(options)),
-            new PublicCloudProjectionExecution(db));
+            new PublicCloudProjectionExecution(db),
+            cloudAdapter: cloud);
     }
 
     public static async Task RunPullOnceAsync(string databasePath, ICloudAdapter cloud)
@@ -1281,6 +1352,7 @@ internal class RecordingCloudAdapter : ICloudAdapter
     public int ResubmitCalls { get; private set; }
     public int RejectSubmissionCalls { get; private set; }
     public int ExtraTimeCalls { get; private set; }
+    public int SendMessageCalls { get; private set; }
     public Guid? LastApproveRequestId { get; private set; }
     public Guid? LastRejectParticipantRequestId { get; private set; }
     public Guid? LastBulkApproveRequestId { get; private set; }
@@ -1290,6 +1362,8 @@ internal class RecordingCloudAdapter : ICloudAdapter
     public string? LastResubmitReason { get; private set; }
     public string? LastRejectSubmissionReason { get; private set; }
     public Guid? LastExtraTimeRequestId { get; private set; }
+    public Guid? LastSendMessageRequestId { get; private set; }
+    public Guid? LastMessageParticipantId { get; private set; }
     public bool FailApprove { get; init; }
     public bool FailRejectParticipant { get; init; }
     public bool FailBulkApprove { get; init; }
@@ -1297,6 +1371,7 @@ internal class RecordingCloudAdapter : ICloudAdapter
     public bool FailResubmit { get; init; }
     public bool FailRejectSubmission { get; init; }
     public bool ExtraTimeMissingContract { get; init; }
+    public bool FailSendMessage { get; init; }
     public CloudParticipantMutationResult? ExtraTimeResult { get; private set; }
     public bool Enabled => true;
     public bool Configured => true;
@@ -1439,6 +1514,31 @@ internal class RecordingCloudAdapter : ICloudAdapter
                 502);
         return Task.FromResult(new CloudSubmissionMutationResult(
             submissionId, Guid.Empty, Guid.Empty, SubmissionStatus.Rejected, reason, 44, DateTimeOffset.UtcNow));
+    }
+    public Task<MessageDto> SendPublicTeacherMessageAsync(
+        Guid sessionId,
+        Guid? participantId,
+        MessageType messageType,
+        string content,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        SendMessageCalls++;
+        LastSendMessageRequestId = requestId;
+        LastMessageParticipantId = participantId;
+        if (FailSendMessage)
+            throw new ApiException(
+                ErrorCodes.CloudUploadFailed,
+                "Simulated teacher message RPC failure",
+                502);
+        return Task.FromResult(new MessageDto(
+            Guid.NewGuid(),
+            sessionId,
+            Guid.NewGuid(),
+            participantId,
+            messageType,
+            content,
+            DateTimeOffset.UtcNow));
     }
     public Task<CloudLoginResult> LoginAsync(string email, string password, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task<CloudLoginResult?> RefreshSessionAsync(CancellationToken cancellationToken) => Task.FromResult<CloudLoginResult?>(null);

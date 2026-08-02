@@ -371,6 +371,40 @@ public sealed class SupabaseCloudAdapter(
             result.GetProperty("updatedAt").GetDateTimeOffset());
     }
 
+    public async Task<MessageDto> SendPublicTeacherMessageAsync(
+        Guid sessionId,
+        Guid? participantId,
+        MessageType messageType,
+        string content,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        var result = await InvokeTeacherRpcAsync(
+            "send_public_teacher_message",
+            new
+            {
+                p_session_id = sessionId,
+                p_participant_id = participantId,
+                p_message_type = messageType.ToString(),
+                p_content = content,
+                p_request_id = requestId
+            },
+            cancellationToken);
+        return new MessageDto(
+            result.GetProperty("id").GetGuid(),
+            result.GetProperty("sessionId").GetGuid(),
+            result.TryGetProperty("senderId", out var sender) && sender.ValueKind != JsonValueKind.Null
+                ? sender.GetGuid()
+                : null,
+            result.TryGetProperty("receiverId", out var receiver) && receiver.ValueKind != JsonValueKind.Null
+                ? receiver.GetGuid()
+                : null,
+            Enum.Parse<MessageType>(result.GetProperty("type").GetString()!, true),
+            result.GetProperty("content").GetString()
+                ?? throw new JsonException("PublicCloud teacher message content is missing."),
+            result.GetProperty("createdAtUtc").GetDateTimeOffset());
+    }
+
     public async Task<CloudEnrollmentMutationResult> ApprovePublicEnrollmentAsync(
         Guid enrollmentRequestId,
         Guid requestId,

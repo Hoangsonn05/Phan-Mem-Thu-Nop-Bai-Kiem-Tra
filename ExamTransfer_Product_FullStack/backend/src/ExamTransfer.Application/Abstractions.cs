@@ -262,6 +262,14 @@ public interface ICloudAdapter
         Guid requestId,
         CancellationToken cancellationToken) =>
         throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<MessageDto> SendPublicTeacherMessageAsync(
+        Guid sessionId,
+        Guid? participantId,
+        MessageType messageType,
+        string content,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher messages are not supported by this adapter.");
     Task<CloudEnrollmentMutationResult> ApprovePublicEnrollmentAsync(
         Guid enrollmentRequestId,
         Guid requestId,

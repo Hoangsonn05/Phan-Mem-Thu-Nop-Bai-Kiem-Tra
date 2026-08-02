@@ -14,7 +14,7 @@ using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SessionService(AppDbContext db, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, SessionParticipantMutationDispatcher participantMutations, LanParticipantSessionExecution lanParticipantSessions, PublicCloudProjectionExecution cloudProjection, ICloudSyncSignal? cloudSyncSignal = null) : ISessionService
+public sealed class SessionService(AppDbContext db, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, SessionParticipantMutationDispatcher participantMutations, LanParticipantSessionExecution lanParticipantSessions, PublicCloudProjectionExecution cloudProjection, ICloudSyncSignal? cloudSyncSignal = null, ICloudAdapter? cloudAdapter = null) : ISessionService
 {
     private readonly ExamTransferOptions _options = options.Value;
     private readonly SessionParticipantMutationDispatcher _participantMutations = participantMutations;
@@ -315,6 +315,21 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
                 cancellationToken);
             if (!validReceiver)
                 throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người nhận hợp lệ trong phòng thi.", 404);
+        }
+        if (session.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            var cloud = cloudAdapter
+                ?? throw new ApiException(
+                    ErrorCodes.CloudUploadFailed,
+                    "PublicCloud chưa được cấu hình cho thông báo giáo viên.",
+                    503);
+            return await cloud.SendPublicTeacherMessageAsync(
+                sessionId,
+                request.ReceiverParticipantId,
+                request.Type,
+                request.Content.Trim(),
+                Guid.NewGuid(),
+                cancellationToken);
         }
         var message = new Message { SessionId = sessionId, ReceiverId = request.ReceiverParticipantId, Type = request.Type, Content = request.Content.Trim() };
         db.MessagesSet.Add(message);

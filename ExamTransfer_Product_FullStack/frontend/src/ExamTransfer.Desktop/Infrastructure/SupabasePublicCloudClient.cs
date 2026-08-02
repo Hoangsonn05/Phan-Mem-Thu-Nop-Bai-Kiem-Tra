@@ -178,6 +178,7 @@ public sealed record SupabaseAuthenticatedAccount(
 public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions NotificationJson = CreateNotificationJson();
     private readonly HttpClient http;
     private readonly IServerClock serverClock;
     private readonly IPublicCloudRuntimeOptionsProvider optionsProvider;
@@ -500,6 +501,40 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         return timeline;
     }
 
+    public async Task<IReadOnlyList<StudentNotificationEventDto>> GetStudentNotificationEventsAsync(
+        Guid sessionId,
+        long afterRevision,
+        Guid? afterEventId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (sessionId == Guid.Empty || afterRevision < 0 || limit is < 1 or > 100)
+            throw new ArgumentOutOfRangeException(nameof(limit), "PublicCloud notification cursor is invalid.");
+        var rows = await RpcAsync<JsonElement>(
+            "get_public_student_notification_events",
+            new
+            {
+                p_session_id = sessionId,
+                p_after_revision = afterRevision,
+                p_after_event_id = afterEventId,
+                p_limit = limit
+            },
+            cancellationToken);
+        if (rows.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("PublicCloud notification catch-up is not an array.");
+        var result = new List<StudentNotificationEventDto>(rows.GetArrayLength());
+        foreach (var row in rows.EnumerateArray())
+        {
+            var notification = row.Deserialize<StudentNotificationEventDto>(NotificationJson)
+                ?? throw new InvalidDataException("PublicCloud notification payload is empty.");
+            if (notification.SessionId != sessionId
+                || StudentNotificationEventValidator.Validate(notification).Count != 0)
+                throw new InvalidDataException("PublicCloud notification payload is invalid.");
+            result.Add(notification);
+        }
+        return result;
+    }
+
     public async Task<QuizAttemptDto> GetQuizAttemptAsync(Guid attemptId, CancellationToken cancellationToken)
     {
         var snapshot = await RpcAsync<PublicQuizAttemptSnapshot>(
@@ -644,11 +679,25 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             "get_examtransfer_cloud_capabilities",
             new { },
             cancellationToken);
-        if (capabilities.SchemaVersion < 23)
+        if (capabilities.SchemaVersion < 23
+            || capabilities.CriticalRpcs is null
+            || !capabilities.CriticalRpcs.Contains(
+                "get_public_student_notification_events",
+                StringComparer.Ordinal)
+            || !capabilities.CriticalRpcs.Contains(
+                "send_public_teacher_message",
+                StringComparer.Ordinal))
             throw new PublicCloudApiException(
                 "PUBLICCLOUD_SCHEMA_INCOMPATIBLE",
                 "PublicCloud schema is incompatible with this ExamTransfer build.",
                 HttpStatusCode.Conflict);
+    }
+
+    private static JsonSerializerOptions CreateNotificationJson()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
     }
 
     public async Task<string> GetValidAccessTokenAsync(
@@ -1127,7 +1176,9 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         DateTimeOffset? PlannedStartUtc,
         int? Capacity,
         int CurrentParticipantCount);
-    private sealed record CloudCapabilities(int SchemaVersion);
+    private sealed record CloudCapabilities(
+        int SchemaVersion,
+        IReadOnlyList<string>? CriticalRpcs = null);
     private sealed record ParticipantStatusRow(string Status);
     private sealed record EnrollmentRow(Guid Id, string Status);
     private sealed record SubmissionFilePlanRow(Guid Id,

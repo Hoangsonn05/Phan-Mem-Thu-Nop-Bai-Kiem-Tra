@@ -42,7 +42,9 @@ public static class CloudSchemaCompatibility
         "reject_public_submission",
         "approve_public_enrollment_request",
         "reject_public_enrollment_request",
-        "get_public_student_timeline"
+        "get_public_student_timeline",
+        "send_public_teacher_message",
+        "get_public_student_notification_events"
     };
 }
 
