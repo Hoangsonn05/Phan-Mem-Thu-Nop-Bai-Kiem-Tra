@@ -29,6 +29,31 @@ namespace ExamTransfer.Infrastructure.Tests;
 public sealed class FinalCloudSourceCompatibilityTests
 {
     [Fact]
+    public async Task ActivePublicRoomUniqueViolation_MapsToTypedRoomCodeConflict()
+    {
+        var ensureSuccess = typeof(SupabaseCloudAdapter).GetMethod(
+            "EnsureSuccessAsync",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(ensureSuccess);
+        using var response = new HttpResponseMessage(System.Net.HttpStatusCode.Conflict)
+        {
+            Content = new StringContent(
+                """
+                {"code":"23505","message":"duplicate key value violates unique constraint \"ux_exam_sessions_active_public_room\""}
+                """)
+        };
+
+        var invocation = Assert.IsAssignableFrom<Task>(ensureSuccess!.Invoke(
+            null,
+            [response, "Supabase metadata insert", CancellationToken.None]));
+        var error = await Assert.ThrowsAsync<ApiException>(() => invocation);
+
+        Assert.Equal(ErrorCodes.RoomCodeConflict, error.Code);
+        Assert.Equal(409, error.StatusCode);
+        Assert.Contains("Mã phòng PublicCloud", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ForwardMigration_AddsOnlySourceCloudVersionAndCapability18()
     {
         var sql = PublicCloudTestHarness.ReadRepositoryFile(

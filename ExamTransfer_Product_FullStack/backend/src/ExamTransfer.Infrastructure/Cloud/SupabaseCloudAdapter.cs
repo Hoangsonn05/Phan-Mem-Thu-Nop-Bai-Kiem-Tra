@@ -1868,10 +1868,36 @@ public sealed class SupabaseCloudAdapter(
 
         var detail = await response.Content.ReadAsStringAsync(
             cancellationToken);
+        if (IsActivePublicRoomCodeConflict(detail))
+        {
+            throw new ApiException(
+                ErrorCodes.RoomCodeConflict,
+                "Mã phòng PublicCloud đang hoạt động đã được sử dụng trong tổ chức.",
+                409);
+        }
         throw new ApiException(
             ErrorCodes.CloudUploadFailed,
             $"{operation} trả về {(int)response.StatusCode}: {detail}",
             502);
+    }
+
+    private static bool IsActivePublicRoomCodeConflict(string detail)
+    {
+        if (!detail.Contains(
+                "ux_exam_sessions_active_public_room",
+                StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        try
+        {
+            using var document = JsonDocument.Parse(detail);
+            return document.RootElement.TryGetProperty("code", out var code)
+                && string.Equals(code.GetString(), "23505", StringComparison.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static CloudLoginResult ToLoginResult(
