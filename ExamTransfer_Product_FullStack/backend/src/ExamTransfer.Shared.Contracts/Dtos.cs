@@ -92,7 +92,11 @@ public sealed record SubmissionFileDto(Guid Id, string Name, long SizeBytes, str
 public sealed record SubmissionSummaryDto(Guid Id, Guid SessionId, Guid ParticipantId, string StudentCode, string DisplayName, int AttemptNumber, SubmissionStatus Status, DateTimeOffset? ClientSubmittedAtUtc, DateTimeOffset? ServerReceivedAtUtc, DateTimeOffset DeadlineUtc, bool IsLate, string? ReceiptCode, bool IsOfficial, IReadOnlyList<SubmissionFileDto> Files);
 public sealed record ReceiptDto(Guid SubmissionId, string ReceiptCode, string Signature, DateTimeOffset ServerReceivedAtUtc, bool IsLate, IReadOnlyList<FileDescriptorDto> Files);
 
-public sealed record GradeDto(Guid SubmissionId, GradingStatus Status, decimal? Score, decimal MaxScore, IReadOnlyList<RubricScoreDto> RubricScores, string? GeneralComment, IReadOnlyList<FileDescriptorDto> Attachments, DateTimeOffset? ReturnedAtUtc, string RowVersion);
+public sealed record GradeDto(Guid SubmissionId, GradingStatus Status, decimal? Score, decimal MaxScore, IReadOnlyList<RubricScoreDto> RubricScores, string? GeneralComment, IReadOnlyList<FileDescriptorDto> Attachments, DateTimeOffset? ReturnedAtUtc, string RowVersion)
+{
+    public Guid? GradeId { get; init; }
+    public long Revision { get; init; }
+}
 public sealed record RubricScoreDto(string CriterionKey, string Title, decimal Score, decimal MaxScore, string? Comment, int Order);
 
 public sealed record ControlCapabilitiesDto(bool Fullscreen, bool FocusMonitoring, bool ClipboardControl, bool ProcessControl, bool NetworkControl);

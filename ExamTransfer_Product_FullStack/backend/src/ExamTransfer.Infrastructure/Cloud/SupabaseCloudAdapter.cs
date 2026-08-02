@@ -477,6 +477,69 @@ public sealed class SupabaseCloudAdapter(
             },
             cancellationToken));
 
+    public async Task<CloudEssayGradeResult> GetPublicEssayGradeAsync(
+        Guid submissionId,
+        CancellationToken cancellationToken) =>
+        ParseEssayGrade(await InvokeTeacherRpcAsync(
+            "get_public_essay_grade",
+            new { p_submission_id = submissionId },
+            cancellationToken));
+
+    public async Task<CloudEssayGradeResult> SavePublicEssayGradeAsync(
+        Guid submissionId,
+        decimal? score,
+        IReadOnlyList<RubricScoreDto> rubricScores,
+        string? generalComment,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseEssayGrade(await InvokeTeacherRpcAsync(
+            "save_public_essay_grade",
+            new
+            {
+                p_submission_id = submissionId,
+                p_score = score,
+                p_rubric_scores = rubricScores,
+                p_general_comment = generalComment,
+                p_expected_cloud_version = expectedCloudVersion,
+                p_request_id = requestId
+            },
+            cancellationToken));
+
+    public async Task<CloudEssayGradeResult> ReturnPublicEssayGradeAsync(
+        Guid submissionId,
+        string? message,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseEssayGrade(await InvokeTeacherRpcAsync(
+            "return_public_essay_grade",
+            new
+            {
+                p_submission_id = submissionId,
+                p_message = message,
+                p_expected_cloud_version = expectedCloudVersion,
+                p_request_id = requestId
+            },
+            cancellationToken));
+
+    public async Task<CloudEssayGradeResult> ReopenPublicEssayGradeAsync(
+        Guid submissionId,
+        string reason,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        ParseEssayGrade(await InvokeTeacherRpcAsync(
+            "reopen_public_essay_grade",
+            new
+            {
+                p_submission_id = submissionId,
+                p_reason = reason,
+                p_expected_cloud_version = expectedCloudVersion,
+                p_request_id = requestId
+            },
+            cancellationToken));
+
     private async Task<JsonElement> InvokeTeacherRpcAsync(
         string rpcName,
         object payload,
@@ -514,8 +577,11 @@ public sealed class SupabaseCloudAdapter(
                 : null;
             traceId ??= Guid.NewGuid().ToString("N");
             var concurrencyConflict = content.Contains(
-                "QUIZ_GRADE_VERSION_CONFLICT",
-                StringComparison.OrdinalIgnoreCase);
+                    "QUIZ_GRADE_VERSION_CONFLICT",
+                    StringComparison.OrdinalIgnoreCase)
+                || content.Contains(
+                    "ESSAY_GRADE_VERSION_CONFLICT",
+                    StringComparison.OrdinalIgnoreCase);
             var status = concurrencyConflict
                 ? 409
                 : response.StatusCode is HttpStatusCode.Unauthorized
@@ -603,6 +669,36 @@ public sealed class SupabaseCloudAdapter(
             OptionalDate(result, "returnedAt"),
             result.GetProperty("cloudVersion").GetInt64(),
             result.GetProperty("updatedAt").GetDateTimeOffset());
+
+    private static CloudEssayGradeResult ParseEssayGrade(JsonElement result) =>
+        new(
+            OptionalGuid(result, "gradeId"),
+            result.GetProperty("submissionId").GetGuid(),
+            result.GetProperty("sessionId").GetGuid(),
+            result.GetProperty("participantId").GetGuid(),
+            OptionalDecimal(result, "score"),
+            result.GetProperty("maxScore").GetDecimal(),
+            Enum.Parse<GradingStatus>(result.GetProperty("status").GetString()!, true),
+            OptionalString(result, "generalComment"),
+            OptionalGuid(result, "graderId"),
+            OptionalDate(result, "gradedAt"),
+            OptionalDate(result, "returnedAt"),
+            result.GetProperty("revision").GetInt64(),
+            result.GetProperty("cloudVersion").GetInt64(),
+            result.GetProperty("updatedAt").GetDateTimeOffset(),
+            result.GetProperty("rubricScores").EnumerateArray().Select(item => new RubricScoreDto(
+                item.GetProperty("criterionKey").GetString()!,
+                item.GetProperty("title").GetString()!,
+                item.GetProperty("score").GetDecimal(),
+                item.GetProperty("maxScore").GetDecimal(),
+                OptionalString(item, "comment"),
+                item.GetProperty("order").GetInt32())).ToList(),
+            result.GetProperty("attachments").EnumerateArray().Select(item => new CloudGradeAttachmentResult(
+                item.GetProperty("id").GetGuid(),
+                item.GetProperty("name").GetString()!,
+                item.GetProperty("sizeBytes").GetInt64(),
+                item.GetProperty("sha256").GetString()!,
+                OptionalString(item, "mimeType") ?? "application/octet-stream")).ToList());
 
     private static string? OptionalString(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var value)

@@ -29,13 +29,14 @@ public static class OnlyLanStudentNotificationOutbox
         string? reason = null,
         decimal? score = null,
         decimal? maxScore = null,
-        DateTimeOffset? occurredAtUtc = null)
+        DateTimeOffset? occurredAtUtc = null,
+        Guid? eventId = null)
     {
         ArgumentNullException.ThrowIfNull(db);
-        var eventId = Guid.NewGuid();
+        var resolvedEventId = eventId ?? Guid.NewGuid();
         var notification = new StudentNotificationEventDto
         {
-            EventId = eventId,
+            EventId = resolvedEventId,
             EventType = eventType,
             SessionId = sessionId,
             ParticipantId = participantId,
@@ -52,9 +53,9 @@ public static class OnlyLanStudentNotificationOutbox
 
         db.SyncQueueSet.Add(new SyncQueueItem
         {
-            Id = eventId,
+            Id = resolvedEventId,
             EntityType = EntityType,
-            EntityId = eventId.ToString("N"),
+            EntityId = resolvedEventId.ToString("N"),
             Operation = participantId.HasValue ? "participant" : "session",
             PayloadJson = JsonSerializer.Serialize(notification, JsonOptions),
             Status = SyncStatus.LocalOnly,

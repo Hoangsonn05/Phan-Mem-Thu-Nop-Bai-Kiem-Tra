@@ -1,8 +1,8 @@
 begin;
 select plan(30);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),23,
-  'PublicCloud grading privacy schema version is 23');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),24,
+  'PublicCloud grading privacy remains available at schema version 24');
 select has_function('public','save_public_quiz_grade',
   array['uuid','numeric','text','bigint','uuid'],'save grade RPC exists');
 select has_function('public','return_public_quiz_grade',

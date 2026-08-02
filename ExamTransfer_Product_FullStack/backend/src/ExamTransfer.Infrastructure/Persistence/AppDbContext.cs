@@ -27,6 +27,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<Submission> SubmissionsSet => Set<Submission>();
     public DbSet<SubmissionFile> SubmissionFilesSet => Set<SubmissionFile>();
     public DbSet<Grade> GradesSet => Set<Grade>();
+    public DbSet<EssayGradeMutationReceipt> EssayGradeMutationReceiptsSet => Set<EssayGradeMutationReceipt>();
     public DbSet<RubricScore> RubricScoresSet => Set<RubricScore>();
     public DbSet<GradedAttachment> GradedAttachmentsSet => Set<GradedAttachment>();
     public DbSet<ControlPolicy> ControlPoliciesSet => Set<ControlPolicy>();
@@ -117,6 +118,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureEntity<Submission>(modelBuilder, "submissions");
         ConfigureEntity<SubmissionFile>(modelBuilder, "submission_files");
         ConfigureEntity<Grade>(modelBuilder, "grades");
+        ConfigureEntity<EssayGradeMutationReceipt>(modelBuilder, "essay_grade_mutation_receipts");
         ConfigureEntity<RubricScore>(modelBuilder, "rubric_scores");
         ConfigureEntity<GradedAttachment>(modelBuilder, "graded_attachments");
         ConfigureEntity<ControlPolicy>(modelBuilder, "control_policies");
@@ -163,6 +165,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Submission>().HasIndex(x => new { x.ParticipantId, x.IdempotencyKey }).IsUnique();
         modelBuilder.Entity<SubmissionFile>().HasIndex(x => x.SubmissionId);
         modelBuilder.Entity<Grade>().HasIndex(x => x.SubmissionId).IsUnique();
+        modelBuilder.Entity<EssayGradeMutationReceipt>().HasIndex(x => new { x.SubmissionId, x.CreatedAtUtc });
         modelBuilder.Entity<RubricScore>().HasIndex(x => new { x.GradeId, x.CriterionKey }).IsUnique();
         modelBuilder.Entity<ControlPolicy>().HasIndex(x => new { x.SessionId, x.Version }).IsUnique();
         modelBuilder.Entity<DevicePolicyStatus>().HasIndex(x => new { x.ParticipantId, x.PolicyVersion }).IsUnique();

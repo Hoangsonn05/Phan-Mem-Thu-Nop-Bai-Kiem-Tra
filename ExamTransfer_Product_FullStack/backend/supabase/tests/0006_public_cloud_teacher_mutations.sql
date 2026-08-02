@@ -1,7 +1,7 @@
 begin;
 select plan(36);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1), 23,
+select is((select schema_version from public.examtransfer_cloud_meta where id=1), 24,
   'cloud schema compatibility version is 23');
 select has_function('public','approve_public_participant',array['uuid','uuid','uuid'],'approve participant RPC exists');
 select has_function('public','reject_public_participant',array['uuid','uuid','text','uuid'],'reject participant RPC exists');

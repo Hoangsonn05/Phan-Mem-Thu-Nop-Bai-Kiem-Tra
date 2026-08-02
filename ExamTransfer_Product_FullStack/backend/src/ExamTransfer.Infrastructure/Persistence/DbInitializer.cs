@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "10";
+    public const string SchemaVersion = "11";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -57,6 +57,12 @@ public static class DbInitializer
 
         await EnsureColumnAsync(db, "graded_attachments", "SyncStatus", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "graded_attachments", "CloudObjectPath", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "SourceMode", "TEXT NOT NULL DEFAULT 'Lan'", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "CloudVersion", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "CloudUpdatedAtUtc", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "CloudSyncState", "TEXT NOT NULL DEFAULT 'LocalOnly'", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "Revision", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureEssayGradingTablesAsync(db, cancellationToken);
         await EnsureColumnAsync(db, "export_jobs", "SyncStatus", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "export_jobs", "CloudObjectPath", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "backups", "SyncStatus", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
@@ -185,6 +191,29 @@ public static class DbInitializer
                 "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS "IX_public_device_command_results_DeviceId_ReceivedAtUtc"
                 ON "public_device_command_results" ("DeviceId", "ReceivedAtUtc");
+            """;
+        await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureEssayGradingTablesAsync(
+        AppDbContext db,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            CREATE TABLE IF NOT EXISTS "essay_grade_mutation_receipts" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_essay_grade_mutation_receipts" PRIMARY KEY,
+                "SubmissionId" TEXT NOT NULL,
+                "ActorId" TEXT NOT NULL,
+                "Action" TEXT NOT NULL,
+                "RequestHash" TEXT NOT NULL,
+                "ResultJson" TEXT NOT NULL,
+                "EventId" TEXT NULL,
+                "GradeRevision" INTEGER NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL,
+                "UpdatedAtUtc" TEXT NOT NULL,
+                "RowVersion" TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS "IX_essay_grade_mutation_receipts_SubmissionId_CreatedAtUtc"
+                ON "essay_grade_mutation_receipts" ("SubmissionId", "CreatedAtUtc");
             """;
         await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
     }

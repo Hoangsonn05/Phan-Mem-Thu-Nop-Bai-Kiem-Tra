@@ -178,6 +178,15 @@ public sealed class OnlyLanRealtimeOutboxTests
             MaxScore = 10m,
             GradedAtUtc = DateTimeOffset.UtcNow
         };
+        submission.Files.Add(new SubmissionFile
+        {
+            ClientFileId = "essay-file",
+            OriginalName = "answer.zip",
+            StoredName = "answer.zip",
+            RelativePath = "answer.zip",
+            SizeBytes = 1,
+            TransferStatus = TransferStatus.Completed
+        });
         fixture.Db.AddRange(submission, grade);
         await fixture.Db.SaveChangesAsync();
         var service = new GradeService(
@@ -187,8 +196,18 @@ public sealed class OnlyLanRealtimeOutboxTests
             new AuditService(fixture.Db, new HttpContextAccessor()),
             new OutboxService(fixture.Db));
 
-        await service.ReturnAsync(submission.Id, new ReturnGradeRequest("Published"), default);
-        await service.ReopenAsync(submission.Id, new ReopenGradeRequest("Review"), default);
+        var returned = await service.ReturnAsync(
+            submission.Id,
+            new ReturnGradeRequest("Published"),
+            fixture.Teacher.Id,
+            fixture.Teacher.OrganizationId,
+            default);
+        await service.ReopenAsync(
+            submission.Id,
+            new ReopenGradeRequest("Review", returned.RowVersion),
+            fixture.Teacher.Id,
+            fixture.Teacher.OrganizationId,
+            default);
 
         var storedEvents = await fixture.Db.SyncQueueSet
             .Where(x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType)
@@ -207,12 +226,14 @@ public sealed class OnlyLanRealtimeOutboxTests
         private Fixture(
             SqliteConnection connection,
             AppDbContext db,
+            User teacher,
             ExamSession session,
             SessionParticipant participant,
             RecordingTransport transport)
         {
             this.connection = connection;
             Db = db;
+            Teacher = teacher;
             Session = session;
             Participant = participant;
             Transport = transport;
@@ -223,6 +244,7 @@ public sealed class OnlyLanRealtimeOutboxTests
         }
 
         public AppDbContext Db { get; }
+        public User Teacher { get; }
         public ExamSession Session { get; }
         public SessionParticipant Participant { get; }
         public RecordingTransport Transport { get; }
@@ -236,12 +258,27 @@ public sealed class OnlyLanRealtimeOutboxTests
                 .UseSqlite(connection)
                 .Options);
             await db.Database.EnsureCreatedAsync();
+            var teacher = new User
+            {
+                Username = "teacher",
+                DisplayName = "Teacher",
+                Role = UserRole.Teacher,
+                OrganizationId = "org-a"
+            };
             var session = new ExamSession
             {
-                Exam = new Exam { Title = "Realtime", Subject = "Test", DurationMinutes = 30 },
+                Exam = new Exam
+                {
+                    Title = "Realtime",
+                    Subject = "Test",
+                    DurationMinutes = 30,
+                    DeliveryType = ExamDeliveryType.FileSubmission,
+                    CreatedBy = teacher.Id
+                },
                 RoomCode = "RT-OUTBOX",
                 HostDeviceId = "teacher",
-                AccessMode = mode
+                AccessMode = mode,
+                DeliveryTypeSnapshot = ExamDeliveryType.FileSubmission
             };
             var participant = new SessionParticipant
             {
@@ -251,9 +288,9 @@ public sealed class OnlyLanRealtimeOutboxTests
                 DeviceId = "student-device",
                 Status = ParticipantStatus.Approved
             };
-            db.AddRange(session, participant);
+            db.AddRange(teacher, session, participant);
             await db.SaveChangesAsync();
-            return new(connection, db, session, participant, new RecordingTransport());
+            return new(connection, db, teacher, session, participant, new RecordingTransport());
         }
 
         public async ValueTask DisposeAsync()
