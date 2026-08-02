@@ -1,8 +1,9 @@
-# A-05 Final Notification and Student Result Contract
+# A-05/A-10 Final Notification and Student Result Contract
 
 ## Version and provenance
 
 - Task: `ET-A05-STANDARDIZE-NOTIFICATION-AND-RESULT-CONTRACTS`.
+- Result API implementation: `ET-A10-COMPLETE-STUDENT-RESULTS-API`.
 - Base commit: `a01664716eaae5ca38c57bedd58b63a8d3011674`.
 - Shared assembly: `ExamTransfer.Shared.Contracts`.
 - Contract file: `backend/src/ExamTransfer.Shared.Contracts/StudentNotificationAndResultContracts.cs`.
@@ -10,7 +11,7 @@
 - Enum values are JSON strings. No `Unknown` member exists. Unknown strings fail deserialization; undefined numeric values fail validation.
 - Scores use `decimal`; timestamps use `DateTimeOffset` and contract validators require UTC offset `00:00`.
 
-This task defines contracts only. It does not publish events, implement OnlyLAN or PublicCloud transport, change grading mutations, or provide the student-results API.
+A-05 defined the shared contracts. A-10 implements the authoritative OnlyLAN and PublicCloud student-results read paths without changing grading mutations, realtime transports, or Student Results UI/ViewModel code.
 
 ## Notification events
 
@@ -108,9 +109,79 @@ The summary exposes no question text, selected options, correct options, answer 
 
 - Existing DTOs and event contracts are retained unchanged: `RealtimeEnvelope<T>`, `RealtimeEvents`, `GradeDto`, `GradeReturnedEvent`, `QuizGradeReturnedEvent`, `StudentQuizReviewDto`, and frontend presentation models.
 - The frontend references `ExamTransfer.Shared.Contracts` directly, so no mirror DTO was added to `ServiceContracts.cs`.
-- The current Notification Center, realtime subscriptions, `StudentResultsService`, and Student Results UI do not consume the new DTOs in A-05.
+- `StudentResultsService` now consumes the A-05 result page for both transports and maps it to the existing presentation model. Notification Center, realtime transports, and Student Results UI/ViewModel remain unchanged.
 - A-06 and A-07 should transport `StudentNotificationEventDto` and enforce `StudentNotificationEventValidator` at their contract boundary.
-- A-10 should return `StudentResultDto` values and enforce `StudentResultValidator`; it must expose only `Returned` rows to student callers.
+- A-10 returns `StudentResultDto` values inside `StudentResultPageDto`, enforces both result validators, and exposes only `Returned` rows to student callers.
+
+## A-10 student results read API
+
+### Endpoints and response
+
+OnlyLAN uses:
+
+```text
+GET /api/v1/student/results
+```
+
+The LocalServer response is `ApiResponse<StudentResultPageDto>`. Query parameters are:
+
+- `pageSize`: default `50`, allowed range `1..100`.
+- `cursorReturnedAtUtc`, `cursorResultType`, and `cursorResultId`: optional as a group and rejected when incomplete.
+
+PublicCloud uses the typed RPC:
+
+```text
+get_student_results(
+  p_page_size integer,
+  p_cursor_returned_at timestamptz,
+  p_cursor_result_type text,
+  p_cursor_result_id uuid)
+```
+
+It returns `StudentResultPageDto` JSON directly. Both paths sort by `ReturnedAtUtc DESC`, then `ResultType`, then the authoritative result ID. `NextCursor` contains that same tuple, so equal timestamps do not duplicate or skip rows between pages.
+
+### Authentication and identity
+
+- The LocalServer endpoint accepts the authenticated account token under the `Student` policy. It does not accept student, participant, organization, session, or status ownership from query input.
+- OnlyLAN resolves the actor from the account `NameIdentifier`, re-checks the persisted user as active `Student`, requires the token organization to match the persisted profile, resolves participants by `SessionParticipant.UserId`, and requires the exam owner to belong to the same organization.
+- OnlyLAN reads only `LanOnly` sessions and rejects `PublicCloud` replica rows as a result source. There is no cloud fallback.
+- PublicCloud derives the actor from `auth.uid()` through `private.require_active_student()`, then requires matching profile, participant, organization, `PublicCloud` session, exam delivery type, and authoritative result ownership.
+- `get_student_results` is `SECURITY DEFINER` because Quiz aggregate verification needs the protected correct-choice graph. It uses `search_path = ''`, schema-qualifies every object, accepts no identity input, is revoked from `PUBLIC`, `anon`, and `service_role`, and is granted only to `authenticated`.
+- Existing direct RLS remains defense in depth: students may select only their own Returned grades/attachments and Returned Quiz attempts, and receive no grade/result mutation policy.
+
+### EssayFile mapping
+
+- `ResultType = EssayFile`, `SubmissionId` is the official authoritative submission ID, `AttemptId = null`, and `QuizSummary = null`.
+- `AttemptNumber` is the persisted submission attempt number.
+- Score, maximum score, comment, and UTC return timestamp come from the authoritative grade whose status is exactly `Returned`.
+- Attachments contain only `AttachmentId`, sanitized filename metadata, content type, and size. Physical paths, cache paths, storage bucket, cloud object key, hashes, and signed URLs are not returned.
+- Rubric rows remain persisted for grading but are not exposed because A-05 has no rubric-detail field.
+
+### Quiz mapping
+
+- `ResultType = Quiz`, `AttemptId` is the authoritative Quiz attempt ID, `SubmissionId = null`, `Attachments = []`, and `QuizSummary` is required.
+- `AttemptNumber` is persisted on `QuizAttempt`/`quiz_attempts`. Existing rows are backfilled to `1` because the pre-A-10 domain already enforced one Quiz attempt per `(session, participant)`; new projection and pull paths carry the persisted field.
+- The result must be finalized, have grading status exactly `Returned`, and have a non-null UTC return timestamp.
+- OnlyLAN uses the A-09 authoritative scoring service to verify the persisted score and build counts. PublicCloud uses `private.calculate_public_quiz_grade` for the same aggregate verification.
+- The summary contains counts and points only. It does not expose question text, selected choice IDs, correct choices, or an answer key. Detailed Quiz review remains a separate endpoint governed by A-09.
+
+### Status and reopen visibility
+
+```text
+Graded: never returned by the student-results API
+Returned: visible to the owning student
+Reopened: disappears immediately and remains absent until returned again
+```
+
+The Returned filter is enforced in application mapping/query code and at the PublicCloud RPC/RLS boundary. A score alone never implies Returned. On a later Return, the API reads current authoritative score, comment, timestamp, attachments, and Quiz aggregate.
+
+### Realtime and frontend handoff
+
+- `GradeReturned`, `QuizGradeReturned`, `GradeReopened`, and `QuizGradeReopened` are refresh signals only. The result API remains authoritative.
+- Desktop `StudentResultsService.GetReturnedResultsAsync` requests the first bounded page (`50`) from LocalServer for OnlyLAN or from `get_student_results` for PublicCloud, validates A-05, and maps it to the existing presentation model.
+- Consumers must use `ResultType`; they must not infer type or Returned state from score or nullable identity fields.
+- OnlyLAN attachment download continues through the separately authorized ID route `api/v1/student/submissions/{submissionId}/grade/attachments/{attachmentId}/content`. PublicCloud result payloads provide metadata/IDs only; they do not synthesize a path or long-lived signed URL.
+- A-10 does not change Student Results View/ViewModel and does not claim that UI work or a PublicCloud graded-attachment download operation is complete.
 - Missing nullable notification fields continue to deserialize as null. Missing `attachments` deserializes to an empty list. Required JSON fields are marked required and missing required fields fail closed.
 
 ## Sanitized JSON examples

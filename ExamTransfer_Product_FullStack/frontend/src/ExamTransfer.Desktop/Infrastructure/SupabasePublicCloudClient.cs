@@ -601,6 +601,29 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             questions);
     }
 
+    public async Task<StudentResultPageDto> GetStudentResultsAsync(
+        int pageSize,
+        StudentResultCursorDto? cursor,
+        CancellationToken cancellationToken)
+    {
+        if (pageSize is < 1 or > StudentResultPageValidator.MaxPageSize)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        var payload = await RpcAsync<JsonElement>(
+            "get_student_results",
+            new
+            {
+                p_page_size = pageSize,
+                p_cursor_returned_at = cursor?.ReturnedAtUtc,
+                p_cursor_result_type = cursor?.ResultType.ToString(),
+                p_cursor_result_id = cursor?.ResultId
+            },
+            cancellationToken);
+        var page = payload.Deserialize<StudentResultPageDto>(NotificationJson)
+            ?? throw new InvalidDataException("PublicCloud student result page is empty.");
+        StudentResultPageValidator.EnsureValid(page);
+        return page;
+    }
+
     private static QuizAttemptDto ToQuizAttempt(PublicQuizAttemptSnapshot row) =>
         new(row.Id, row.SessionId, row.ParticipantId,
             Enum.Parse<QuizAttemptStatus>(row.Status, true), row.ExamVersion,
@@ -679,13 +702,16 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             "get_examtransfer_cloud_capabilities",
             new { },
             cancellationToken);
-        if (capabilities.SchemaVersion < 23
+        if (capabilities.SchemaVersion < 26
             || capabilities.CriticalRpcs is null
             || !capabilities.CriticalRpcs.Contains(
                 "get_public_student_notification_events",
                 StringComparer.Ordinal)
             || !capabilities.CriticalRpcs.Contains(
                 "send_public_teacher_message",
+                StringComparer.Ordinal)
+            || !capabilities.CriticalRpcs.Contains(
+                "get_student_results",
                 StringComparer.Ordinal))
             throw new PublicCloudApiException(
                 "PUBLICCLOUD_SCHEMA_INCOMPATIBLE",

@@ -90,6 +90,7 @@ public static class DependencyInjection
         services.AddScoped<IPublicCloudSubmissionDownloadService, PublicCloudSubmissionDownloadService>();
         services.AddScoped<ISubmissionDownloadService, SubmissionDownloadDispatcher>();
         services.AddScoped<IGradeService, GradeService>();
+        services.AddScoped<IStudentResultService, StudentResultService>();
         services.AddScoped<IQuizGradingService, QuizGradingService>();
         services.AddScoped<ISubmissionPreviewService, SubmissionPreviewService>();
         services.AddScoped<DeviceStatusReadExecution>();

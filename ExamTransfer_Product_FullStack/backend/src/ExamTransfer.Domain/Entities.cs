@@ -137,6 +137,7 @@ public sealed class QuizAttempt : EntityBase
     public ExamSession Session { get; set; } = null!;
     public Guid ParticipantId { get; set; }
     public SessionParticipant Participant { get; set; } = null!;
+    public int AttemptNumber { get; set; } = 1;
     public int ExamVersion { get; set; }
     public QuizAttemptStatus Status { get; set; } = QuizAttemptStatus.InProgress;
     public DateTimeOffset StartedAtUtc { get; set; }

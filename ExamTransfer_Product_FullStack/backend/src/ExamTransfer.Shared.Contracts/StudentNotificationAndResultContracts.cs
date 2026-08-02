@@ -203,6 +203,24 @@ public sealed record StudentResultDto
     public StudentQuizResultSummaryDto? QuizSummary { get; init; }
 }
 
+public sealed record StudentResultCursorDto
+{
+    [JsonRequired]
+    public DateTimeOffset ReturnedAtUtc { get; init; }
+
+    [JsonRequired]
+    public StudentResultType ResultType { get; init; }
+
+    [JsonRequired]
+    public Guid ResultId { get; init; }
+}
+
+public sealed record StudentResultPageDto
+{
+    public IReadOnlyList<StudentResultDto> Items { get; init; } = [];
+    public StudentResultCursorDto? NextCursor { get; init; }
+}
+
 public static class StudentResultValidator
 {
     public static IReadOnlyList<string> Validate(StudentResultDto value)
@@ -347,5 +365,30 @@ public static class StudentResultValidator
     {
         if (value == Guid.Empty)
             errors.Add($"{field} cannot be an empty GUID when present.");
+    }
+}
+
+public static class StudentResultPageValidator
+{
+    public const int MaxPageSize = 100;
+
+    public static void EnsureValid(StudentResultPageDto value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value.Items is null || value.Items.Count > MaxPageSize)
+            throw new ArgumentException("Student result page items are invalid.", nameof(value));
+        foreach (var item in value.Items)
+        {
+            StudentResultValidator.EnsureValid(item);
+            if (item.Status != StudentResultStatus.Returned)
+                throw new ArgumentException("Student result pages may contain only Returned results.", nameof(value));
+        }
+        if (value.NextCursor is { } cursor)
+        {
+            if (cursor.ReturnedAtUtc == default || cursor.ReturnedAtUtc.Offset != TimeSpan.Zero)
+                throw new ArgumentException("Student result cursor timestamp must be non-default UTC.", nameof(value));
+            if (!Enum.IsDefined(cursor.ResultType) || cursor.ResultId == Guid.Empty)
+                throw new ArgumentException("Student result cursor identity is invalid.", nameof(value));
+        }
     }
 }

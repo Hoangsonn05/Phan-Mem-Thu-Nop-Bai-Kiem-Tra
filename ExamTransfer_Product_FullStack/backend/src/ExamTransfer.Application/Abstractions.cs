@@ -573,6 +573,16 @@ public interface IGradeService
     Task<byte[]> ExportGradebookCsvAsync(Guid? sessionId, CancellationToken cancellationToken);
 }
 
+public interface IStudentResultService
+{
+    Task<StudentResultPageDto> GetReturnedAsync(
+        Guid actorId,
+        string? actorOrganizationId,
+        int pageSize,
+        StudentResultCursorDto? cursor,
+        CancellationToken cancellationToken);
+}
+
 public interface IQuizGradingService
 {
     Task<PagedResult<GradingWorkItemDto>> GetWorkItemsAsync(

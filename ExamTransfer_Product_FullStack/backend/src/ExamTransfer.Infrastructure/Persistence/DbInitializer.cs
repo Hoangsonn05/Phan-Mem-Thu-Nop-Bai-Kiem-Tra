@@ -107,6 +107,7 @@ public static class DbInitializer
               AND "AdmissionMode" = 0;
             """, cancellationToken);
         await EnsureQuizTablesAsync(db, cancellationToken);
+        await EnsureColumnAsync(db, "quiz_attempts", "AttemptNumber", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "ResultPolicySnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "AutoScore", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "GradingStatus", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
@@ -300,7 +301,7 @@ public static class DbInitializer
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_quiz_choices_QuestionId_Order" ON "quiz_choices" ("QuestionId", "Order");
             CREATE TABLE IF NOT EXISTS "quiz_attempts" (
                 "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_attempts" PRIMARY KEY,
-                "SessionId" TEXT NOT NULL, "ParticipantId" TEXT NOT NULL, "ExamVersion" INTEGER NOT NULL, "Status" INTEGER NOT NULL,
+                "SessionId" TEXT NOT NULL, "ParticipantId" TEXT NOT NULL, "AttemptNumber" INTEGER NOT NULL DEFAULT 1, "ExamVersion" INTEGER NOT NULL, "Status" INTEGER NOT NULL,
                 "StartedAtUtc" TEXT NOT NULL, "DeadlineUtc" TEXT NOT NULL, "FinalizedAtUtc" TEXT NULL,
                 "Score" TEXT NULL, "MaxScore" TEXT NOT NULL, "SnapshotJson" TEXT NOT NULL, "FinalizeIdempotencyKey" TEXT NULL,
                 "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL,
