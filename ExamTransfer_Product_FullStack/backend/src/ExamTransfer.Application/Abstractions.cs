@@ -292,6 +292,11 @@ public interface ICloudAdapter
     Task<CloudLoginResult?> RefreshSessionAsync(CancellationToken cancellationToken);
     Task LogoutAsync(CancellationToken cancellationToken);
     Task<IReadOnlyList<CloudBackupDescriptor>> ListBackupsAsync(CancellationToken cancellationToken);
+    Task DownloadObjectToAsync(
+        string cloudObjectPath,
+        Stream destination,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Cloud object streaming is not supported by this adapter.");
     Task DownloadObjectAsync(string cloudObjectPath, string destinationPath, CancellationToken cancellationToken);
 }
 
@@ -474,7 +479,7 @@ public sealed record SubmissionDownloadContent(
     string MimeType,
     string DownloadName);
 
-public interface IOnlyLanSubmissionDownloadService
+public interface ISubmissionDownloadService
 {
     Task<SubmissionDownloadContent> OpenAsync(
         Guid submissionId,
@@ -484,6 +489,10 @@ public interface IOnlyLanSubmissionDownloadService
         string? traceId,
         CancellationToken cancellationToken);
 }
+
+public interface IOnlyLanSubmissionDownloadService : ISubmissionDownloadService;
+
+public interface IPublicCloudSubmissionDownloadService : ISubmissionDownloadService;
 
 public interface IGradeService
 {

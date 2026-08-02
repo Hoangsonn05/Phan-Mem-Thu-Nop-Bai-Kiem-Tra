@@ -11,7 +11,7 @@ namespace ExamTransfer.LocalServer.Controllers;
 [Authorize(AuthenticationSchemes = ExamTransferAuthSchemes.Account + "," + ExamTransferAuthSchemes.ExamParticipant)]
 public sealed class SubmissionsController(
     ISubmissionService service,
-    IOnlyLanSubmissionDownloadService downloads) : ApiControllerBase
+    ISubmissionDownloadService downloads) : ApiControllerBase
 {
     [HttpPost("submissions/init")][Authorize(Policy = "StudentParticipant")]
     public async Task<ActionResult<ApiResponse<InitSubmissionResponse>>> Init(InitSubmissionRequest request, CancellationToken ct)

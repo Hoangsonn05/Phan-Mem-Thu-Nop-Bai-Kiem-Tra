@@ -780,6 +780,43 @@ public sealed class SupabaseCloudAdapter(
         string destinationPath,
         CancellationToken cancellationToken)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        var temporaryPath = destinationPath + $".download.{Guid.NewGuid():N}";
+        try
+        {
+            await using (var destination = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                128 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                await DownloadObjectToAsync(
+                    cloudObjectPath,
+                    destination,
+                    cancellationToken);
+                await destination.FlushAsync(cancellationToken);
+            }
+
+            File.Move(temporaryPath, destinationPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+                File.Delete(temporaryPath);
+        }
+    }
+
+    public async Task DownloadObjectToAsync(
+        string cloudObjectPath,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        if (!destination.CanWrite)
+            throw new ArgumentException("Destination stream must be writable.", nameof(destination));
+
         EnsureCanSynchronize();
         var target = ParseCloudObjectPath(cloudObjectPath);
         var encodedPath = EncodeObjectPath(target.ObjectPath);
@@ -796,29 +833,8 @@ public sealed class SupabaseCloudAdapter(
             "Supabase Storage download",
             cancellationToken);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
-        var temporaryPath = destinationPath + ".download";
-        try
-        {
-            await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken))
-            await using (var destination = new FileStream(
-                temporaryPath,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.None,
-                128 * 1024,
-                useAsync: true))
-            {
-                await source.CopyToAsync(destination, cancellationToken);
-            }
-
-            File.Move(temporaryPath, destinationPath, overwrite: true);
-        }
-        finally
-        {
-            if (File.Exists(temporaryPath))
-                File.Delete(temporaryPath);
-        }
+        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+        await source.CopyToAsync(destination, cancellationToken);
     }
 
     private async Task<CloudLoginResult> SaveSessionResponseAsync(
