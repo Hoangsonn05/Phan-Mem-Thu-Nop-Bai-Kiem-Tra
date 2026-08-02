@@ -1,7 +1,7 @@
 begin;
 select plan(25);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1), 24,
+select is((select schema_version from public.examtransfer_cloud_meta where id=1), 25,
   'complete exam workflow schema version is 24');
 select has_column('public','exams','quiz_result_policy','exam result policy exists');
 select has_column('public','exams','supervision_mode','exam supervision mode exists');

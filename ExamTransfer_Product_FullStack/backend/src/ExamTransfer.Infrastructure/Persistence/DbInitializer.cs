@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "11";
+    public const string SchemaVersion = "12";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -114,6 +114,7 @@ public static class DbInitializer
         await EnsureColumnAsync(db, "quiz_attempts", "GraderId", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "GradedAtUtc", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "ReturnedAtUtc", "TEXT NULL", cancellationToken);
+        await EnsureQuizGradingTablesAsync(db, cancellationToken);
         await db.Database.ExecuteSqlRawAsync("""
             UPDATE "quiz_attempts"
             SET "AutoScore" = "Score",
@@ -214,6 +215,29 @@ public static class DbInitializer
                 "RowVersion" TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS "IX_essay_grade_mutation_receipts_SubmissionId_CreatedAtUtc"
                 ON "essay_grade_mutation_receipts" ("SubmissionId", "CreatedAtUtc");
+            """;
+        await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureQuizGradingTablesAsync(
+        AppDbContext db,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            CREATE TABLE IF NOT EXISTS "quiz_grade_mutation_receipts" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_grade_mutation_receipts" PRIMARY KEY,
+                "AttemptId" TEXT NOT NULL,
+                "ActorId" TEXT NOT NULL,
+                "Action" TEXT NOT NULL,
+                "RequestHash" TEXT NOT NULL,
+                "ResultJson" TEXT NOT NULL,
+                "EventId" TEXT NULL,
+                "AttemptRowVersion" TEXT NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL,
+                "UpdatedAtUtc" TEXT NOT NULL,
+                "RowVersion" TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS "IX_quiz_grade_mutation_receipts_AttemptId_CreatedAtUtc"
+                ON "quiz_grade_mutation_receipts" ("AttemptId", "CreatedAtUtc");
             """;
         await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
     }

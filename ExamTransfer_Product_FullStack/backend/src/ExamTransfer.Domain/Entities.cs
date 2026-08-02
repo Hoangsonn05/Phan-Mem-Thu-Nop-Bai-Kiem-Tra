@@ -171,6 +171,17 @@ public sealed class QuizAnswer : EntityBase
     public DateTimeOffset ClientUpdatedAtUtc { get; set; }
 }
 
+public sealed class QuizGradeMutationReceipt : EntityBase
+{
+    public Guid AttemptId { get; set; }
+    public Guid ActorId { get; set; }
+    public string Action { get; set; } = string.Empty;
+    public string RequestHash { get; set; } = string.Empty;
+    public string ResultJson { get; set; } = string.Empty;
+    public Guid? EventId { get; set; }
+    public string AttemptRowVersion { get; set; } = string.Empty;
+}
+
 public sealed class ExamFile : EntityBase
 {
     public Guid ExamId { get; set; }

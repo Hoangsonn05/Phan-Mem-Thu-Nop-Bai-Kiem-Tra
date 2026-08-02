@@ -152,7 +152,7 @@ public sealed class FinalCloudSourceCompatibilityTests
                 $"/quiz-sources/{sourceId}/source.bin",
                 firstPath,
                 StringComparison.Ordinal);
-            Assert.Equal(23, CloudSchemaCompatibility.RequiredVersion);
+            Assert.Equal(25, CloudSchemaCompatibility.RequiredVersion);
         }
         finally
         {
@@ -164,7 +164,7 @@ public sealed class FinalCloudSourceCompatibilityTests
     [Fact]
     public void PublicCloudCapability_RequiresSchema23AndCriticalRpcs()
     {
-        Assert.Equal(23, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(25, CloudSchemaCompatibility.RequiredVersion);
         Assert.Contains("save_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("return_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("reopen_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
@@ -173,7 +173,7 @@ public sealed class FinalCloudSourceCompatibilityTests
 
         var script = PublicCloudTestHarness.ReadRepositoryFile(
             "backend/scripts/test-cloud-schema-version.ps1");
-        Assert.Contains("schemaVersion -ne 23", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("schemaVersion -ne 25", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'save_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'return_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'reopen_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
