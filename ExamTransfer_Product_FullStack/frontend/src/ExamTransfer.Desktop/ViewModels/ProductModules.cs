@@ -1471,19 +1471,24 @@ public sealed class LobbyViewModel : ProductPageBase
 public sealed class SubmissionCenterViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
+    private readonly IFolderDialogService folders;
+    private readonly SubmissionBatchDownloader submissionDownloader;
     private readonly IRealtimeService realtime;
     private readonly TeacherRealtimeSessionBinding realtimeBinding;
     private readonly RealtimeRefreshDebouncer realtimeRefresh =
         new(TimeSpan.FromMilliseconds(150), "SubmissionCenter.RealtimeRefresh");
     private SessionSummaryDto? selectedSession;
-    private SubmissionSummaryDto? selectedSubmission;
+    private SubmissionSelectionRow? selectedSubmission;
     private string reason = "File nộp chưa đúng quy định.";
 
     public SubmissionCenterViewModel(
         IBackendClient api,
-        IRealtimeService? realtime = null)
+        IRealtimeService? realtime = null,
+        IFolderDialogService? folders = null)
     {
         this.api = api;
+        this.folders = folders ?? AppServices.Folders;
+        submissionDownloader = new(api);
         this.realtime = realtime ?? new RealtimeService(AppServices.BaseUrl);
         realtimeBinding = new TeacherRealtimeSessionBinding(this.realtime);
         this.realtime.NotificationReceived += OnRealtimeNotification;
@@ -1492,11 +1497,19 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         RejectCommand = new AsyncRelayCommand(RejectAsync, () => !IsBusy && SelectedSubmission is not null);
         ResubmitCommand = new AsyncRelayCommand(ResubmitAsync, () => !IsBusy && SelectedSubmission is not null);
         CopyReceiptCommand = new RelayCommand(CopyReceipt);
-        DownloadCommand = new AsyncRelayCommand(DownloadAsync, () => !IsBusy && SelectedSubmission?.Files.Count > 0);
+        SelectAllCommand = new RelayCommand(
+            SelectAll,
+            () => !IsBusy && Submissions.Count > 0 && !AllVisibleSelected);
+        ClearSelectionCommand = new RelayCommand(
+            ClearSelection,
+            () => !IsBusy && HasSelection);
+        DownloadSelectedCommand = new AsyncRelayCommand(
+            DownloadSelectedAsync,
+            () => !IsBusy && HasSelection);
     }
 
     public ObservableCollection<SessionSummaryDto> Sessions { get; } = new();
-    public ObservableCollection<SubmissionSummaryDto> Submissions { get; } = new();
+    public ObservableCollection<SubmissionSelectionRow> Submissions { get; } = new();
     public SessionSummaryDto? SelectedSession
     {
         get => selectedSession;
@@ -1510,14 +1523,23 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             RaiseCommands();
         }
     }
-    public SubmissionSummaryDto? SelectedSubmission { get => selectedSubmission; set { if (Set(ref selectedSubmission, value)) RaiseCommands(); } }
+    public SubmissionSelectionRow? SelectedSubmission { get => selectedSubmission; set { if (Set(ref selectedSubmission, value)) RaiseCommands(); } }
     public string Reason { get => reason; set => Set(ref reason, value); }
+    public int SelectedCount => Submissions.Count(row => row.IsSelected);
+    public int DownloadableSelectedCount =>
+        Submissions.Count(row => row.IsSelected && row.CanDownload);
+    public bool HasSelection => SelectedCount > 0;
+    public bool HasDownloadableSelection => DownloadableSelectedCount > 0;
+    public bool AllVisibleSelected =>
+        Submissions.Count > 0 && Submissions.All(row => row.IsSelected);
     public ICommand RefreshCommand { get; }
     public ICommand LoadCommand { get; }
     public ICommand RejectCommand { get; }
     public ICommand ResubmitCommand { get; }
     public ICommand CopyReceiptCommand { get; }
-    public ICommand DownloadCommand { get; }
+    public ICommand SelectAllCommand { get; }
+    public ICommand ClearSelectionCommand { get; }
+    public ICommand DownloadSelectedCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
@@ -1539,17 +1561,35 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     private async Task LoadSubmissionsCoreAsync(CancellationToken ct)
     {
         if (SelectedSession is null) return;
+        var selectedIds = Submissions
+            .Where(row => row.IsSelected)
+            .Select(row => row.SubmissionId)
+            .ToHashSet();
+        var focusedId = SelectedSubmission?.SubmissionId;
         var data = ApiGuard.Require(await api.GetSubmissionsAsync(SelectedSession.Id, ct));
-        Submissions.ReplaceWith(data.Items);
-        SelectedSubmission = Submissions.FirstOrDefault();
+        UnsubscribeSubmissionRows();
+        var refreshedRows = data.Items
+            .Select(item => new SubmissionSelectionRow(item)
+            {
+                IsSelected = selectedIds.Contains(item.Id)
+            })
+            .ToList();
+        foreach (var row in refreshedRows)
+            row.PropertyChanged += OnSubmissionRowPropertyChanged;
+        Submissions.ReplaceWith(refreshedRows);
+        SelectedSubmission = focusedId.HasValue
+            ? Submissions.FirstOrDefault(row => row.SubmissionId == focusedId.Value)
+                ?? Submissions.FirstOrDefault()
+            : Submissions.FirstOrDefault();
+        RaiseSelectionState();
     }
 
     private Task RejectAsync() => RunAsync("Đang từ chối bài", "Bài nộp đã bị từ chối và vẫn được lưu lịch sử", async ct =>
     {
-        if (SelectedSubmission is null || !AppServices.Dialogs.Confirm("Từ chối bài nộp", $"Từ chối attempt {SelectedSubmission.AttemptNumber} của {SelectedSubmission.DisplayName}?")) return;
-        var mutationKey = $"reject-submission:{SelectedSubmission.Id:N}";
+        if (SelectedSubmission is null || !AppServices.Dialogs.Confirm("Từ chối bài nộp", $"Từ chối attempt {SelectedSubmission.AttemptNumber} của {SelectedSubmission.StudentName}?")) return;
+        var mutationKey = $"reject-submission:{SelectedSubmission.SubmissionId:N}";
         var mutationId = GetMutationRequestId(mutationKey);
-        _ = ApiGuard.Require(await api.PostAsync<RejectSubmissionRequest, object>($"api/v1/submissions/{SelectedSubmission.Id}/reject", new(Reason, mutationId), ct));
+        _ = ApiGuard.Require(await api.PostAsync<RejectSubmissionRequest, object>($"api/v1/submissions/{SelectedSubmission.SubmissionId}/reject", new(Reason, mutationId), ct));
         CompleteMutationRequest(mutationKey);
         await LoadSubmissionsCoreAsync(ct);
     });
@@ -1563,15 +1603,81 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         CompleteMutationRequest(mutationKey);
     });
 
-    private async Task DownloadAsync()
+    private async Task DownloadSelectedAsync()
     {
-        await RunAsync("Đang tải bài nộp", "File bài nộp đã được lưu", async ct =>
-        {
-            if (SelectedSubmission?.Files.FirstOrDefault() is not { } file) return;
-            var folder = AppServices.Folders.PickFolder();
-            if (folder is null) return;
-            await api.DownloadFileAsync($"api/v1/submissions/{SelectedSubmission.Id}/files/{file.Id}/content", Path.Combine(folder, file.Name), null, ct);
-        });
+        var destinationFolder = folders.PickFolder();
+        if (destinationFolder is null)
+            return;
+
+        var selectionSnapshot = Submissions
+            .Where(row => row.IsSelected)
+            .Select(row => row.Submission)
+            .ToArray();
+        SubmissionDownloadResult? result = null;
+        await RunAsync(
+            "Đang tải các bài đã chọn",
+            () => BuildDownloadSummary(result),
+            async ct => result = await submissionDownloader.DownloadAsync(
+                selectionSnapshot,
+                destinationFolder,
+                ct));
+
+        if (!IsDisposed && result?.FailedFileCount > 0)
+            StatusTone = "warning";
+    }
+
+    private void SelectAll()
+    {
+        foreach (var row in Submissions)
+            row.IsSelected = true;
+    }
+
+    private void ClearSelection()
+    {
+        foreach (var row in Submissions)
+            row.IsSelected = false;
+    }
+
+    private static string BuildDownloadSummary(SubmissionDownloadResult? result)
+    {
+        if (result is null)
+            return "Không có kết quả tải bài.";
+        if (result.HasNoCompletedFiles)
+            return "Các bài đã chọn không có file Completed để tải.";
+
+        var summary = $"Hoàn tất: {result.FullySuccessfulSubmissionCount} bài thành công hoàn toàn, " +
+            $"{result.SuccessfulFileCount} file thành công, {result.FailedFileCount} file lỗi.";
+        if (result.Failures.Count == 0)
+            return summary;
+
+        var failures = string.Join(
+            Environment.NewLine,
+            result.Failures.Select(failure => $"- {failure.DisplayName}: {failure.Error}"));
+        return summary + Environment.NewLine + "File lỗi:" + Environment.NewLine + failures;
+    }
+
+    private void OnSubmissionRowPropertyChanged(
+        object? sender,
+        System.ComponentModel.PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName == nameof(SubmissionSelectionRow.IsSelected))
+            RaiseSelectionState();
+    }
+
+    private void RaiseSelectionState()
+    {
+        Raise(nameof(SelectedCount));
+        Raise(nameof(DownloadableSelectedCount));
+        Raise(nameof(HasSelection));
+        Raise(nameof(HasDownloadableSelection));
+        Raise(nameof(AllVisibleSelected));
+        RaiseCommands();
+    }
+
+    private void UnsubscribeSubmissionRows()
+    {
+        foreach (var row in Submissions)
+            row.PropertyChanged -= OnSubmissionRowPropertyChanged;
     }
 
     private void CopyReceipt()
@@ -1610,6 +1716,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     {
         if (IsDisposed)
             return;
+        UnsubscribeSubmissionRows();
         realtime.NotificationReceived -= OnRealtimeNotification;
         realtimeRefresh.Dispose();
         realtimeBinding
@@ -1620,7 +1727,10 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, DownloadCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, DownloadSelectedCommand }.OfType<AsyncRelayCommand>())
+            command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { SelectAllCommand, ClearSelectionCommand }.OfType<RelayCommand>())
+            command.RaiseCanExecuteChanged();
     }
 }
 
@@ -1710,193 +1820,6 @@ public sealed class ExportCenterViewModel : ProductPageBase
     protected override void RaiseCommands()
     {
         foreach (var command in new[] { RefreshCommand, CreateCommand, PollCommand, CancelCommand, DownloadCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
-    }
-}
-
-public sealed class GradingCenterViewModel : ProductPageBase
-{
-    private readonly IBackendClient api;
-    private GradingWorkItemDto? selectedWorkItem;
-    private GradeDto? grade;
-    private QuizGradeDetailDto? quizGrade;
-    private SubmissionPreviewEntryDto? selectedPreviewEntry;
-    private string previewContent = string.Empty;
-    private string score = "8.5";
-    private string maxScore = "10";
-    private string comment = string.Empty;
-
-    public GradingCenterViewModel(IBackendClient api)
-    {
-        this.api = api;
-        RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
-        OpenCommand = new AsyncRelayCommand(OpenAsync, () => !IsBusy && SelectedWorkItem is not null);
-        OpenPreviewCommand = new AsyncRelayCommand(OpenPreviewAsync, () => !IsBusy && IsFileSubmission && SelectedPreviewEntry?.PreviewSupported == true);
-        SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsBusy && SelectedWorkItem is not null);
-        ReturnCommand = new AsyncRelayCommand(ReturnAsync, () => !IsBusy && SelectedWorkItem is not null);
-        ReopenCommand = new AsyncRelayCommand(ReopenAsync, () => !IsBusy && SelectedWorkItem is not null);
-    }
-
-    public ObservableCollection<GradingWorkItemDto> Queue { get; } = new();
-    public ObservableCollection<RubricScoreDto> Rubric { get; } = new();
-    public ObservableCollection<QuizQuestionReviewDto> QuizQuestions { get; } = new();
-    public ObservableCollection<SubmissionPreviewEntryDto> PreviewEntries { get; } = new();
-    public GradingWorkItemDto? SelectedWorkItem
-    {
-        get => selectedWorkItem;
-        set
-        {
-            if (!Set(ref selectedWorkItem, value))
-                return;
-            Grade = null;
-            QuizGrade = null;
-            Rubric.Clear();
-            QuizQuestions.Clear();
-            PreviewEntries.Clear();
-            SelectedPreviewEntry = null;
-            PreviewContent = string.Empty;
-            Raise(nameof(IsQuizAttempt));
-            Raise(nameof(IsFileSubmission));
-            RaiseCommands();
-        }
-    }
-    public GradeDto? Grade { get => grade; private set => Set(ref grade, value); }
-    public QuizGradeDetailDto? QuizGrade { get => quizGrade; private set => Set(ref quizGrade, value); }
-    public SubmissionPreviewEntryDto? SelectedPreviewEntry
-    {
-        get => selectedPreviewEntry;
-        set
-        {
-            if (Set(ref selectedPreviewEntry, value))
-                RaiseCommands();
-        }
-    }
-    public string PreviewContent { get => previewContent; private set => Set(ref previewContent, value); }
-    public bool IsQuizAttempt => SelectedWorkItem?.Type == GradingWorkItemType.QuizAttempt;
-    public bool IsFileSubmission => SelectedWorkItem?.Type == GradingWorkItemType.FileSubmission;
-    public string Score { get => score; set => Set(ref score, value); }
-    public string MaxScore { get => maxScore; set => Set(ref maxScore, value); }
-    public string Comment { get => comment; set => Set(ref comment, value); }
-    public ICommand RefreshCommand { get; }
-    public ICommand OpenCommand { get; }
-    public ICommand OpenPreviewCommand { get; }
-    public ICommand SaveCommand { get; }
-    public ICommand ReturnCommand { get; }
-    public ICommand ReopenCommand { get; }
-
-    protected override async Task LoadAsync(CancellationToken ct)
-    {
-        await RunAsync("Đang tải hàng đợi chấm", "Hàng đợi chấm bài đã được cập nhật", async token =>
-        {
-            var selectedId = SelectedWorkItem?.Id;
-            var selectedType = SelectedWorkItem?.Type;
-            var data = ApiGuard.Require(await api.GetAsync<PagedResult<GradingWorkItemDto>>("api/v1/grading/work-items", token));
-            Queue.ReplaceWith(data.Items);
-            SelectedWorkItem = selectedId.HasValue
-                ? Queue.FirstOrDefault(x => x.Id == selectedId.Value && x.Type == selectedType)
-                : null;
-        });
-    }
-
-    private Task OpenAsync() => RunAsync("Đang mở bài chấm", "Đã tải điểm và rubric", OpenCoreAsync);
-    private async Task OpenCoreAsync(CancellationToken ct)
-    {
-        if (SelectedWorkItem is null) return;
-        if (IsQuizAttempt)
-        {
-            QuizGrade = ApiGuard.Require(await api.GetAsync<QuizGradeDetailDto>(
-                $"api/v1/grading/quiz-attempts/{SelectedWorkItem.Id}",
-                ct));
-            Score = QuizGrade.Score?.ToString() ?? string.Empty;
-            MaxScore = "10";
-            Comment = QuizGrade.GeneralComment ?? string.Empty;
-            QuizQuestions.ReplaceWith(QuizGrade.Questions);
-            return;
-        }
-        Grade = ApiGuard.Require(await api.GetAsync<GradeDto>($"api/v1/grading/submissions/{SelectedWorkItem.Id}", ct));
-        Score = Grade.Score?.ToString() ?? string.Empty;
-        MaxScore = "10";
-        Comment = Grade.GeneralComment ?? string.Empty;
-        Rubric.ReplaceWith(Grade.RubricScores);
-        if (SelectedWorkItem.PrimaryFileId.HasValue)
-        {
-            var manifest = ApiGuard.Require(await api.GetAsync<SubmissionPreviewManifestDto>(
-                $"api/v1/grading/submissions/{SelectedWorkItem.Id}/files/{SelectedWorkItem.PrimaryFileId}/preview-manifest",
-                ct));
-            PreviewEntries.ReplaceWith(manifest.Entries);
-        }
-    }
-
-    private Task OpenPreviewAsync() => RunAsync("Đang đọc preview", "Preview chỉ đọc đã sẵn sàng", async ct =>
-    {
-        if (SelectedWorkItem?.PrimaryFileId is not { } fileId || SelectedPreviewEntry is null)
-            return;
-        var entry = Uri.EscapeDataString(SelectedPreviewEntry.Key);
-        var preview = ApiGuard.Require(await api.GetAsync<SubmissionPreviewDto>(
-            $"api/v1/grading/submissions/{SelectedWorkItem.Id}/files/{fileId}/preview?entry={entry}",
-            ct));
-        PreviewContent = preview.Content;
-    });
-
-    private Task SaveAsync() => RunAsync("Đang lưu điểm", "Điểm và nhận xét đã được lưu", async ct =>
-    {
-        if (SelectedWorkItem is null) return;
-        decimal? parsedScore = string.IsNullOrWhiteSpace(Score) ? null : decimal.Parse(Score);
-        if (parsedScore is < 0 or > 10)
-            throw new InvalidOperationException("Điểm phải nằm trong khoảng 0 đến 10.");
-        if (IsQuizAttempt)
-        {
-            QuizGrade = ApiGuard.Require(await api.PutAsync<SaveQuizGradeRequest, QuizGradeDetailDto>(
-                $"api/v1/grading/quiz-attempts/{SelectedWorkItem.Id}",
-                new(
-                    parsedScore,
-                    Comment,
-                    QuizGrade?.RowVersion ?? string.Empty,
-                    Guid.NewGuid()),
-                ct));
-            QuizQuestions.ReplaceWith(QuizGrade.Questions);
-            return;
-        }
-        var request = new SaveGradeRequest(parsedScore, 10m, Rubric.ToArray(), Comment, Grade?.RowVersion ?? "new");
-        Grade = ApiGuard.Require(await api.PutAsync<SaveGradeRequest, GradeDto>($"api/v1/grading/submissions/{SelectedWorkItem.Id}", request, ct));
-    });
-
-    private Task ReturnAsync() => RunAsync("Đang công bố kết quả", "Kết quả đã được trả cho học sinh", async ct =>
-    {
-        if (SelectedWorkItem is null || !AppServices.Dialogs.Confirm("Trả kết quả", "Công bố điểm và nhận xét cho học sinh?")) return;
-        if (IsQuizAttempt)
-        {
-            QuizGrade = ApiGuard.Require(await api.PostAsync<ReturnQuizGradeRequest, QuizGradeDetailDto>(
-                $"api/v1/grading/quiz-attempts/{SelectedWorkItem.Id}/return",
-                new(
-                    "Kết quả đã được công bố.",
-                    QuizGrade?.RowVersion ?? string.Empty,
-                    Guid.NewGuid()),
-                ct));
-            return;
-        }
-        Grade = ApiGuard.Require(await api.PostAsync<ReturnGradeRequest, GradeDto>($"api/v1/grading/submissions/{SelectedWorkItem.Id}/return", new("Kết quả đã được công bố."), ct));
-    });
-
-    private Task ReopenAsync() => RunAsync("Đang mở lại kết quả", "Kết quả đã được mở để chỉnh sửa", async ct =>
-    {
-        if (SelectedWorkItem is null) return;
-        if (IsQuizAttempt)
-        {
-            QuizGrade = ApiGuard.Require(await api.PostAsync<ReopenQuizGradeRequest, QuizGradeDetailDto>(
-                $"api/v1/grading/quiz-attempts/{SelectedWorkItem.Id}/reopen",
-                new(
-                    "Điều chỉnh theo rà soát của giáo viên.",
-                    QuizGrade?.RowVersion ?? string.Empty,
-                    Guid.NewGuid()),
-                ct));
-            return;
-        }
-        Grade = ApiGuard.Require(await api.PostAsync<ReopenGradeRequest, GradeDto>($"api/v1/grading/submissions/{SelectedWorkItem.Id}/reopen", new("Điều chỉnh theo rà soát của giáo viên."), ct));
-    });
-
-    protected override void RaiseCommands()
-    {
-        foreach (var command in new[] { RefreshCommand, OpenCommand, OpenPreviewCommand, SaveCommand, ReturnCommand, ReopenCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
     }
 }
 

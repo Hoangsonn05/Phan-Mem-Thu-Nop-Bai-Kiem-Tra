@@ -45,6 +45,7 @@
         <DataTemplate DataType="{x:Type vm:StudentSubmissionViewModel}"><views:StudentSubmissionView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentReceiptViewModel}"><views:StudentReceiptView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentHistoryViewModel}"><views:StudentHistoryView /></DataTemplate>
+        <DataTemplate DataType="{x:Type vm:StudentResultsViewModel}"><views:StudentResultsView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:StudentSettingsViewModel}"><views:StudentSettingsView /></DataTemplate>
         <DataTemplate DataType="{x:Type vm:ErrorPageViewModel}"><views:ErrorPageView /></DataTemplate>
     </Window.Resources>
@@ -341,5 +342,13 @@
             <!-- Page content -->
             <ContentControl Grid.Row="1" Content="{Binding CurrentPage}" />
         </Grid>
+
+        <views:NotificationCenterView Grid.ColumnSpan="2"
+                                      Panel.ZIndex="1000"
+                                      HorizontalAlignment="Right"
+                                      VerticalAlignment="Top"
+                                      Focusable="False"
+                                      IsTabStop="False"
+                                      DataContext="{Binding ViewModel, Source={x:Static vm:AppServices.Notifications}}" />
     </Grid>
 </Window>

@@ -67,9 +67,21 @@ public sealed record CreateBackupRequest(bool IncludeFiles, bool Encrypt, string
 public sealed record RestoreBackupRequest(string ConfirmationText);
 public sealed record RestoreScheduledDto(Guid BackupId, bool RequiresRestart, string Message);
 
-public sealed record SaveGradeRequest(decimal? Score, decimal MaxScore, IReadOnlyList<RubricScoreDto> RubricScores, string? GeneralComment, string RowVersion);
-public sealed record ReturnGradeRequest(string? Message);
-public sealed record ReopenGradeRequest(string Reason);
+public sealed record SaveGradeRequest(
+    decimal? Score,
+    decimal MaxScore,
+    IReadOnlyList<RubricScoreDto> RubricScores,
+    string? GeneralComment,
+    string RowVersion,
+    Guid MutationRequestId = default);
+public sealed record ReturnGradeRequest(
+    string? Message,
+    string RowVersion = "",
+    Guid MutationRequestId = default);
+public sealed record ReopenGradeRequest(
+    string Reason,
+    string RowVersion = "",
+    Guid MutationRequestId = default);
 
 public sealed record SaveControlPolicyRequest(bool Fullscreen, string FocusRule, string ClipboardRule, IReadOnlyList<string> AllowedProcesses, IReadOnlyList<string> BlockedProcesses, string NetworkRule, bool EmergencyExit, int TtlMinutes, string? RowVersion);
 public sealed record ApplyControlPolicyRequest(IReadOnlyList<Guid>? ParticipantIds);

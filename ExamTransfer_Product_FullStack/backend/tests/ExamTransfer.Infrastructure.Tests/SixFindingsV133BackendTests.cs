@@ -180,6 +180,73 @@ public sealed class SixFindingsV133BackendTests
     }
 
     [Fact]
+    public async Task PublicRoomProjectionConflict_RemainsFailedAndIsNeverMarkedSynced()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var exam = await SeedPublishedExamAsync(database.Context);
+        var signal = new CloudSyncSignal();
+        var cloud = new RoomConflictPushCloud();
+        var options = Options.Create(new ExamTransferOptions
+        {
+            Cloud = new CloudOptions
+            {
+                Enabled = true,
+                WorkerIntervalSeconds = 30,
+                WorkerBatchSize = 10
+            }
+        });
+        var service = CreateSessionService(
+            database.Context,
+            cloud,
+            signal,
+            options);
+        var detail = await service.CreateAndOpenAsync(
+            Request(exam.Id),
+            "teacher-device",
+            default);
+
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(builder =>
+            builder.UseSqlite($"Data Source={database.Path}"));
+        services.AddSingleton<ICloudAdapter>(cloud);
+        await using var provider = services.BuildServiceProvider();
+        var worker = new CloudSyncWorker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            options,
+            signal,
+            NullLogger<CloudSyncWorker>.Instance);
+        await worker.StartAsync(default);
+        try
+        {
+            await WaitUntilAsync(async () =>
+            {
+                await using var verify = database.CreateContext();
+                return await verify.SyncQueueSet.AnyAsync(
+                    item => item.EntityType == "exam_sessions"
+                        && item.EntityId == detail.Summary.Id.ToString()
+                        && item.Status == SyncStatus.Failed);
+            });
+        }
+        finally
+        {
+            await worker.StopAsync(default);
+            worker.Dispose();
+        }
+
+        await using var assertionContext = database.CreateContext();
+        var projection = Assert.Single(await assertionContext.SyncQueueSet
+            .Where(item => item.EntityType == "exam_sessions"
+                && item.EntityId == detail.Summary.Id.ToString())
+            .ToListAsync());
+        Assert.Equal(SyncStatus.Failed, projection.Status);
+        Assert.NotEqual(SyncStatus.Synced, projection.Status);
+        Assert.Equal(1, projection.RetryCount);
+        Assert.Contains("Mã phòng PublicCloud", projection.LastError, StringComparison.Ordinal);
+        Assert.Null(projection.CompletedAtUtc);
+        Assert.NotNull(projection.NextRetryAtUtc);
+    }
+
+    [Fact]
     public async Task ProjectionReadiness_IsReadOnlyAndUsesNewestExamSessionQueueRow()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
@@ -614,7 +681,7 @@ public sealed class SixFindingsV133BackendTests
             Task.FromResult(false);
     }
 
-    private sealed class SuccessfulPushCloud : ICloudAdapter
+    private class SuccessfulPushCloud : ICloudAdapter
     {
         public int HealthChecks { get; private set; }
         public bool HealthResult { get; init; } = true;
@@ -630,7 +697,7 @@ public sealed class SixFindingsV133BackendTests
         }
         public Task<CloudPreflightResult> PreflightAsync(CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-        public Task<CloudPushResult> PushAsync(
+        public virtual Task<CloudPushResult> PushAsync(
             SyncQueueItem item,
             Func<CancellationToken, Task>? checkpoint,
             CancellationToken cancellationToken)
@@ -653,6 +720,25 @@ public sealed class SixFindingsV133BackendTests
             string destinationPath,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class RoomConflictPushCloud : SuccessfulPushCloud
+    {
+        public override Task<CloudPushResult> PushAsync(
+            SyncQueueItem item,
+            Func<CancellationToken, Task>? checkpoint,
+            CancellationToken cancellationToken)
+        {
+            if (string.Equals(item.EntityType, "exam_sessions", StringComparison.Ordinal))
+            {
+                throw new ApiException(
+                    ErrorCodes.RoomCodeConflict,
+                    "Mã phòng PublicCloud đang hoạt động đã được sử dụng trong tổ chức.",
+                    409);
+            }
+
+            return base.PushAsync(item, checkpoint, cancellationToken);
+        }
     }
 
     private sealed class TestStoragePaths(string root) : IStoragePaths
