@@ -18,7 +18,8 @@ public sealed record DashboardSummaryDto(
     int PendingGradingCount,
     long StorageBytes,
     IReadOnlyList<SessionSummaryDto> RecentSessions,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings,
+    SessionSummaryDto? ActiveSession = null);
 
 public sealed record ClassSummaryDto(Guid Id, string Name, string Code, string SchoolYear, ClassStatus Status, int StudentCount, string RowVersion, ClassAccessMode AccessMode = ClassAccessMode.Private, bool EnrollmentOpen = false);
 public sealed record ClassDetailDto(Guid Id, string Name, string Code, string SchoolYear, string? Description, ClassStatus Status, IReadOnlyList<StudentDto> Students, string RowVersion, ClassAccessMode AccessMode = ClassAccessMode.Private, bool EnrollmentOpen = false, bool RequireEnrollmentApproval = true, IReadOnlyList<ClassEnrollmentRequestDto>? EnrollmentRequests = null);
