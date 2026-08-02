@@ -495,6 +495,10 @@ public sealed class OnlyLanWorkflowCharacterizationTests
         Assert.Equal(sequenceBefore + 1, persistedSession.Sequence);
         Assert.Equal(outboxBefore + 1, fixture.OutboxCalls.Count);
         Assert.Equal(realtimeBefore, fixture.RealtimeEvents.Count);
+        var rejectedNotification = await fixture.Db.SyncQueueSet.SingleAsync(
+            x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType);
+        Assert.Contains("\"eventType\":\"ParticipantAdmissionRejected\"", rejectedNotification.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains(participant.Id.ToString(), rejectedNotification.PayloadJson, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             await fixture.Db.AuditLogsSet.ToListAsync(),
             x => x.Action == "ParticipantRejected"
@@ -540,17 +544,70 @@ public sealed class OnlyLanWorkflowCharacterizationTests
         Assert.All(statuses, x => Assert.Equal(ParticipantStatus.Approved, x));
         Assert.Equal(sequenceBefore + 2, persistedSession.Sequence);
         Assert.Equal(outboxBefore + 2, fixture.OutboxCalls.Count);
-        Assert.Equal(realtimeBefore + 2, fixture.RealtimeEvents.Count);
+        Assert.Equal(realtimeBefore, fixture.RealtimeEvents.Count);
         Assert.Equal(
             2,
-            fixture.RealtimeEvents
-                .Skip(realtimeBefore)
-                .Count(x => x == RealtimeEvents.ParticipantApproved));
+            await fixture.Db.SyncQueueSet.CountAsync(
+                x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType
+                    && x.Status == SyncStatus.LocalOnly));
+        Assert.All(
+            await fixture.Db.SyncQueueSet
+                .Where(x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType)
+                .ToListAsync(),
+            x => Assert.Contains("\"eventType\":\"ParticipantApproved\"", x.PayloadJson, StringComparison.Ordinal));
         Assert.Contains(
             await fixture.Db.AuditLogsSet.ToListAsync(),
             x => x.Action == "ParticipantsBulkApproved"
                 && x.SessionId == session.Id);
         Assert.Equal(0, fixture.Cloud.CallCount);
+    }
+
+    [Fact]
+    public async Task TeacherMessage_LanOnly_UsesVerifiedParticipantOrStudentSessionRoute()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var seeded = await fixture.SeedPublishedQuizAsync();
+        var session = SessionEntity(
+            seeded.Exam,
+            "LANMSG",
+            SessionAccessMode.LanOnly,
+            SessionStatus.Waiting,
+            true);
+        var participant = ParticipantEntity(session, "MSG-1");
+        var otherSession = SessionEntity(
+            seeded.Exam,
+            "LANMSG2",
+            SessionAccessMode.LanOnly,
+            SessionStatus.Waiting,
+            true);
+        var outsider = ParticipantEntity(otherSession, "MSG-OUT");
+        fixture.Db.AddRange(session, participant, otherSession, outsider);
+        await fixture.Db.SaveChangesAsync();
+
+        await fixture.Sessions.SendMessageAsync(
+            session.Id,
+            new SendMessageRequest(participant.Id, MessageType.Information, "Private"),
+            default);
+        await fixture.Sessions.SendMessageAsync(
+            session.Id,
+            new SendMessageRequest(null, MessageType.Information, "Broadcast"),
+            default);
+        await Assert.ThrowsAsync<ApiException>(() => fixture.Sessions.SendMessageAsync(
+            session.Id,
+            new SendMessageRequest(outsider.Id, MessageType.Warning, "Cross-session"),
+            default));
+
+        var rows = (await fixture.Db.SyncQueueSet
+                .Where(x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType)
+                .ToListAsync())
+            .OrderBy(x => x.CreatedAtUtc)
+            .ToList();
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("participant", rows[0].Operation);
+        Assert.Contains(participant.Id.ToString(), rows[0].PayloadJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("session", rows[1].Operation);
+        Assert.Contains("\"participantId\":null", rows[1].PayloadJson, StringComparison.Ordinal);
+        Assert.DoesNotContain(outsider.Id.ToString(), string.Join("", rows.Select(x => x.PayloadJson)), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

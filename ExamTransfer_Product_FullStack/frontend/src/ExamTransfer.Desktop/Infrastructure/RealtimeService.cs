@@ -9,6 +9,7 @@ namespace ExamTransfer.Desktop.Infrastructure;
 public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDisposable
 {
     private readonly RealtimeSessionSubscriptions subscriptions = new();
+    private readonly StudentNotificationRealtimeAdapter studentNotifications = new();
     private HubConnection? hub;
 
     public bool IsConnected => hub?.State == HubConnectionState.Connected;
@@ -42,6 +43,32 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
             })
             .Build();
         hub = connection;
+
+        var studentEventNames = Enum.GetValues<StudentNotificationEventType>()
+            .Select(value => value.ToString())
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var eventName in studentEventNames)
+        {
+            connection.On<JsonElement>(
+                eventName,
+                envelope =>
+                {
+                    if (!studentNotifications.TryAccept(envelope, out var notification)
+                        || notification is null)
+                        return;
+                    NotificationReceived?.Invoke(
+                        this,
+                        new StudentRealtimeNotification(
+                            notification.SessionId,
+                            notification.EventType.ToString(),
+                            notification.Revision,
+                            null,
+                            notification.ParticipantId,
+                            null,
+                            notification));
+                    EventReceived?.Invoke(this, notification.EventType.ToString());
+                });
+        }
 
         connection.On<RealtimeEnvelope<TimeExtendedEvent>>(
             RealtimeEvents.TimeExtended,
@@ -82,7 +109,8 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
                      .Select(field => field.GetValue(null)?.ToString())
                      .Where(value => !string.IsNullOrWhiteSpace(value)
                           && value != RealtimeEvents.TimeExtended
-                          && value != RealtimeEvents.PublicCloudProjectionUpdated))
+                          && value != RealtimeEvents.PublicCloudProjectionUpdated
+                          && !studentEventNames.Contains(value!)))
         {
             connection.On<JsonElement>(eventName!, envelope =>
             {

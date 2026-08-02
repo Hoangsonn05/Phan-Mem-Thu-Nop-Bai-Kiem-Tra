@@ -766,8 +766,7 @@ public sealed class PublicCloudTeacherMutationRoutingTests
                 new LanSubmissionMutationHandler(
                     db,
                     audit,
-                    outbox,
-                    realtime),
+                    outbox),
                 new PublicCloudSubmissionMutationHandler(cloud)
             });
         return new SubmissionService(

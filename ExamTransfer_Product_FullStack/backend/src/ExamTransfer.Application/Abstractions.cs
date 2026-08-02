@@ -167,6 +167,13 @@ public interface IRealtimePublisher
     Task PublishParticipantAsync<T>(Guid sessionId, Guid participantId, string eventName, long sequence, T payload, CancellationToken cancellationToken = default);
 }
 
+public interface IOnlyLanStudentNotificationTransport
+{
+    Task PublishSessionAsync(StudentNotificationEventDto notification, CancellationToken cancellationToken = default);
+    Task PublishParticipantAsync(StudentNotificationEventDto notification, CancellationToken cancellationToken = default);
+    Task PublishConnectionAsync(string connectionId, StudentNotificationEventDto notification, CancellationToken cancellationToken = default);
+}
+
 public interface ILanAccessPolicy
 {
     bool IsAllowed(string? remoteAddress);

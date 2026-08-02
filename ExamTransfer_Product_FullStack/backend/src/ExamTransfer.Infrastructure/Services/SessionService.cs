@@ -306,11 +306,31 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
     {
         if (string.IsNullOrWhiteSpace(request.Content) || request.Content.Length > 2000) throw new ApiException(ErrorCodes.ValidationFailed, "Nội dung thông báo không hợp lệ.");
         var session = await db.ExamSessionsSet.FirstOrDefaultAsync(x => x.Id == sessionId, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
+        if (request.ReceiverParticipantId.HasValue)
+        {
+            var validReceiver = await db.SessionParticipantsSet.AnyAsync(
+                x => x.Id == request.ReceiverParticipantId.Value
+                    && x.SessionId == sessionId
+                    && x.Status != ParticipantStatus.Rejected,
+                cancellationToken);
+            if (!validReceiver)
+                throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy người nhận hợp lệ trong phòng thi.", 404);
+        }
         var message = new Message { SessionId = sessionId, ReceiverId = request.ReceiverParticipantId, Type = request.Type, Content = request.Content.Trim() };
-        db.MessagesSet.Add(message); session.Sequence++; await db.SaveChangesAsync(cancellationToken);
+        db.MessagesSet.Add(message);
+        session.Sequence++;
+        if (session.AccessMode == SessionAccessMode.LanOnly)
+        {
+            OnlyLanStudentNotificationOutbox.Enqueue(
+                db,
+                StudentNotificationEventType.TeacherMessageReceived,
+                sessionId,
+                session.Sequence,
+                participantId: request.ReceiverParticipantId,
+                message: message.Content);
+        }
+        await db.SaveChangesAsync(cancellationToken);
         var dto = new MessageDto(message.Id, message.SessionId, message.SenderId, message.ReceiverId, message.Type, message.Content, message.CreatedAtUtc);
-        if (request.ReceiverParticipantId.HasValue) await realtime.PublishParticipantAsync(sessionId, request.ReceiverParticipantId.Value, RealtimeEvents.TeacherMessageReceived, session.Sequence, new TeacherMessageEvent(message.Id, message.Content, request.ReceiverParticipantId), cancellationToken);
-        else await realtime.PublishSessionAsync(sessionId, RealtimeEvents.TeacherMessageReceived, session.Sequence, new TeacherMessageEvent(message.Id, message.Content, null), cancellationToken);
         return dto;
     }
 

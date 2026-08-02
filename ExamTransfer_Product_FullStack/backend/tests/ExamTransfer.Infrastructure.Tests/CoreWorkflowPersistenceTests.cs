@@ -1172,11 +1172,15 @@ public sealed class CoreWorkflowPersistenceTests
         var outboxCall = Assert.Single(outbox.Calls);
         Assert.Equal("submissions", outboxCall.EntityType);
         Assert.Equal(seeded.Submission.Id.ToString(), outboxCall.EntityId);
-        var published = Assert.Single(realtime.ParticipantEvents);
-        Assert.Equal(RealtimeEvents.SubmissionRejected, published.EventName);
-        var payload = Assert.IsType<SubmissionRejectedEvent>(published.Payload);
-        Assert.Equal(seeded.Submission.Id, payload.SubmissionId);
-        Assert.Equal("Unreadable archive", payload.Reason);
+        Assert.Empty(realtime.ParticipantEvents);
+        var notificationOutbox = await database.Context.SyncQueueSet.SingleAsync(
+            x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType);
+        Assert.Equal(SyncStatus.LocalOnly, notificationOutbox.Status);
+        using var notificationJson = JsonDocument.Parse(notificationOutbox.PayloadJson);
+        Assert.Equal("SubmissionRejected", notificationJson.RootElement.GetProperty("eventType").GetString());
+        Assert.Equal(seeded.Submission.Id, notificationJson.RootElement.GetProperty("submissionId").GetGuid());
+        Assert.Equal(seeded.Participant.Id, notificationJson.RootElement.GetProperty("participantId").GetGuid());
+        Assert.Equal("Unreadable archive", notificationJson.RootElement.GetProperty("reason").GetString());
         Assert.Contains(
             await database.Context.AuditLogsSet.ToListAsync(),
             x => x.Action == "SubmissionRejected"
@@ -1221,6 +1225,10 @@ public sealed class CoreWorkflowPersistenceTests
         Assert.Equal("session_participants", outboxCall.EntityType);
         Assert.Equal(seeded.Participant.Id.ToString(), outboxCall.EntityId);
         Assert.Empty(realtime.ParticipantEvents);
+        var resubmitNotification = await database.Context.SyncQueueSet.SingleAsync(
+            x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType);
+        Assert.Contains("\"eventType\":\"ResubmitAllowed\"", resubmitNotification.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains(seeded.Submission.Id.ToString(), resubmitNotification.PayloadJson, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             await database.Context.AuditLogsSet.ToListAsync(),
             x => x.Action == "ResubmitAllowed"
@@ -1411,8 +1419,7 @@ public sealed class CoreWorkflowPersistenceTests
                 new LanSubmissionMutationHandler(
                     db,
                     audit,
-                    outbox,
-                    realtime),
+                    outbox),
                 new PublicCloudSubmissionMutationHandler(cloud)
             });
         return new SubmissionService(

@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class GradeService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime) : IGradeService
+public sealed class GradeService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IAuditService audit, IOutboxService outbox) : IGradeService
 {
     public async Task<PagedResult<SubmissionSummaryDto>> GetQueueAsync(GradingStatus? status, int page, int pageSize, CancellationToken cancellationToken)
     {
@@ -73,25 +73,52 @@ public sealed class GradeService(AppDbContext db, IStoragePaths paths, IChunkSto
 
     public async Task<GradeDto> ReturnAsync(Guid submissionId, ReturnGradeRequest request, CancellationToken cancellationToken)
     {
-        var grade = await db.GradesSet.Include(x => x.RubricScores).Include(x => x.Attachments).Include(x => x.Submission).FirstOrDefaultAsync(x => x.SubmissionId == submissionId, cancellationToken)
+        var grade = await db.GradesSet.Include(x => x.RubricScores).Include(x => x.Attachments).Include(x => x.Submission).ThenInclude(x => x.Session).FirstOrDefaultAsync(x => x.SubmissionId == submissionId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Chưa có kết quả chấm.", 404);
         if (grade.Score is null || grade.Score < 0 || grade.Score > grade.MaxScore) throw new ApiException(ErrorCodes.ValidationFailed, "Điểm không hợp lệ để trả kết quả.");
         grade.Status = GradingStatus.Returned; grade.ReturnedAtUtc = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
+        var session = grade.Submission.Session;
+        session.Sequence++;
+        if (session.AccessMode == SessionAccessMode.LanOnly)
+        {
+            OnlyLanStudentNotificationOutbox.Enqueue(
+                db,
+                StudentNotificationEventType.GradeReturned,
+                session.Id,
+                session.Sequence,
+                participantId: grade.Submission.ParticipantId,
+                submissionId: submissionId,
+                message: request.Message,
+                score: grade.Score,
+                maxScore: grade.MaxScore);
+        }
         await audit.WriteAsync("GradeReturned", nameof(Grade), grade.Id.ToString(), grade.Submission.SessionId, null, new { grade.Score, grade.MaxScore, request.Message }, cancellationToken);
         await outbox.EnqueueAsync("grades", grade.Id.ToString(), "upsert", ToCloud(grade), cancellationToken: cancellationToken);
-        var session = await db.ExamSessionsSet.FirstAsync(x => x.Id == grade.Submission.SessionId, cancellationToken); session.Sequence++; await db.SaveChangesAsync(cancellationToken);
-        await realtime.PublishParticipantAsync(grade.Submission.SessionId, grade.Submission.ParticipantId, RealtimeEvents.GradeReturned, session.Sequence, new GradeReturnedEvent(submissionId, grade.Score, grade.MaxScore), cancellationToken);
         return ToDto(grade);
     }
 
     public async Task<GradeDto> ReopenAsync(Guid submissionId, ReopenGradeRequest request, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Phải có lý do mở lại điểm.");
-        var grade = await db.GradesSet.Include(x => x.RubricScores).Include(x => x.Attachments).FirstOrDefaultAsync(x => x.SubmissionId == submissionId, cancellationToken)
+        var grade = await db.GradesSet.Include(x => x.RubricScores).Include(x => x.Attachments).Include(x => x.Submission).ThenInclude(x => x.Session).FirstOrDefaultAsync(x => x.SubmissionId == submissionId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy kết quả chấm.", 404);
         if (grade.Status != GradingStatus.Returned) throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ mở lại kết quả đã trả.", 409);
-        var before = ToDto(grade); grade.Status = GradingStatus.InProgress; grade.ReturnedAtUtc = null; await db.SaveChangesAsync(cancellationToken);
+        var before = ToDto(grade);
+        grade.Status = GradingStatus.InProgress;
+        grade.ReturnedAtUtc = null;
+        var session = grade.Submission.Session;
+        session.Sequence++;
+        if (session.AccessMode == SessionAccessMode.LanOnly)
+        {
+            OnlyLanStudentNotificationOutbox.Enqueue(
+                db,
+                StudentNotificationEventType.GradeReopened,
+                session.Id,
+                session.Sequence,
+                participantId: grade.Submission.ParticipantId,
+                submissionId: submissionId,
+                reason: request.Reason);
+        }
         await audit.WriteAsync("GradeReopened", nameof(Grade), grade.Id.ToString(), null, before, new { grade = ToDto(grade), request.Reason }, cancellationToken);
         await outbox.EnqueueAsync(
             "grades",

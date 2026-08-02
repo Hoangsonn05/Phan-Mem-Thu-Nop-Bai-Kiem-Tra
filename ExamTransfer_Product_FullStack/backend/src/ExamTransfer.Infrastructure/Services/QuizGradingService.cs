@@ -12,7 +12,6 @@ public sealed class QuizGradingService(
     AppDbContext db,
     IAuditService audit,
     IOutboxService outbox,
-    IRealtimePublisher realtime,
     ICloudAdapter? cloud = null) : IQuizGradingService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -181,6 +180,17 @@ public sealed class QuizGradingService(
         attempt.GradedAtUtc ??= returnedAt;
         var session = attempt.Session;
         session.Sequence++;
+        OnlyLanStudentNotificationOutbox.Enqueue(
+            db,
+            StudentNotificationEventType.QuizGradeReturned,
+            attempt.SessionId,
+            session.Sequence,
+            participantId: attempt.ParticipantId,
+            attemptId: attempt.Id,
+            message: request.Message,
+            score: attempt.Score,
+            maxScore: attempt.MaxScore,
+            occurredAtUtc: returnedAt);
         await db.SaveChangesAsync(cancellationToken);
         await audit.WriteAsync(
             "QuizGradeReturned",
@@ -191,13 +201,6 @@ public sealed class QuizGradingService(
             new { attempt.Score, attempt.MaxScore, request.Message, returnedAt },
             cancellationToken);
         await EnqueueAsync(attempt, cancellationToken);
-        await realtime.PublishParticipantAsync(
-            attempt.SessionId,
-            attempt.ParticipantId,
-            RealtimeEvents.QuizGradeReturned,
-            session.Sequence,
-            new QuizGradeReturnedEvent(attempt.Id, attempt.SessionId, attempt.Score.Value, 10.00m, returnedAt),
-            cancellationToken);
         return await ToTeacherDtoAsync(attempt, revealCorrect: true, cancellationToken);
     }
 
@@ -230,6 +233,15 @@ public sealed class QuizGradingService(
         attempt.GradingStatus = GradingStatus.InProgress;
         attempt.ReturnedAtUtc = null;
         attempt.GraderId = actorId;
+        attempt.Session.Sequence++;
+        OnlyLanStudentNotificationOutbox.Enqueue(
+            db,
+            StudentNotificationEventType.QuizGradeReopened,
+            attempt.SessionId,
+            attempt.Session.Sequence,
+            participantId: attempt.ParticipantId,
+            attemptId: attempt.Id,
+            reason: request.Reason);
         await db.SaveChangesAsync(cancellationToken);
         var result = await ToTeacherDtoAsync(attempt, revealCorrect: true, cancellationToken);
         await audit.WriteAsync(

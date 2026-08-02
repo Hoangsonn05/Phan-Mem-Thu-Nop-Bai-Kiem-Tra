@@ -96,7 +96,10 @@ public sealed class UnifiedGradingTests
             "org-a",
             default);
         Assert.Equal(GradingStatus.Returned, returned.Status);
-        Assert.Single(fixture.Realtime.Events);
+        Assert.Empty(fixture.Realtime.Events);
+        Assert.Single(await fixture.Db.SyncQueueSet
+            .Where(x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType)
+            .ToListAsync());
         var visible = await service.GetStudentReviewAsync(attempt.Id, fixture.Participant.Id, default);
         Assert.True(visible.ScoreVisible);
         Assert.True(visible.CorrectAnswersVisible);
@@ -116,6 +119,8 @@ public sealed class UnifiedGradingTests
             "org-a",
             default);
         Assert.Equal(GradingStatus.InProgress, reopened.Status);
+        Assert.Equal(2, await fixture.Db.SyncQueueSet.CountAsync(
+            x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType));
         var maskedAgain = await service.GetStudentReviewAsync(attempt.Id, fixture.Participant.Id, default);
         Assert.False(maskedAgain.ScoreVisible);
         Assert.False(maskedAgain.CorrectAnswersVisible);
@@ -228,8 +233,7 @@ public sealed class UnifiedGradingTests
             QuizGrades = new(
                 db,
                 new AuditService(db, new HttpContextAccessor()),
-                new OutboxService(db),
-                realtime);
+                new OutboxService(db));
         }
 
         public AppDbContext Db { get; }
