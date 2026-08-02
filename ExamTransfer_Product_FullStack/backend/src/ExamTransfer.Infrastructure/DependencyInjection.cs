@@ -86,6 +86,7 @@ public static class DependencyInjection
             PublicCloudSubmissionMutationHandler>();
         services.AddScoped<SubmissionMutationDispatcher>();
         services.AddScoped<ISubmissionService, SubmissionService>();
+        services.AddScoped<IOnlyLanSubmissionDownloadService, OnlyLanSubmissionDownloadService>();
         services.AddScoped<IGradeService, GradeService>();
         services.AddScoped<IQuizGradingService, QuizGradingService>();
         services.AddScoped<ISubmissionPreviewService, SubmissionPreviewService>();

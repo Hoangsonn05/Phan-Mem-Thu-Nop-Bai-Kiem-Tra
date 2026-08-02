@@ -467,7 +467,22 @@ public interface ISubmissionService
     Task<SubmissionSummaryDto> GetAsync(Guid submissionId, CancellationToken cancellationToken);
     Task RejectAsync(Guid submissionId, RejectSubmissionRequest request, CancellationToken cancellationToken);
     Task AllowResubmitAsync(Guid participantId, AllowResubmitRequest request, CancellationToken cancellationToken);
-    Task<(string Path, string MimeType, string DownloadName)> GetFileAsync(Guid submissionId, Guid fileId, CancellationToken cancellationToken);
+}
+
+public sealed record SubmissionDownloadContent(
+    Stream Content,
+    string MimeType,
+    string DownloadName);
+
+public interface IOnlyLanSubmissionDownloadService
+{
+    Task<SubmissionDownloadContent> OpenAsync(
+        Guid submissionId,
+        Guid fileId,
+        Guid actorId,
+        string? actorOrganizationId,
+        string? traceId,
+        CancellationToken cancellationToken);
 }
 
 public interface IGradeService
