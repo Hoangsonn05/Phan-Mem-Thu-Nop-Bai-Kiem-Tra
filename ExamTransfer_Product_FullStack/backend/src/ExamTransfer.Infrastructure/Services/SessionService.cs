@@ -16,6 +16,8 @@ namespace ExamTransfer.Infrastructure.Services;
 
 public sealed class SessionService(AppDbContext db, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<SessionService> logger, SessionParticipantMutationDispatcher participantMutations, LanParticipantSessionExecution lanParticipantSessions, PublicCloudProjectionExecution cloudProjection, ICloudSyncSignal? cloudSyncSignal = null, ICloudAdapter? cloudAdapter = null) : ISessionService
 {
+    private static readonly JsonSerializerOptions JsonOptions =
+        new(JsonSerializerDefaults.Web);
     private readonly ExamTransferOptions _options = options.Value;
     private readonly SessionParticipantMutationDispatcher _participantMutations = participantMutations;
     private readonly LanParticipantSessionExecution _lanParticipantSessions = lanParticipantSessions;
@@ -121,6 +123,108 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
         Guid id,
         CancellationToken cancellationToken) =>
         _cloudProjection.RetryProjectionAsync(id, cancellationToken);
+
+    public async Task<SessionDetailDto> ChangePublicCloudRoomCodeAsync(
+        Guid id,
+        ChangePublicCloudRoomCodeRequest request,
+        CancellationToken cancellationToken)
+    {
+        var detail = await InTransactionAsync(async () =>
+        {
+            var session = await db.ExamSessionsSet
+                .Include(x => x.Exam)
+                .Include(x => x.Participants)
+                .FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+                ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
+            if (session.AccessMode != SessionAccessMode.PublicCloud)
+                throw new ApiException(
+                    ErrorCodes.InvalidStateTransition,
+                    "Chỉ phòng PublicCloud mới có thể đổi mã bằng luồng phục hồi projection.",
+                    409);
+            if (session.Status is not (SessionStatus.Draft or SessionStatus.Waiting))
+                throw new ApiException(
+                    ErrorCodes.InvalidStateTransition,
+                    "Chỉ có thể đổi mã phòng trước khi kỳ thi bắt đầu.",
+                    409);
+            EnsureRowVersion(session.RowVersion, request.RowVersion);
+
+            var projectionItems = await db.SyncQueueSet
+                .Where(x => x.EntityType == "exam_sessions" && x.EntityId == id.ToString())
+                .ToListAsync(cancellationToken);
+            var projection = projectionItems
+                .OrderByDescending(x => x.CreatedAtUtc)
+                .FirstOrDefault()
+                ?? throw new ApiException(
+                    ErrorCodes.Conflict,
+                    "Không tìm thấy projection PublicCloud để phục hồi.",
+                    409);
+            if (!PublicCloudProjectionExecution.IsRoomCodeConflict(projection))
+                throw new ApiException(
+                    ErrorCodes.InvalidStateTransition,
+                    "Chỉ đổi mã bằng luồng này khi projection trả ROOM_CODE_CONFLICT.",
+                    409);
+
+            var hasBusinessActivity = session.Participants.Count > 0
+                || await db.SubmissionsSet.AnyAsync(x => x.SessionId == id, cancellationToken)
+                || await db.QuizAttemptsSet.AnyAsync(x => x.SessionId == id, cancellationToken)
+                || await db.MessagesSet.AnyAsync(x => x.SessionId == id, cancellationToken);
+            if (hasBusinessActivity)
+                throw new ApiException(
+                    ErrorCodes.InvalidStateTransition,
+                    "Không thể đổi mã vì phòng đã có hoạt động của học sinh hoặc giáo viên.",
+                    409);
+
+            var nextRoomCode = string.IsNullOrWhiteSpace(request.NewRoomCode)
+                ? await GenerateRoomCodeAsync(cancellationToken)
+                : RoomCodeRules.Normalize(request.NewRoomCode);
+            if (!RoomCodeRules.IsValid(nextRoomCode))
+                throw new ApiException(
+                    ErrorCodes.ValidationFailed,
+                    RoomCodeRules.ValidationMessage,
+                    422);
+            if (string.Equals(session.RoomCode, nextRoomCode, StringComparison.Ordinal))
+                throw new ApiException(
+                    ErrorCodes.RoomCodeConflict,
+                    "Mã mới phải khác mã PublicCloud đang bị trùng.",
+                    409);
+            if (await db.ExamSessionsSet.AnyAsync(
+                    x => x.Id != id
+                        && x.RoomCode == nextRoomCode
+                        && x.Status != SessionStatus.Archived
+                        && x.Status != SessionStatus.Cancelled
+                        && x.Status != SessionStatus.Finished,
+                    cancellationToken))
+                throw new ApiException(
+                    ErrorCodes.RoomCodeConflict,
+                    "Mã phòng đang được sử dụng cục bộ.",
+                    409);
+
+            var previousRoomCode = session.RoomCode;
+            session.RoomCode = nextRoomCode;
+            await db.SaveChangesAsync(cancellationToken);
+
+            projection.PayloadJson = JsonSerializer.Serialize(ToCloud(session), JsonOptions);
+            projection.Status = SyncStatus.Pending;
+            projection.RetryCount = 0;
+            projection.NextRetryAtUtc = DateTimeOffset.UtcNow;
+            projection.LastError = null;
+            projection.LeaseUntilUtc = null;
+            projection.LastAttemptAtUtc = null;
+            projection.CompletedAtUtc = null;
+            await db.SaveChangesAsync(cancellationToken);
+            await audit.WriteAsync(
+                "PublicCloudRoomCodeChanged",
+                nameof(ExamSession),
+                session.Id.ToString(),
+                session.Id,
+                new { roomCode = previousRoomCode },
+                new { roomCode = nextRoomCode },
+                cancellationToken);
+            return ToDetail(session);
+        }, cancellationToken);
+        cloudSyncSignal?.Pulse();
+        return detail;
+    }
 
     public async Task<SessionDetailDto> UpdateAsync(Guid id, UpdateSessionRequest request, CancellationToken cancellationToken)
     {

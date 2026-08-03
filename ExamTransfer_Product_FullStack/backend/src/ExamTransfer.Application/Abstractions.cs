@@ -177,7 +177,29 @@ public interface IOnlyLanStudentNotificationTransport
 public interface ILanAccessPolicy
 {
     bool IsAllowed(string? remoteAddress);
+
+    LanAccessDecision Evaluate(string? remoteAddress)
+    {
+        var allowed = IsAllowed(remoteAddress);
+        return new(
+            allowed,
+            "Unknown",
+            remoteAddress,
+            remoteAddress,
+            [],
+            null,
+            allowed ? "ALLOWED" : "DENIED");
+    }
 }
+
+public sealed record LanAccessDecision(
+    bool Allowed,
+    string RuntimeMode,
+    string? RemoteIp,
+    string? EffectiveClientIp,
+    IReadOnlyList<string> AllowedCidrs,
+    string? MatchedRange,
+    string DeniedReason);
 
 public interface IAuditService
 {
@@ -203,6 +225,8 @@ public sealed record CloudProjectionReadiness(
     string Code,
     string Message,
     int RetryCount);
+
+public sealed record CloudSyncFailure(string Code, string Message);
 
 public interface ICloudAdapter
 {
@@ -515,6 +539,7 @@ public interface ISessionService
     Task<SessionDetailDto> CreateAndOpenAsync(CreateSessionRequest request, string hostDeviceId, CancellationToken cancellationToken);
     Task<CloudProjectionReadiness> GetProjectionReadinessAsync(Guid id, CancellationToken cancellationToken);
     Task<CloudProjectionReadiness> RetryProjectionAsync(Guid id, CancellationToken cancellationToken);
+    Task<SessionDetailDto> ChangePublicCloudRoomCodeAsync(Guid id, ChangePublicCloudRoomCodeRequest request, CancellationToken cancellationToken);
     Task<SessionDetailDto> UpdateAsync(Guid id, UpdateSessionRequest request, CancellationToken cancellationToken);
     Task<SessionDetailDto> TransitionAsync(Guid id, SessionStatus target, EndSessionRequest? endRequest, CancellationToken cancellationToken);
     Task<BulkArchiveResultDto> BulkArchiveAsync(BulkArchiveRequest request, CancellationToken cancellationToken);
