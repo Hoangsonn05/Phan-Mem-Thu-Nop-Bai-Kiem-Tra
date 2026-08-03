@@ -157,7 +157,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
     {
         var detail = await InTransactionAsync(async () =>
         {
-            var exam = await db.ExamsSet.Include(x => x.Files).Include(x => x.QuizQuestions).Include(x => x.QuizImportSources).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+            var exam = await db.ExamsSet.Include(x => x.Files).Include(x => x.QuizQuestions).ThenInclude(x => x.Choices).Include(x => x.QuizImportSources).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
             if (exam.Status is ExamStatus.Archived or ExamStatus.Cancelled) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể phát hành bài kiểm tra ở trạng thái hiện tại.", 409);
             var rule = exam.ParseFileRule();
@@ -165,9 +165,9 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             if (exam.DeliveryType == ExamDeliveryType.FileSubmission && rule.RequireAtLeastOneFile && completed.Count == 0) throw new ApiException(ErrorCodes.ValidationFailed, "Bài kiểm tra yêu cầu ít nhất một file đề.", 422);
             if (exam.DeliveryType == ExamDeliveryType.MultipleChoice
                 && (exam.SupervisionMode != SupervisionMode.Standard
-                    || !exam.QuizQuestions.Any(x => x.Version == exam.Version)
+                    || !HasValidCurrentQuizGraph(exam)
                     || !exam.QuizImportSources.Any(x => x.ExamVersion == exam.Version && x.Status == "Committed")))
-                throw new ApiException(ErrorCodes.ValidationFailed, "Đề trắc nghiệm phải có giám sát chuẩn, nguồn DOCX/PDF đã commit và ít nhất một câu hỏi.", 422);
+                throw new ApiException(ErrorCodes.ValidationFailed, "Đề trắc nghiệm phải có giám sát chuẩn, nguồn DOCX/PDF đã commit và graph câu hỏi/lựa chọn thang điểm 10.00 hợp lệ.", 422);
             exam.Status = ExamStatus.Published;
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamPublished", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
@@ -809,7 +809,42 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         return exam.ToDetail(
             exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).Select(ToFileDto).ToList(),
             source,
-            exam.QuizQuestions.Count(x => x.Version == exam.Version));
+            exam.QuizQuestions.Count(x => x.Version == exam.Version),
+            exam.QuizQuestions.Where(x => x.Version == exam.Version).Sum(x => x.Points));
+    }
+
+    private static bool HasValidCurrentQuizGraph(Exam exam)
+    {
+        var questions = exam.QuizQuestions
+            .Where(x => x.Version == exam.Version)
+            .OrderBy(x => x.Order)
+            .ToList();
+        if (questions.Count == 0
+            || questions.Sum(x => x.Points) != 10.00m
+            || questions.Select(x => x.Id).Distinct().Count() != questions.Count
+            || questions.Select(x => x.Order).Distinct().Count() != questions.Count)
+            return false;
+
+        for (var index = 0; index < questions.Count; index++)
+        {
+            var question = questions[index];
+            var choices = question.Choices.OrderBy(x => x.Order).ToList();
+            var correctCount = choices.Count(x => x.IsCorrect);
+            if (question.Order != index + 1
+                || string.IsNullOrWhiteSpace(question.Text)
+                || question.Points <= 0
+                || decimal.Round(question.Points, 2, MidpointRounding.ToEven) != question.Points
+                || choices.Count is < 2 or > 10
+                || choices.Any(x => string.IsNullOrWhiteSpace(x.Text))
+                || choices.Select(x => x.Id).Distinct().Count() != choices.Count
+                || choices.Select(x => x.Order).Distinct().Count() != choices.Count
+                || choices.Where((choice, choiceIndex) => choice.Order != choiceIndex + 1).Any()
+                || correctCount == 0
+                || (!question.Multiple && correctCount != 1))
+                return false;
+        }
+
+        return true;
     }
     private static FileDescriptorDto ToFileDto(ExamFile x) => new(x.Id, x.OriginalName, x.SizeBytes, x.Sha256, x.MimeType, $"/api/v1/exams/{x.ExamId}/files/{x.Id}/content");
     private static object ToAudit(Exam x) => new

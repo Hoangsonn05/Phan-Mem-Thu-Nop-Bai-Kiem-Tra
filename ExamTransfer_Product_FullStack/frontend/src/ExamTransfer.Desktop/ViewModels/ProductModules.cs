@@ -612,7 +612,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         SupervisionMode = detail.SupervisionMode;
         currentHasCommittedQuizSource = detail.QuizSource is not null;
         currentQuizQuestionCount = detail.QuizQuestionCount;
-        QuizImport.Clear();
+        QuizImport.SetCommitted(detail.QuizSource, detail.QuizQuestionCount, detail.QuizMaxScore);
         currentAutoZip = detail.FileRule.AutoZip;
         currentRequireAtLeastOneFile = detail.FileRule.RequireAtLeastOneFile;
         currentLegacyClassId = detail.ClassId;
@@ -825,11 +825,17 @@ public sealed class ExamManagementViewModel : ProductPageBase
                 "Thay bộ câu hỏi hiện tại",
                 "Commit sẽ thay toàn bộ câu hỏi của phiên bản hiện tại. Tiếp tục?"))
             return;
-        _ = ApiGuard.Require(await api.PostAsync<QuizImportCommitRequest, QuizImportResultDto>(
+        var committed = ApiGuard.Require(await api.PostAsync<QuizImportCommitRequest, QuizImportResultDto>(
             $"api/v1/exams/{SelectedExam.Id}/quiz-import/commit",
             new(preview.PreviewToken, preview.WillReplaceExisting, currentExamRowVersion),
             ct));
-        QuizImport.Clear();
+        currentHasCommittedQuizSource = committed.Source is not null;
+        currentQuizQuestionCount = committed.QuestionCount;
+        currentExamRowVersion = committed.ExamRowVersion;
+        QuizImport.SetCommitted(committed.Source, committed.QuestionCount, committed.MaxScore);
+        Raise(nameof(CanPublish));
+        Raise(nameof(PublishHint));
+        RaiseCommands();
         await RefreshExamsCoreAsync(SelectedExam.Id, ct);
     });
 

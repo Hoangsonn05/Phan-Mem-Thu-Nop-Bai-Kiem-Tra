@@ -41,8 +41,8 @@ public static class MappingExtensions
     public static ExamSummaryDto ToSummary(this Exam entity, int fileCount, bool hasCommittedQuizSource = false, int quizQuestionCount = 0) =>
         new(entity.Id, entity.ClassId, entity.Title, entity.Subject, entity.DurationMinutes, entity.DeliveryType, entity.Status, entity.Version, fileCount, entity.RowVersion, entity.QuizResultPolicy, entity.SupervisionMode, hasCommittedQuizSource, quizQuestionCount);
 
-    public static ExamDetailDto ToDetail(this Exam entity, IReadOnlyList<FileDescriptorDto> files, QuizImportSourceDto? quizSource = null, int quizQuestionCount = 0) =>
-        new(entity.Id, entity.ClassId, entity.Title, entity.Subject, entity.Description, entity.DurationMinutes, entity.DeliveryType, entity.Status, entity.Version, entity.ParseFileRule(), files, entity.RowVersion, entity.QuizResultPolicy, entity.SupervisionMode, quizSource, quizQuestionCount);
+    public static ExamDetailDto ToDetail(this Exam entity, IReadOnlyList<FileDescriptorDto> files, QuizImportSourceDto? quizSource = null, int quizQuestionCount = 0, decimal quizMaxScore = 0) =>
+        new(entity.Id, entity.ClassId, entity.Title, entity.Subject, entity.Description, entity.DurationMinutes, entity.DeliveryType, entity.Status, entity.Version, entity.ParseFileRule(), files, entity.RowVersion, entity.QuizResultPolicy, entity.SupervisionMode, quizSource, quizQuestionCount, quizMaxScore);
 
     public static ParticipantDto ToDto(
         this SessionParticipant entity,

@@ -203,14 +203,22 @@ public sealed class QuizService(
             sourceEntity.ImportedAtUtc = importedAtUtc;
             sourceEntity.UpdatedAtUtc = importedAtUtc;
             preview.CommittedAtUtc = importedAtUtc;
+            exam.UpdatedAtUtc = importedAtUtc;
             await db.SaveChangesAsync(cancellationToken);
+
+            var persisted = await ReadPersistedImportAsync(
+                exam.Id,
+                exam.Version,
+                preview,
+                document,
+                committedPath,
+                cancellationToken);
 
             foreach (var choice in replacedChoices)
                 await projectionOutbox.EnqueueChoiceDeleteAsync(choice.Id, cancellationToken);
             foreach (var question in replacedQuestions)
                 await projectionOutbox.EnqueueQuestionDeleteAsync(question.Id, cancellationToken);
-            foreach (var question in await db.QuizQuestionsSet.AsNoTracking().Include(x => x.Choices)
-                         .Where(x => x.ExamId == exam.Id && x.Version == exam.Version).ToListAsync(cancellationToken))
+            foreach (var question in persisted.Questions)
             {
                 await projectionOutbox.EnqueueQuestionUpsertAsync(question, cancellationToken);
                 foreach (var choice in question.Choices)
@@ -228,7 +236,13 @@ public sealed class QuizService(
                              Path.GetFullPath(committedPath),
                              StringComparison.OrdinalIgnoreCase)))
                 TryDelete(oldLocalPath, "file nguồn trắc nghiệm cũ");
-            return new(exam.Id, exam.Version, document.Questions.Count, document.Questions.Sum(x => x.Points));
+            return new(
+                persisted.ExamId,
+                persisted.Version,
+                persisted.Questions.Count,
+                persisted.Questions.Sum(x => x.Points),
+                persisted.Source,
+                persisted.ExamRowVersion);
         }
         catch
         {
@@ -438,6 +452,114 @@ public sealed class QuizService(
                 ? value.GetInt32()
                 : 0;
     private static QuizQuestionDto ToQuestionDto(QuizQuestion x) => new(x.Id, x.Text, x.Order, x.Points, x.Multiple, x.Choices.OrderBy(c => c.Order).Select(c => new QuizChoiceDto(c.Id, c.Text, c.Order)).ToList());
+
+    private async Task<PersistedImport> ReadPersistedImportAsync(
+        Guid examId,
+        int expectedVersion,
+        QuizImportPreview preview,
+        QuizImportDocument document,
+        string committedPath,
+        CancellationToken cancellationToken)
+    {
+        var persistedExam = await db.ExamsSet.AsNoTracking()
+            .Include(x => x.QuizImportSources)
+            .Include(x => x.QuizQuestions).ThenInclude(x => x.Choices)
+            .SingleAsync(x => x.Id == examId, cancellationToken);
+        var sources = persistedExam.QuizImportSources
+            .Where(x => x.ExamVersion == expectedVersion)
+            .ToList();
+        if (persistedExam.Version != expectedVersion
+            || sources.Count != 1
+            || !string.Equals(sources[0].Status, "Committed", StringComparison.Ordinal))
+            throw PersistedGraphInvalid("Nguồn commit không thuộc đúng phiên bản hiện hành.");
+
+        var source = sources[0];
+        var resolvedPath = TryResolveSourcePath(source.RelativePath);
+        if (resolvedPath is null
+            || !string.Equals(Path.GetFullPath(resolvedPath), Path.GetFullPath(committedPath), StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(resolvedPath)
+            || !string.Equals(source.OriginalName, preview.OriginalName, StringComparison.Ordinal)
+            || !string.Equals(source.MimeType, preview.MimeType, StringComparison.Ordinal)
+            || source.SizeBytes != preview.SizeBytes
+            || string.IsNullOrWhiteSpace(source.Sha256)
+            || !string.Equals(source.Sha256, preview.Sha256, StringComparison.Ordinal))
+            throw PersistedGraphInvalid("File nguồn hoặc metadata nguồn commit không hợp lệ.");
+
+        await using (var sourceStream = File.OpenRead(resolvedPath))
+        {
+            var persistedHash = Convert.ToHexString(
+                    await SHA256.HashDataAsync(sourceStream, cancellationToken))
+                .ToLowerInvariant();
+            if (!string.Equals(persistedHash, source.Sha256, StringComparison.Ordinal))
+                throw PersistedGraphInvalid("Hash file nguồn commit không khớp dữ liệu đã lưu.");
+        }
+
+        var questions = persistedExam.QuizQuestions
+            .Where(x => x.Version == expectedVersion)
+            .OrderBy(x => x.Order)
+            .ToList();
+        if (questions.Count != document.Questions.Count
+            || questions.Select(x => x.Id).Distinct().Count() != questions.Count
+            || questions.Select(x => x.Order).Distinct().Count() != questions.Count
+            || questions.Sum(x => x.Points) != 10.00m)
+            throw PersistedGraphInvalid("Số câu, thứ tự hoặc tổng điểm đã lưu không hợp lệ.");
+
+        for (var index = 0; index < questions.Count; index++)
+        {
+            var question = questions[index];
+            var expected = document.Questions[index];
+            var choices = question.Choices.OrderBy(x => x.Order).ToList();
+            var correctCount = choices.Count(x => x.IsCorrect);
+            if (question.Order != index + 1
+                || !string.Equals(question.Text, expected.Text.Trim(), StringComparison.Ordinal)
+                || question.Points != expected.Points
+                || question.Multiple != expected.Multiple
+                || choices.Count != expected.Choices.Count
+                || choices.Count is < 2 or > 10
+                || choices.Select(x => x.Id).Distinct().Count() != choices.Count
+                || choices.Select(x => x.Order).Distinct().Count() != choices.Count
+                || correctCount == 0
+                || (!question.Multiple && correctCount != 1))
+                throw PersistedGraphInvalid($"Câu hỏi đã lưu ở thứ tự {index + 1} không hợp lệ.");
+
+            for (var choiceIndex = 0; choiceIndex < choices.Count; choiceIndex++)
+            {
+                var choice = choices[choiceIndex];
+                if (choice.Order != choiceIndex + 1
+                    || !string.Equals(choice.Text, expected.Choices[choiceIndex].Trim(), StringComparison.Ordinal)
+                    || choice.IsCorrect != expected.CorrectChoiceIndexes.Contains(choiceIndex))
+                    throw PersistedGraphInvalid($"Lựa chọn đã lưu của câu {index + 1} không khớp preview.");
+            }
+        }
+
+        var sourceDto = new QuizImportSourceDto(
+            source.Id,
+            source.OriginalName,
+            source.MimeType,
+            source.SizeBytes,
+            source.Sha256,
+            source.ExamVersion,
+            source.Status,
+            source.ImportedAtUtc);
+        return new(
+            persistedExam.Id,
+            persistedExam.Version,
+            persistedExam.RowVersion,
+            sourceDto,
+            questions);
+    }
+
+    private static ApiException PersistedGraphInvalid(string detail) => new(
+        ErrorCodes.InvalidStateTransition,
+        $"Không thể xác nhận đề trắc nghiệm sau khi lưu: {detail}",
+        409);
+
+    private sealed record PersistedImport(
+        Guid ExamId,
+        int Version,
+        string ExamRowVersion,
+        QuizImportSourceDto Source,
+        IReadOnlyList<QuizQuestion> Questions);
 
     private void AddQuestions(Exam exam, QuizImportDocument document)
     {

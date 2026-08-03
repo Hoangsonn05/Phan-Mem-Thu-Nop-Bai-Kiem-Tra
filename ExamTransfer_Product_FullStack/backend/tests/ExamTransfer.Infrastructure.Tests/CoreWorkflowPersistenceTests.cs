@@ -24,6 +24,199 @@ namespace ExamTransfer.Infrastructure.Tests;
 public sealed class CoreWorkflowPersistenceTests
 {
     [Fact]
+    public async Task QuizWorkflow_CommitReloadMetadataPublishAndStudentAttemptUsePersistedCurrentVersion()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var rule = new FileRuleDto([".docx"], 1024 * 1024, 2 * 1024 * 1024, 2, false, false);
+        var exam = await services.Exams.CreateAsync(
+            new(
+                null,
+                "Roundtrip quiz",
+                "Integration",
+                null,
+                30,
+                rule,
+                ExamDeliveryType.MultipleChoice,
+                QuizResultPolicy.Hidden,
+                SupervisionMode.Standard),
+            CancellationToken.None);
+        var teacherId = Guid.NewGuid();
+        var preview = await services.Quiz.PreviewImportAsync(
+            exam.Id,
+            teacherId,
+            new(
+                "roundtrip.docx",
+                Convert.ToBase64String(QuizDocx(
+                    "Câu 1: Hai cộng hai?",
+                    "A. Ba",
+                    "B. Bốn",
+                    "Đáp án đúng: B",
+                    "Câu 2: Số chẵn?",
+                    "A. Hai",
+                    "B. Ba",
+                    "C. Bốn",
+                    "Đáp án đúng: A; C"))),
+            CancellationToken.None);
+        var committed = await services.Quiz.CommitImportAsync(
+            exam.Id,
+            teacherId,
+            new(preview.PreviewToken, false, exam.RowVersion),
+            CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var reloaded = await services.Exams.GetAsync(exam.Id, CancellationToken.None);
+        Assert.Equal(2, reloaded.QuizQuestionCount);
+        Assert.Equal(10.00m, reloaded.QuizMaxScore);
+        Assert.Equal("roundtrip.docx", reloaded.QuizSource?.FileName);
+        Assert.Equal(committed.ExamRowVersion, reloaded.RowVersion);
+
+        var metadataUpdated = await services.Exams.UpdateAsync(
+            exam.Id,
+            new(
+                exam.ClassId,
+                "Roundtrip quiz renamed",
+                exam.Subject,
+                exam.Description,
+                exam.DurationMinutes,
+                rule,
+                committed.ExamRowVersion,
+                ExamDeliveryType.MultipleChoice,
+                QuizResultPolicy.Hidden,
+                SupervisionMode.Standard),
+            CancellationToken.None);
+        Assert.Equal(2, metadataUpdated.QuizQuestionCount);
+        Assert.Equal(10.00m, metadataUpdated.QuizMaxScore);
+        Assert.NotNull(metadataUpdated.QuizSource);
+
+        var staleQuestion = new QuizQuestion
+        {
+            ExamId = exam.Id,
+            Version = 0,
+            Order = 1,
+            Text = "Old version question",
+            Points = 10.00m
+        };
+        staleQuestion.Choices.Add(new QuizChoice { Order = 1, Text = "Old correct", IsCorrect = true });
+        staleQuestion.Choices.Add(new QuizChoice { Order = 2, Text = "Old wrong", IsCorrect = false });
+        database.Context.QuizQuestionsSet.Add(staleQuestion);
+        await database.Context.SaveChangesAsync();
+
+        var published = await services.Exams.PublishAsync(exam.Id, CancellationToken.None);
+        Assert.Equal(ExamStatus.Published, published.Status);
+        var session = await services.Sessions.CreateAsync(
+            SessionRequest(exam.Id, null, "QUIZRTRIP"),
+            "quiz-host",
+            CancellationToken.None);
+        await services.Sessions.TransitionAsync(session.Summary.Id, SessionStatus.Waiting, null, CancellationToken.None);
+        await services.Sessions.TransitionAsync(session.Summary.Id, SessionStatus.Distributing, null, CancellationToken.None);
+
+        var participant = new SessionParticipant
+        {
+            SessionId = session.Summary.Id,
+            StudentCode = "QUIZ-STUDENT",
+            DisplayName = "Quiz Student",
+            DeviceId = "quiz-device",
+            MachineName = "quiz-machine",
+            AppVersion = "test",
+            Status = ParticipantStatus.Approved
+        };
+        database.Context.SessionParticipantsSet.Add(participant);
+        var policy = new ControlPolicy
+        {
+            SessionId = session.Summary.Id,
+            Version = 1,
+            Status = PolicyApplyStatus.Applied
+        };
+        database.Context.ControlPoliciesSet.Add(policy);
+        await database.Context.SaveChangesAsync();
+        await services.Sessions.TransitionAsync(session.Summary.Id, SessionStatus.InProgress, null, CancellationToken.None);
+
+        var supervisionError = await Assert.ThrowsAsync<ApiException>(() =>
+            services.Quiz.StartOrGetAttemptAsync(session.Summary.Id, participant.Id, CancellationToken.None));
+        Assert.Equal(ErrorCodes.Forbidden, supervisionError.Code);
+        Assert.Contains("giám sát", supervisionError.Message, StringComparison.OrdinalIgnoreCase);
+
+        database.Context.DevicePolicyStatusesSet.Add(new DevicePolicyStatus
+        {
+            SessionId = session.Summary.Id,
+            ParticipantId = participant.Id,
+            PolicyVersion = policy.Version,
+            Status = PolicyApplyStatus.Applied
+        });
+        await database.Context.SaveChangesAsync();
+        database.Context.ChangeTracker.Clear();
+
+        var attempt = await services.Quiz.StartOrGetAttemptAsync(
+            session.Summary.Id,
+            participant.Id,
+            CancellationToken.None);
+        Assert.Equal(exam.Version, attempt.ExamVersion);
+        Assert.Equal(2, attempt.Questions.Count);
+        Assert.DoesNotContain(attempt.Questions, x => x.Text == staleQuestion.Text);
+        Assert.All(attempt.Questions, question => Assert.NotEmpty(question.Choices));
+        Assert.DoesNotContain("correct", JsonSerializer.Serialize(attempt), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task QuizWorkflow_PublishRejectsMissingChoicesAndInvalidTotalScore()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var rule = new FileRuleDto([".docx"], 1024, 2048, 1, false, false);
+        var exam = await services.Exams.CreateAsync(
+            new(
+                null,
+                "Invalid graph",
+                "Integration",
+                null,
+                30,
+                rule,
+                ExamDeliveryType.MultipleChoice,
+                QuizResultPolicy.Hidden,
+                SupervisionMode.Standard),
+            CancellationToken.None);
+
+        var noGraph = await Assert.ThrowsAsync<ApiException>(() =>
+            services.Exams.PublishAsync(exam.Id, CancellationToken.None));
+        Assert.Equal(ErrorCodes.ValidationFailed, noGraph.Code);
+
+        var source = new QuizImportSource
+        {
+            ExamId = exam.Id,
+            ExamVersion = exam.Version,
+            OriginalName = "invalid.docx",
+            MimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            SizeBytes = 1,
+            Sha256 = "hash",
+            RelativePath = "invalid.docx",
+            Status = "Committed",
+            CreatedBy = Guid.NewGuid(),
+            ImportedAtUtc = DateTimeOffset.UtcNow
+        };
+        var question = new QuizQuestion
+        {
+            ExamId = exam.Id,
+            Version = exam.Version,
+            Order = 1,
+            Text = "Invalid graph question",
+            Points = 9.00m
+        };
+        question.Choices.Add(new QuizChoice { Order = 1, Text = "Only choice", IsCorrect = true });
+        database.Context.AddRange(source, question);
+        await database.Context.SaveChangesAsync();
+
+        var invalid = await Assert.ThrowsAsync<ApiException>(() =>
+            services.Exams.PublishAsync(exam.Id, CancellationToken.None));
+        Assert.Equal(ErrorCodes.ValidationFailed, invalid.Code);
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(ExamStatus.Draft, await database.Context.ExamsSet
+            .Where(x => x.Id == exam.Id)
+            .Select(x => x.Status)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Dashboard_AfterClassCreation_ReturnsUpdatedRealClassCount()
     {
         await using var database = await FileDatabase.CreateAsync();
@@ -1400,7 +1593,8 @@ public sealed class CoreWorkflowPersistenceTests
                     realtime,
                     options,
                     new LanAccessPolicy(options)),
-                new PublicCloudProjectionExecution(db)));
+                new PublicCloudProjectionExecution(db)),
+            new QuizService(db, new QuizProjectionOutbox(outbox), paths));
     }
 
     private static IHttpContextAccessor AuthenticatedAccessor(Guid actorId)
@@ -1566,7 +1760,31 @@ public sealed class CoreWorkflowPersistenceTests
         return new SystemService(db, paths, new OfflineCloudAdapter(), options, new NoOpRealtimePublisher());
     }
 
-    private sealed record ServiceSet(ClassService Classes, ExamService Exams, SessionService Sessions);
+    private static byte[] QuizDocx(params string[] lines)
+    {
+        using var output = new MemoryStream();
+        using (var archive = new System.IO.Compression.ZipArchive(
+                   output,
+                   System.IO.Compression.ZipArchiveMode.Create,
+                   leaveOpen: true))
+        {
+            var entry = archive.CreateEntry("word/document.xml");
+            using var writer = new StreamWriter(entry.Open(), new System.Text.UTF8Encoding(false));
+            writer.Write(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>");
+            foreach (var line in lines)
+                writer.Write($"<w:p><w:r><w:t>{System.Security.SecurityElement.Escape(line)}</w:t></w:r></w:p>");
+            writer.Write("</w:body></w:document>");
+        }
+        return output.ToArray();
+    }
+
+    private sealed record ServiceSet(
+        ClassService Classes,
+        ExamService Exams,
+        SessionService Sessions,
+        QuizService Quiz);
 
     private sealed record SubmissionMutationSeed(
         Exam Exam,

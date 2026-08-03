@@ -17,6 +17,79 @@ namespace ExamTransfer.Infrastructure.Tests;
 public sealed class QuizDocumentImportTests
 {
     [Fact]
+    public async Task QuizImport_FiftyQuestions_RoundTripsAuthoritativeSourceQuestionsAndChoices()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var teacher = Guid.NewGuid();
+        var lines = Enumerable.Range(1, 50)
+            .SelectMany(index => new[]
+            {
+                $"Câu {index}: Nội dung câu hỏi {index}?",
+                "A. Đáp án đúng",
+                "B. Đáp án sai",
+                "Đáp án đúng: A"
+            })
+            .ToArray();
+        var bytes = Docx(lines);
+        var expectedHash = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(bytes))
+            .ToLowerInvariant();
+        var originalExamRowVersion = fixture.Exam.RowVersion;
+
+        var preview = await fixture.Service.PreviewImportAsync(
+            fixture.Exam.Id,
+            teacher,
+            new("quiz-50.docx", Convert.ToBase64String(bytes)),
+            default);
+
+        Assert.Empty(preview.Errors);
+        Assert.Equal(50, preview.QuestionCount);
+        Assert.Equal(10.00m, preview.MaxScore);
+        var committed = await fixture.Service.CommitImportAsync(
+            fixture.Exam.Id,
+            teacher,
+            new(preview.PreviewToken, false, originalExamRowVersion),
+            default);
+
+        Assert.Equal(50, committed.QuestionCount);
+        Assert.Equal(10.00m, committed.MaxScore);
+        Assert.NotEqual(originalExamRowVersion, committed.ExamRowVersion);
+        Assert.Equal("quiz-50.docx", committed.Source?.FileName);
+        Assert.Equal("Committed", committed.Source?.Status);
+        Assert.Equal(expectedHash, committed.Source?.Sha256);
+
+        fixture.Db.ChangeTracker.Clear();
+        var persistedExam = await fixture.Db.ExamsSet.AsNoTracking()
+            .Include(x => x.QuizImportSources)
+            .Include(x => x.QuizQuestions).ThenInclude(x => x.Choices)
+            .SingleAsync(x => x.Id == fixture.Exam.Id);
+        var persistedSource = Assert.Single(persistedExam.QuizImportSources);
+        var persistedQuestions = persistedExam.QuizQuestions
+            .Where(x => x.Version == persistedExam.Version)
+            .OrderBy(x => x.Order)
+            .ToList();
+        Assert.Equal(committed.ExamRowVersion, persistedExam.RowVersion);
+        Assert.Equal("Committed", persistedSource.Status);
+        Assert.Equal(expectedHash, persistedSource.Sha256);
+        Assert.Equal(50, persistedQuestions.Count);
+        Assert.Equal(100, persistedQuestions.Sum(x => x.Choices.Count));
+        Assert.Equal(10.00m, persistedQuestions.Sum(x => x.Points));
+        Assert.Equal(50, persistedQuestions.Select(x => x.Order).Distinct().Count());
+        Assert.Equal(50, persistedQuestions.Select(x => x.Id).Distinct().Count());
+        Assert.All(persistedQuestions, question =>
+        {
+            Assert.Equal(2, question.Choices.Count);
+            Assert.Single(question.Choices, choice => choice.IsCorrect);
+        });
+        var sourcePath = Path.Combine(fixture.Paths.RootPath, persistedSource.RelativePath);
+        Assert.True(File.Exists(sourcePath));
+        Assert.Equal(
+            expectedHash,
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(sourcePath)))
+                .ToLowerInvariant());
+    }
+
+    [Fact]
     public async Task DocxPreview_DoesNotMutate_CommitIsOwnedOneUseAndReplaceExplicit()
     {
         await using var fixture = await Fixture.CreateAsync();
