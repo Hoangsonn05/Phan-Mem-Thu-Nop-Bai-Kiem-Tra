@@ -317,6 +317,7 @@ internal sealed class RecordingBackendClient(
     public IReadOnlyList<ClassSummaryDto>? ClassResponses { get; init; }
     public IReadOnlyList<ExamSummaryDto>? ExamResponses { get; init; }
     public IReadOnlyList<SessionSummaryDto>? SessionResponses { get; init; }
+    public Queue<CloudProjectionReadinessView> ProjectionResponses { get; } = [];
     public List<string> PostPaths { get; } = [];
     public List<object?> PostRequests { get; } = [];
     public List<string> PutPaths { get; } = [];
@@ -438,6 +439,9 @@ internal sealed class RecordingBackendClient(
         if (ParticipantResponse is not null && typeof(T) == typeof(ParticipantDto))
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ParticipantResponse, "test"));
+        if (typeof(T) == typeof(CloudProjectionReadinessView) && ProjectionResponses.Count > 0)
+            return Task.FromResult<ApiResponse<T>?>(
+                ApiResponse<T>.Ok((T)(object)ProjectionResponses.Dequeue(), "test"));
         return Task.FromResult<ApiResponse<T>?>(null);
     }
     public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
@@ -472,6 +476,9 @@ internal sealed class RecordingBackendClient(
         if (ExamDetailResponse is not null && typeof(TResponse) == typeof(ExamDetailDto))
             return Task.FromResult<ApiResponse<TResponse>?>(
                 ApiResponse<TResponse>.Ok((TResponse)(object)ExamDetailResponse, "test"));
+        if (SessionDetailResponse is not null && typeof(TResponse) == typeof(SessionDetailDto))
+            return Task.FromResult<ApiResponse<TResponse>?>(
+                ApiResponse<TResponse>.Ok((TResponse)(object)SessionDetailResponse, "test"));
         return Task.FromResult<ApiResponse<TResponse>?>(null);
     }
     public Task<ApiResponse<TResponse>?> DeleteAsync<TResponse>(string path, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);

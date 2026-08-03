@@ -226,6 +226,8 @@ public sealed record CloudProjectionReadiness(
     string Message,
     int RetryCount);
 
+public sealed record CloudSyncFailure(string Code, string Message);
+
 public interface ICloudAdapter
 {
     bool Enabled { get; }
@@ -537,6 +539,7 @@ public interface ISessionService
     Task<SessionDetailDto> CreateAndOpenAsync(CreateSessionRequest request, string hostDeviceId, CancellationToken cancellationToken);
     Task<CloudProjectionReadiness> GetProjectionReadinessAsync(Guid id, CancellationToken cancellationToken);
     Task<CloudProjectionReadiness> RetryProjectionAsync(Guid id, CancellationToken cancellationToken);
+    Task<SessionDetailDto> ChangePublicCloudRoomCodeAsync(Guid id, ChangePublicCloudRoomCodeRequest request, CancellationToken cancellationToken);
     Task<SessionDetailDto> UpdateAsync(Guid id, UpdateSessionRequest request, CancellationToken cancellationToken);
     Task<SessionDetailDto> TransitionAsync(Guid id, SessionStatus target, EndSessionRequest? endRequest, CancellationToken cancellationToken);
     Task<BulkArchiveResultDto> BulkArchiveAsync(BulkArchiveRequest request, CancellationToken cancellationToken);
