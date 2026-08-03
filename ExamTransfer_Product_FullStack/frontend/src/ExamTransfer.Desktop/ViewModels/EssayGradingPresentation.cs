@@ -9,23 +9,21 @@ public sealed class EssaySubmissionReviewRow : ObservableObject
     private GradingStatus status;
     private bool wasReopened;
 
-    public EssaySubmissionReviewRow(GradingWorkItemDto workItem, SubmissionSummaryDto? submission)
+    public EssaySubmissionReviewRow(GradingWorkItemDto workItem)
     {
         WorkItem = workItem;
-        Submission = submission;
         status = workItem.Status;
     }
 
     public GradingWorkItemDto WorkItem { get; }
-    public SubmissionSummaryDto? Submission { get; }
     public Guid SubmissionId => WorkItem.Id;
     public GradingWorkItemType Type => WorkItem.Type;
     public string StudentCode => WorkItem.StudentCode;
     public string StudentName => WorkItem.DisplayName;
     public string ExamTitle => WorkItem.ExamTitle;
-    public int? AttemptNumber => Submission?.AttemptNumber;
-    public DateTimeOffset? SubmittedAtUtc => Submission?.ServerReceivedAtUtc ?? WorkItem.SubmittedAtUtc;
-    public bool IsLate => Submission?.IsLate == true;
+    public int AttemptNumber => WorkItem.AttemptNumber;
+    public DateTimeOffset SubmittedAtUtc => WorkItem.SubmittedAtUtc;
+    public bool IsLate => WorkItem.IsLate;
     public GradingStatus Status => status;
     public string StatusText => GradingStatusPresentation.ToText(status, wasReopened);
 

@@ -10,7 +10,94 @@ namespace ExamTransfer.Desktop.Tests;
 public sealed class EssayGradingTests
 {
     [Fact]
-    public async Task SelectingSubmissionLoadsMatchingDetailAndFiles()
+    public async Task DelayedAuthoritativeListYieldsImmediatelyAndDoesNotCallLegacyOrDetail()
+    {
+        var data = GradingTestData.Create(GradingStatus.NotGraded);
+        var api = new GradingBackendClient(data);
+        var delayed = api.DelayPage(1);
+        using var viewModel = CreateViewModel(api);
+
+        var initialization = viewModel.InitializeAsync(CancellationToken.None);
+        await delayed.Requested.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(initialization.IsCompleted);
+        Assert.True(viewModel.IsBusy);
+        Assert.Empty(viewModel.Queue);
+        Assert.Null(viewModel.SelectedWorkItem);
+        Assert.Equal(0, api.LegacyQueueRequests);
+        Assert.Equal(0, api.DetailRequests);
+
+        delayed.Complete();
+        await initialization;
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Single(viewModel.Queue);
+        Assert.Single(api.WorkItemPaths);
+    }
+
+    [Fact]
+    public async Task EmptyQueueAndApiFailureBothResetBusyState()
+    {
+        var emptyApi = new GradingBackendClient();
+        using var empty = CreateViewModel(emptyApi);
+        await empty.InitializeAsync(CancellationToken.None);
+        Assert.Empty(empty.Queue);
+        Assert.False(empty.IsBusy);
+
+        var failingApi = new GradingBackendClient { ListFailure = new InvalidOperationException("delayed failure") };
+        using var failing = CreateViewModel(failingApi);
+        await failing.InitializeAsync(CancellationToken.None);
+        Assert.False(failing.IsBusy);
+        Assert.Equal("danger", failing.StatusTone);
+    }
+
+    [Fact]
+    public async Task DisposedViewModelDoesNotApplyDelayedListResponse()
+    {
+        var api = new GradingBackendClient(GradingTestData.Create(GradingStatus.NotGraded));
+        var delayed = api.DelayPage(1);
+        var viewModel = CreateViewModel(api);
+        var initialization = viewModel.InitializeAsync(CancellationToken.None);
+        await delayed.Requested.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        viewModel.Dispose();
+        await initialization;
+
+        Assert.True(delayed.CancellationObserved);
+        Assert.Empty(viewModel.Queue);
+        Assert.Null(viewModel.SelectedWorkItem);
+    }
+
+    [Fact]
+    public async Task HundredRowsAreBoundedAndChangingPageCancelsPreviousRequest()
+    {
+        var data = Enumerable.Range(1, 101)
+            .Select(index => GradingTestData.Create(GradingStatus.NotGraded, $"HS{index:D3}"))
+            .ToArray();
+        var api = new GradingBackendClient(data);
+        using var viewModel = CreateViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.Equal(100, viewModel.Queue.Count);
+        Assert.Equal(101, viewModel.TotalCount);
+        Assert.True(viewModel.CanMoveNext);
+
+        var delayedSecondPage = api.DelayPage(2);
+        viewModel.NextPageCommand.Execute(null);
+        await delayedSecondPage.Requested.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(2, viewModel.CurrentPage);
+        Assert.True(viewModel.IsBusy);
+
+        viewModel.PreviousPageCommand.Execute(null);
+        await WaitUntilAsync(() => viewModel.CurrentPage == 1 && !viewModel.IsBusy);
+
+        Assert.True(delayedSecondPage.CancellationObserved);
+        Assert.Equal(100, viewModel.Queue.Count);
+        Assert.Equal(2, api.WorkItemPaths.Count(path => path.Contains("page=1", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task SelectingSubmissionRequiresExplicitOpenBeforeLoadingDetailAndFiles()
     {
         var data = GradingTestData.Create(GradingStatus.NotGraded);
         var api = new GradingBackendClient(data);
@@ -18,6 +105,10 @@ public sealed class EssayGradingTests
         await viewModel.InitializeAsync(CancellationToken.None);
 
         viewModel.SelectedWorkItem = viewModel.Queue.Single();
+        Assert.Null(viewModel.Detail);
+        Assert.Equal(0, api.DetailRequests);
+        Assert.True(viewModel.OpenWorkItemCommand.CanExecute(null));
+        viewModel.OpenWorkItemCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.Detail is not null && !viewModel.IsDetailLoading);
 
         Assert.Equal(data.WorkItem.Id, viewModel.Detail!.SubmissionId);
@@ -27,6 +118,7 @@ public sealed class EssayGradingTests
         Assert.Equal(data.Submission.IsLate, viewModel.Detail.IsLate);
         Assert.Equal(data.Grade.Status, viewModel.Detail.Status);
         Assert.Equal(data.Submission.Files.Count, viewModel.Files.Count);
+        Assert.DoesNotContain(api.DetailPaths, path => path.Contains("preview", StringComparison.OrdinalIgnoreCase));
         Assert.False(viewModel.SaveGradeCommand.CanExecute(null));
     }
 
@@ -41,8 +133,10 @@ public sealed class EssayGradingTests
         await viewModel.InitializeAsync(CancellationToken.None);
 
         viewModel.SelectedWorkItem = viewModel.Queue.Single(row => row.SubmissionId == first.WorkItem.Id);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await delayed.Requested.Task.WaitAsync(TimeSpan.FromSeconds(2));
         viewModel.SelectedWorkItem = viewModel.Queue.Single(row => row.SubmissionId == second.WorkItem.Id);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.Detail?.SubmissionId == second.WorkItem.Id);
         delayed.Complete(first.Grade);
         await Task.Delay(50);
@@ -189,12 +283,14 @@ public sealed class EssayGradingTests
         {
             "StudentCode", "StudentName", "AttemptNumber", "SubmittedAtUtc", "IsLate", "StatusText",
             "SaveGradeCommand", "ReturnGradeCommand", "ReopenGradeCommand",
-            "DownloadFileCommand", "OpenLocalFileCommand"
+            "DownloadFileCommand", "OpenLocalFileCommand", "OpenWorkItemCommand"
         })
             Assert.Contains(binding, xaml, StringComparison.Ordinal);
         Assert.Contains("UseShellExecute = true", launcher, StringComparison.Ordinal);
         Assert.Contains("File.Exists", launcher, StringComparison.Ordinal);
         Assert.DoesNotContain("Supabase", launcher, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("EnableRowVirtualization=\"True\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("VirtualizationMode=\"Recycling\"", xaml, StringComparison.Ordinal);
     }
 
     private static GradingCenterViewModel CreateViewModel(
@@ -208,6 +304,7 @@ public sealed class EssayGradingTests
     {
         await viewModel.InitializeAsync(CancellationToken.None);
         viewModel.SelectedWorkItem = Assert.Single(viewModel.Queue);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.Detail is not null && !viewModel.IsDetailLoading);
     }
 
@@ -272,27 +369,68 @@ public sealed class EssayGradingTests
         public void Complete(GradeDto grade) => completion.TrySetResult(grade);
     }
 
+    private sealed class DelayedWorkItems(PagedResult<GradingWorkItemDto> result)
+    {
+        private readonly TaskCompletionSource<PagedResult<GradingWorkItemDto>> completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Requested { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool CancellationObserved { get; private set; }
+
+        public async Task<PagedResult<GradingWorkItemDto>> WaitAsync(CancellationToken cancellationToken)
+        {
+            Requested.TrySetResult();
+            using var registration = cancellationToken.Register(() =>
+            {
+                CancellationObserved = true;
+                completion.TrySetCanceled(cancellationToken);
+            });
+            return await completion.Task;
+        }
+
+        public void Complete() => completion.TrySetResult(result);
+    }
+
     private sealed class GradingBackendClient(params GradingTestData[] data) : IBackendClient
     {
         private readonly Dictionary<Guid, GradingTestData> byId = data.ToDictionary(item => item.WorkItem.Id);
         private readonly Dictionary<Guid, DelayedGrade> delays = [];
+        private readonly Dictionary<int, DelayedWorkItems> pageDelays = [];
         public int SaveRequests { get; private set; }
         public int ReturnRequests { get; private set; }
         public int ReopenRequests { get; private set; }
+        public int DetailRequests { get; private set; }
+        public int LegacyQueueRequests { get; private set; }
+        public Exception? ListFailure { get; set; }
+        public List<string> WorkItemPaths { get; } = [];
+        public List<string> DetailPaths { get; } = [];
         public List<DownloadCall> Downloads { get; } = [];
         public Uri BaseAddress { get; } = new("http://localhost:5048/");
         public bool HasTrustedAccountToken => true;
         public DelayedGrade DelayGrade(Guid id) => delays[id] = new();
+        public DelayedWorkItems DelayPage(int page) =>
+            pageDelays[page] = new(BuildPage(page));
 
         public Task<ApiResponse<T>?> GetAsync<T>(string path, CancellationToken ct = default)
         {
             if (typeof(T) == typeof(PagedResult<GradingWorkItemDto>))
-                return Result<T>(new PagedResult<GradingWorkItemDto>(data.Select(x => x.WorkItem).ToArray(), 1, 100, data.Length));
+            {
+                WorkItemPaths.Add(path);
+                if (ListFailure is not null) throw ListFailure;
+                var page = ReadPage(path);
+                if (pageDelays.TryGetValue(page, out var delayedPage))
+                    return DelayedWorkItemsResult<T>(delayedPage, ct);
+                return Result<T>(BuildPage(page));
+            }
             if (typeof(T) == typeof(PagedResult<SubmissionSummaryDto>))
+            {
+                LegacyQueueRequests++;
                 return Result<T>(new PagedResult<SubmissionSummaryDto>(data.Select(x => x.Submission).ToArray(), 1, 100, data.Length));
+            }
             var id = Guid.Parse(path.Split('/')[4]);
             if (typeof(T) == typeof(GradeDto))
             {
+                DetailRequests++;
+                DetailPaths.Add(path);
                 if (delays.TryGetValue(id, out var delayed))
                     return DelayedResult<T>(delayed);
                 return Result<T>(byId[id].Grade);
@@ -302,6 +440,28 @@ public sealed class EssayGradingTests
 
         private static async Task<ApiResponse<T>?> DelayedResult<T>(DelayedGrade delayed) =>
             ApiResponse<T>.Ok((T)(object)await delayed.WaitAsync(), "test");
+
+        private static async Task<ApiResponse<T>?> DelayedWorkItemsResult<T>(
+            DelayedWorkItems delayed,
+            CancellationToken cancellationToken) =>
+            ApiResponse<T>.Ok((T)(object)await delayed.WaitAsync(cancellationToken), "test");
+
+        private PagedResult<GradingWorkItemDto> BuildPage(int page) => new(
+            data.Skip((page - 1) * 100).Take(100).Select(x => x.WorkItem).ToArray(),
+            page,
+            100,
+            data.Length);
+
+        private static int ReadPage(string path)
+        {
+            var marker = "page=";
+            var start = path.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0) return 1;
+            start += marker.Length;
+            var end = path.IndexOf('&', start);
+            var value = end < 0 ? path[start..] : path[start..end];
+            return int.Parse(value, CultureInfo.InvariantCulture);
+        }
 
         public Task<ApiResponse<TResponse>?> PutAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
         {
@@ -387,7 +547,8 @@ public sealed class EssayGradingTests
             var work = new GradingWorkItemDto(
                 id, GradingWorkItemType.FileSubmission, sessionId, participantId,
                 studentCode, "Học sinh " + studentCode, "Bài tự luận", submitted,
-                status, null, status == GradingStatus.NotGraded ? null : 7.5m, 10m, files[0].Id);
+                status, null, status == GradingStatus.NotGraded ? null : 7.5m, 10m, files[0].Id,
+                Guid.NewGuid(), 2, true);
             var submission = new SubmissionSummaryDto(
                 id, sessionId, participantId, studentCode, work.DisplayName, 2,
                 SubmissionStatus.Submitted, submitted.AddSeconds(-2), submitted,
@@ -395,7 +556,10 @@ public sealed class EssayGradingTests
             var grade = new GradeDto(
                 id, status, work.Score, 10m, [], "Nhận xét", [],
                 status == GradingStatus.Returned ? DateTimeOffset.UtcNow : null,
-                status == GradingStatus.NotGraded ? "new" : "rv");
+                status == GradingStatus.NotGraded ? "new" : "rv")
+            {
+                SubmissionFiles = files
+            };
             return new(work, submission, grade);
         }
     }

@@ -96,6 +96,7 @@ public sealed record GradeDto(Guid SubmissionId, GradingStatus Status, decimal? 
 {
     public Guid? GradeId { get; init; }
     public long Revision { get; init; }
+    public IReadOnlyList<SubmissionFileDto> SubmissionFiles { get; init; } = [];
 }
 public sealed record RubricScoreDto(string CriterionKey, string Title, decimal Score, decimal MaxScore, string? Comment, int Order);
 

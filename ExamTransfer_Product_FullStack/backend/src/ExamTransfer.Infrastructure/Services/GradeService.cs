@@ -94,12 +94,13 @@ public sealed class GradeService(
             var result = await RequireCloud().GetPublicEssayGradeAsync(submissionId, cancellationToken);
             EnsureCloudResult(result, submission);
             await CacheCloudResultAsync(result, cancellationToken);
-            return ToDto(result);
+            return ToDto(result) with { SubmissionFiles = ToSubmissionFiles(submission) };
         }
 
         var grade = await GradeQuery(asTracking: false)
             .FirstOrDefaultAsync(x => x.SubmissionId == submissionId, cancellationToken);
-        return grade is null ? Empty(submissionId) : ToDto(grade);
+        var dto = grade is null ? Empty(submissionId) : ToDto(grade);
+        return dto with { SubmissionFiles = ToSubmissionFiles(submission) };
     }
 
     public async Task<GradeDto> SaveAsync(
@@ -802,6 +803,9 @@ public sealed class GradeService(
 
     private static string? Normalize(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static IReadOnlyList<SubmissionFileDto> ToSubmissionFiles(Submission submission) =>
+        submission.Files.OrderBy(x => x.OriginalName).Select(x => x.ToDto([])).ToList();
 
     private static GradeDto Empty(Guid submissionId) => new(
         submissionId,

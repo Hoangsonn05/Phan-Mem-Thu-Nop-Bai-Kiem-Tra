@@ -158,6 +158,7 @@ public sealed class EssayGradeServiceTests
             default);
         Assert.Equal(9m, current.Score);
         Assert.Equal(second.Revision, current.Revision);
+        Assert.Equal("answer.zip", Assert.Single(current.SubmissionFiles).Name);
     }
 
     [Fact]
