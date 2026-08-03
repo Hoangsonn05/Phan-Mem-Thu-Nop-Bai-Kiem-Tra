@@ -1,3 +1,4 @@
+using System.Net;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
@@ -338,6 +339,23 @@ public sealed class OnlyLanWorkflowCharacterizationTests
             CancellationToken.None));
         Assert.Equal(ErrorCodes.LanAccessDenied, denied.Code);
         Assert.Equal(403, denied.StatusCode);
+
+        var dynamicPolicy = new LanAccessPolicy(
+            [LanAccessPolicy.NetworkRange.FromPrefix(IPAddress.Parse("192.168.10.20"), 24)]);
+        var dynamicService = fixture.CreateSessionService(dynamicPolicy);
+        var sameSubnetJoin = await dynamicService.JoinAsync(
+            request with
+            {
+                StudentCode = "LAN-DYNAMIC",
+                DisplayName = "Dynamic Student",
+                DeviceId = "dynamic-device"
+            },
+            Guid.NewGuid(),
+            "LAN-DYNAMIC",
+            "Dynamic Student",
+            "192.168.10.55",
+            CancellationToken.None);
+        Assert.Equal(ParticipantStatus.PendingApproval, sameSubnetJoin.Status);
 
         var publicSession = await fixture.Sessions.CreateAndOpenAsync(
             SessionRequest(seeded.Exam.Id, "PUBROUTE", SessionAccessMode.PublicCloud),

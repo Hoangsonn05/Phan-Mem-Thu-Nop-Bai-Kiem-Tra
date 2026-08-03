@@ -177,7 +177,29 @@ public interface IOnlyLanStudentNotificationTransport
 public interface ILanAccessPolicy
 {
     bool IsAllowed(string? remoteAddress);
+
+    LanAccessDecision Evaluate(string? remoteAddress)
+    {
+        var allowed = IsAllowed(remoteAddress);
+        return new(
+            allowed,
+            "Unknown",
+            remoteAddress,
+            remoteAddress,
+            [],
+            null,
+            allowed ? "ALLOWED" : "DENIED");
+    }
 }
+
+public sealed record LanAccessDecision(
+    bool Allowed,
+    string RuntimeMode,
+    string? RemoteIp,
+    string? EffectiveClientIp,
+    IReadOnlyList<string> AllowedCidrs,
+    string? MatchedRange,
+    string DeniedReason);
 
 public interface IAuditService
 {
