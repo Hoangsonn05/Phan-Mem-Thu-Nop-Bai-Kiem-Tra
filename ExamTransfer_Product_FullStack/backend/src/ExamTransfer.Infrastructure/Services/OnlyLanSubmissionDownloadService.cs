@@ -71,14 +71,27 @@ public sealed class OnlyLanSubmissionDownloadService(
             throw NotFound(actorId, sessionId, submissionId, traceId);
         }
 
-        await EnsureOwnershipAsync(
+        var authorization = await ExamDownloadAuthorization.AuthorizeAsync(
+            db,
             actor,
             actorOrganizationId,
+            submission.Session.Exam.Id,
             submission.Session.Exam.CreatedBy,
-            sessionId,
-            submissionId,
-            traceId,
             cancellationToken);
+        if (!authorization.Authorized)
+        {
+            throw Denied(
+                actor.Id,
+                sessionId,
+                submissionId,
+                traceId,
+                authorization.Branch,
+                actor,
+                submission.Session.Exam.Id,
+                fileId,
+                submission.Session.AccessMode,
+                submission.Session.Exam.CreatedBy);
+        }
 
         string physicalPath;
         try
@@ -135,45 +148,30 @@ public sealed class OnlyLanSubmissionDownloadService(
             downloadName);
     }
 
-    private async Task EnsureOwnershipAsync(
-        User actor,
-        string? actorOrganizationId,
-        Guid? ownerId,
-        Guid sessionId,
-        Guid submissionId,
-        string? traceId,
-        CancellationToken cancellationToken)
-    {
-        if (!ownerId.HasValue)
-            throw Denied(actor.Id, sessionId, submissionId, traceId);
-        if (ownerId.Value == actor.Id)
-            return;
-
-        var ownerOrganizationId = await db.UsersSet.AsNoTracking()
-            .Where(x => x.Id == ownerId.Value && x.IsActive)
-            .Select(x => x.OrganizationId)
-            .SingleOrDefaultAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(actorOrganizationId)
-            || string.IsNullOrWhiteSpace(actor.OrganizationId)
-            || !string.Equals(actor.OrganizationId, actorOrganizationId, StringComparison.Ordinal)
-            || string.IsNullOrWhiteSpace(ownerOrganizationId)
-            || !string.Equals(ownerOrganizationId, actorOrganizationId, StringComparison.Ordinal))
-        {
-            throw Denied(actor.Id, sessionId, submissionId, traceId);
-        }
-    }
-
     private ApiException Denied(
         Guid actorId,
         Guid? sessionId,
         Guid submissionId,
-        string? traceId)
+        string? traceId,
+        string branch = "ActorEligibility",
+        User? actor = null,
+        Guid? examId = null,
+        Guid? fileId = null,
+        SessionAccessMode? accessMode = null,
+        Guid? createdBy = null)
     {
         logger.LogWarning(
-            "OnlyLAN submission download Denied. ActorId={ActorId}; SessionId={SessionId}; SubmissionId={SubmissionId}; TraceId={TraceId}",
+            "OnlyLAN submission download Denied. Branch={AuthorizationBranch}; ActorId={ActorId}; ActorRole={ActorRole}; ActorOrganizationId={ActorOrganizationId}; SessionId={SessionId}; ExamId={ExamId}; SubmissionId={SubmissionId}; FileId={FileId}; AccessMode={AccessMode}; ExamCreatedBy={ExamCreatedBy}; TraceId={TraceId}",
+            branch,
             actorId,
+            actor?.Role,
+            actor?.OrganizationId,
             sessionId,
+            examId,
             submissionId,
+            fileId,
+            accessMode,
+            createdBy,
             traceId);
         return new(
             ErrorCodes.Forbidden,

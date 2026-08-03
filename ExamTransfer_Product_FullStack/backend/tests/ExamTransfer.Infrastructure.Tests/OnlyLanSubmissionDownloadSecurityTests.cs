@@ -32,6 +32,9 @@ public sealed class OnlyLanSubmissionDownloadSecurityTests
         Assert.Equal("answer.zip", download.DownloadName);
         Assert.Equal("application/zip", download.MimeType);
         Assert.DoesNotContain(fixture.Paths.RootPath, download.ToString(), StringComparison.OrdinalIgnoreCase);
+        await fixture.Db.Entry(fixture.Submission).ReloadAsync();
+        Assert.Equal(SubmissionStatus.Submitted, fixture.Submission.Status);
+        Assert.True(fixture.Submission.IsOfficial);
     }
 
     [Fact]
@@ -90,6 +93,108 @@ public sealed class OnlyLanSubmissionDownloadSecurityTests
         var download = await fixture.OpenAsAsync(colleague);
 
         await download.Content.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SameOrganizationAdminCanDownload()
+    {
+        await using var fixture = await DownloadFixture.CreateAsync();
+        var admin = await fixture.AddUserAsync(UserRole.Admin, "org-a");
+
+        var download = await fixture.OpenAsAsync(admin);
+
+        await download.Content.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task OwnerlessExamWithValidExamCreatedAuditCanDownload()
+    {
+        await using var fixture = await DownloadFixture.CreateAsync();
+        fixture.Exam.CreatedBy = null;
+        fixture.Db.AuditLogsSet.Add(new AuditLog
+        {
+            Action = "ExamCreated",
+            EntityType = nameof(Exam),
+            EntityId = fixture.Exam.Id.ToString(),
+            ActorId = fixture.Owner.Id.ToString(),
+            TraceId = "legacy-owner-test"
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var download = await fixture.OpenAsAsync(fixture.Owner);
+
+        await download.Content.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task OwnerlessExamWithoutExamCreatedAuditIsDenied()
+    {
+        await using var fixture = await DownloadFixture.CreateAsync();
+        fixture.Exam.CreatedBy = null;
+        await fixture.Db.SaveChangesAsync();
+
+        await AssertStatusAsync(
+            403,
+            () => fixture.OpenAsAsync(fixture.Owner));
+    }
+
+    [Theory]
+    [InlineData(UserRole.Student, true)]
+    [InlineData(UserRole.Teacher, false)]
+    public async Task OwnerlessExamWithInvalidAuditActorIsDenied(
+        UserRole auditActorRole,
+        bool auditActorIsActive)
+    {
+        await using var fixture = await DownloadFixture.CreateAsync();
+        fixture.Exam.CreatedBy = null;
+        var auditActor = await fixture.AddUserAsync(auditActorRole, "org-a");
+        auditActor.IsActive = auditActorIsActive;
+        fixture.Db.AuditLogsSet.Add(new AuditLog
+        {
+            Action = "ExamCreated",
+            EntityType = nameof(Exam),
+            EntityId = fixture.Exam.Id.ToString(),
+            ActorId = auditActor.Id.ToString(),
+            TraceId = "legacy-invalid-owner-test"
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        await AssertStatusAsync(
+            403,
+            () => fixture.OpenAsAsync(fixture.Owner));
+    }
+
+    [Fact]
+    public async Task OwnerlessExamWithAmbiguousEarliestValidAuditIsDenied()
+    {
+        await using var fixture = await DownloadFixture.CreateAsync();
+        fixture.Exam.CreatedBy = null;
+        var otherOwner = await fixture.AddUserAsync(UserRole.Teacher, "org-a");
+        var createdAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        fixture.Db.AuditLogsSet.AddRange(
+            new AuditLog
+            {
+                Action = "ExamCreated",
+                EntityType = nameof(Exam),
+                EntityId = fixture.Exam.Id.ToString(),
+                ActorId = fixture.Owner.Id.ToString(),
+                TraceId = "legacy-ambiguous-owner-a",
+                CreatedAtUtc = createdAt
+            },
+            new AuditLog
+            {
+                Action = "ExamCreated",
+                EntityType = nameof(Exam),
+                EntityId = fixture.Exam.Id.ToString(),
+                ActorId = otherOwner.Id.ToString(),
+                TraceId = "legacy-ambiguous-owner-b",
+                CreatedAtUtc = createdAt
+            });
+        await fixture.Db.SaveChangesAsync();
+
+        await AssertStatusAsync(
+            403,
+            () => fixture.OpenAsAsync(fixture.Owner));
     }
 
     [Fact]

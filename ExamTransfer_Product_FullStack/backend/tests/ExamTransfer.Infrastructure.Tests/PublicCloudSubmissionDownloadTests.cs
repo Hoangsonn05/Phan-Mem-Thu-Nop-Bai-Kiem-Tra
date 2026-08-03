@@ -104,6 +104,27 @@ public sealed class PublicCloudSubmissionDownloadTests
     }
 
     [Fact]
+    public async Task OwnerlessExamWithValidExamCreatedAuditPreservesPublicCloudParity()
+    {
+        await using var fixture = await DownloadFixture.CreateAsync();
+        fixture.Exam.CreatedBy = null;
+        fixture.Db.AuditLogsSet.Add(new AuditLog
+        {
+            Action = "ExamCreated",
+            EntityType = nameof(Exam),
+            EntityId = fixture.Exam.Id.ToString(),
+            ActorId = fixture.Owner.Id.ToString(),
+            TraceId = "legacy-public-owner-test"
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var download = await fixture.OpenAsync();
+
+        await download.Content.DisposeAsync();
+        Assert.Equal(1, fixture.Cloud.DownloadCount);
+    }
+
+    [Fact]
     public async Task StudentActorIsDeniedByServiceDefenseInDepth()
     {
         await using var fixture = await DownloadFixture.CreateAsync();

@@ -5,13 +5,14 @@ using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Storage;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<ExamService> logger) : IExamService
+public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<ExamService> logger, IHttpContextAccessor accessor) : IExamService
 {
     private readonly ExamTransferOptions _options = options.Value;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -90,6 +91,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
     public async Task<ExamDetailDto> CreateAsync(CreateExamRequest request, CancellationToken cancellationToken)
     {
+        var actorId = RequiredAuthenticatedActorId();
         return await InTransactionAsync(async () =>
         {
             Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
@@ -101,7 +103,8 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                 ClassId = request.ClassId, Title = request.Title.Trim(), Subject = request.Subject.Trim(), Description = request.Description?.Trim(),
                 DurationMinutes = request.DurationMinutes, DeliveryType = request.DeliveryType,
                 QuizResultPolicy = policy.ResultPolicy, SupervisionMode = policy.SupervisionMode,
-                FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions), Status = ExamStatus.Draft, Version = 1
+                FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions), Status = ExamStatus.Draft, Version = 1,
+                CreatedBy = actorId
             };
             db.ExamsSet.Add(exam); await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamCreated", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
@@ -257,8 +260,9 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
 
     public async Task<ExamDetailDto> CloneAsync(Guid id, CancellationToken cancellationToken)
     {
+        var actorId = RequiredAuthenticatedActorId();
         var source = await db.ExamsSet.AsNoTracking().Include(x => x.Files).Include(x => x.QuizImportSources).Include(x => x.QuizQuestions).ThenInclude(x => x.Choices).FirstOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
-        var clone = new Exam { ClassId = source.ClassId, Title = source.Title + " - Bản sao", Subject = source.Subject, Description = source.Description, DurationMinutes = source.DurationMinutes, DeliveryType = source.DeliveryType, QuizResultPolicy = source.QuizResultPolicy, SupervisionMode = source.SupervisionMode, FileRuleJson = source.FileRuleJson, Status = ExamStatus.Draft, Version = 1 };
+        var clone = new Exam { ClassId = source.ClassId, Title = source.Title + " - Bản sao", Subject = source.Subject, Description = source.Description, DurationMinutes = source.DurationMinutes, DeliveryType = source.DeliveryType, QuizResultPolicy = source.QuizResultPolicy, SupervisionMode = source.SupervisionMode, FileRuleJson = source.FileRuleJson, Status = ExamStatus.Draft, Version = 1, CreatedBy = actorId };
         var sourceQuestions = source.QuizQuestions
             .Where(x => x.Version == source.Version)
             .OrderBy(x => x.Order)
@@ -922,6 +926,19 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         created_at = x.CreatedAtUtc,
         updated_at = x.UpdatedAtUtc
     };
+    private Guid RequiredAuthenticatedActorId()
+    {
+        if (Guid.TryParse(accessor.HttpContext?.User.FindFirst("sub")?.Value, out var actorId)
+            && actorId != Guid.Empty)
+        {
+            return actorId;
+        }
+
+        throw new ApiException(
+            ErrorCodes.Unauthorized,
+            "Token thiếu actor hợp lệ.",
+            401);
+    }
     private void EnsureInsideRoot(string path) { if (!path.StartsWith(Path.GetFullPath(paths.RootPath), StringComparison.OrdinalIgnoreCase)) throw new ApiException(ErrorCodes.Forbidden, "Đường dẫn file không hợp lệ.", 403); }
     private static void Validate(string title, string subject, int duration, FileRuleDto rule)
     {

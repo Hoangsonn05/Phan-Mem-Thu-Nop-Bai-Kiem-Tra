@@ -253,7 +253,8 @@ public sealed class ExamAccessDistributionGateTests
                 new OutboxService(db),
                 new NoOpRealtimePublisher(),
                 Options.Create(new ExamTransferOptions()),
-                NullLogger<ExamService>.Instance);
+                NullLogger<ExamService>.Instance,
+                new HttpContextAccessor());
             return new(connection, root, db, service, student, exam, file, session, participant, expectedPath);
         }
 

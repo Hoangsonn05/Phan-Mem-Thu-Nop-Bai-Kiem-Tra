@@ -876,15 +876,17 @@ public sealed class CoreWorkflowPersistenceTests
         await db.SaveChangesAsync();
 
         var outbox = new RecordingOutbox();
+        var accessor = AuthenticatedAccessor(Guid.NewGuid());
         var service = new ExamService(
             db,
             paths,
             new ChunkStorage(),
-            new AuditService(db, new HttpContextAccessor()),
+            new AuditService(db, accessor),
             outbox,
             new NoOpRealtimePublisher(),
             Options.Create(new ExamTransferOptions()),
-            NullLogger<ExamService>.Instance);
+            NullLogger<ExamService>.Instance,
+            accessor);
 
         var clone = await service.CloneAsync(sourceExam.Id, CancellationToken.None);
 
@@ -1359,7 +1361,8 @@ public sealed class CoreWorkflowPersistenceTests
     {
         realtime ??= new NoOpRealtimePublisher();
         var options = Options.Create(new ExamTransferOptions());
-        var audit = new AuditService(db, new HttpContextAccessor());
+        var accessor = AuthenticatedAccessor(Guid.NewGuid());
+        var audit = new AuditService(db, accessor);
         var outbox = new OutboxService(db);
         var paths = new TestStoragePaths(Path.Combine(Path.GetDirectoryName(db.Database.GetDbConnection().DataSource)!, "storage"));
         var tokens = new SessionTokenService(options);
@@ -1380,7 +1383,7 @@ public sealed class CoreWorkflowPersistenceTests
             });
         return new(
             new ClassService(db, new MemoryCache(new MemoryCacheOptions()), audit, outbox),
-            new ExamService(db, paths, new ChunkStorage(), audit, outbox, realtime, options, NullLogger<ExamService>.Instance),
+            new ExamService(db, paths, new ChunkStorage(), audit, outbox, realtime, options, NullLogger<ExamService>.Instance, accessor),
             new SessionService(
                 db,
                 audit,
@@ -1398,6 +1401,18 @@ public sealed class CoreWorkflowPersistenceTests
                     options,
                     new LanAccessPolicy(options)),
                 new PublicCloudProjectionExecution(db)));
+    }
+
+    private static IHttpContextAccessor AuthenticatedAccessor(Guid actorId)
+    {
+        var context = new DefaultHttpContext
+        {
+            User = new System.Security.Claims.ClaimsPrincipal(
+                new System.Security.Claims.ClaimsIdentity(
+                    [new System.Security.Claims.Claim("sub", actorId.ToString())],
+                    "test"))
+        };
+        return new HttpContextAccessor { HttpContext = context };
     }
 
     private static SubmissionService SubmissionMutations(
