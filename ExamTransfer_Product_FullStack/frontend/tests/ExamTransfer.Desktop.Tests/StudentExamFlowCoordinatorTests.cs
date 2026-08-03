@@ -14,6 +14,8 @@ public sealed class StudentExamFlowCoordinatorTests
         { Snapshot(participant: ParticipantStatus.PendingApproval), StudentExamFlowState.PendingApproval, "S-03", false },
         { Snapshot(participant: ParticipantStatus.Rejected), StudentExamFlowState.RejectedOrExpired, "S-01", false },
         { Snapshot(status: SessionStatus.Waiting), StudentExamFlowState.ApprovedWaiting, "S-03", false },
+        { Snapshot(status: SessionStatus.Distributing, delivery: ExamDeliveryType.FileSubmission), StudentExamFlowState.ReadyToStartFileExam, "S-05", false },
+        { Snapshot(status: SessionStatus.Distributing, delivery: ExamDeliveryType.MultipleChoice), StudentExamFlowState.ApprovedWaiting, "S-03", false },
         { Snapshot(delivery: ExamDeliveryType.FileSubmission), StudentExamFlowState.ReadyToStartFileExam, "S-05", false },
         { Snapshot(delivery: ExamDeliveryType.FileSubmission, submission: SubmissionStatus.Uploading), StudentExamFlowState.InProgressFileExam, "S-07", false },
         { Snapshot(delivery: ExamDeliveryType.FileSubmission, submission: SubmissionStatus.Submitted), StudentExamFlowState.SubmittedFileExam, "S-08", false },
@@ -169,6 +171,40 @@ public sealed class StudentExamFlowCoordinatorTests
 
         Assert.Equal(1, navigationCount);
         Assert.Single(toasts.Messages, x => x.Contains("từ chối", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ResolveAsync_DistributingFileExam_RefreshesSnapshotBeforeNavigation()
+    {
+        var now = new DateTimeOffset(2026, 8, 3, 8, 0, 0, TimeSpan.Zero);
+        var state = ActiveLanState(SessionStatus.Waiting, ParticipantStatus.Approved, 1);
+        var api = new RecordingBackendClient(now);
+        SetSnapshot(
+            api,
+            state.SessionId!.Value,
+            state.ParticipantId!.Value,
+            Guid.NewGuid(),
+            SessionStatus.Distributing,
+            2,
+            now);
+        var coordinator = new StudentExamFlowCoordinator(
+            api,
+            new SupabasePublicCloudClient(),
+            state,
+            new RecordingToastService());
+        StudentExamNavigationRequest? navigation = null;
+        coordinator.NavigationRequested += (_, request) => navigation = request;
+
+        var resolution = await coordinator.ResolveAsync(
+            StudentExamEntryPoint.CurrentExam,
+            false,
+            default);
+
+        Assert.Equal(SessionStatus.Distributing, state.SessionStatus);
+        Assert.Equal(2, state.Revision);
+        Assert.Equal(StudentExamFlowState.ReadyToStartFileExam, resolution.State);
+        Assert.Equal("S-05", resolution.RouteKey);
+        Assert.Equal("S-05", navigation?.Resolution.RouteKey);
     }
 
     [Theory]

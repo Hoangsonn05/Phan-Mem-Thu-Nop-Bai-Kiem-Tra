@@ -513,6 +513,14 @@ public interface IClassService
     Task<ClassEnrollmentRequestDto> RejectEnrollmentAsync(Guid classId, Guid requestId, string? reason, Guid mutationRequestId, CancellationToken cancellationToken);
 }
 
+public sealed record ExamFileAccessContext(
+    UserRole Role,
+    Guid? AccountUserId,
+    string? OrganizationId,
+    Guid? SessionId,
+    Guid? ParticipantId,
+    SessionAccessMode AccessMode);
+
 public interface IExamService
 {
     Task<PagedResult<ExamSummaryDto>> ListAsync(string? search, ExamStatus? status, int page, int pageSize, CancellationToken cancellationToken);
@@ -527,8 +535,8 @@ public interface IExamService
     Task UploadChunkAsync(Guid examId, Guid fileId, int index, Stream content, long contentLength, string? chunkSha256, CancellationToken cancellationToken);
     Task<FileDescriptorDto> FinalizeFileAsync(Guid examId, Guid fileId, FinalizeFileUploadRequest request, CancellationToken cancellationToken);
     Task DeleteFileAsync(Guid examId, Guid fileId, CancellationToken cancellationToken);
-    Task<ExamManifestDto> GetManifestAsync(Guid examId, CancellationToken cancellationToken);
-    Task<(string Path, string MimeType, string DownloadName)> GetFileContentAsync(Guid examId, Guid fileId, CancellationToken cancellationToken);
+    Task<ExamManifestDto> GetManifestAsync(Guid examId, ExamFileAccessContext access, CancellationToken cancellationToken);
+    Task<(string Path, string MimeType, string DownloadName)> GetFileContentAsync(Guid examId, Guid fileId, ExamFileAccessContext access, CancellationToken cancellationToken);
 }
 
 public interface ISessionService

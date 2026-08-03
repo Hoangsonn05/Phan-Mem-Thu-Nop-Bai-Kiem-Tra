@@ -312,6 +312,7 @@ internal sealed class RecordingBackendClient(
     public ClassDetailDto? ClassDetailResponse { get; init; }
     public ExamSummaryDto? ExamSummaryResponse { get; init; }
     public ExamDetailDto? ExamDetailResponse { get; init; }
+    public ExamManifestDto? ExamManifestResponse { get; init; }
     public SessionDetailDto? SessionDetailResponse { get; set; }
     public ParticipantDto? ParticipantResponse { get; set; }
     public IReadOnlyList<ClassSummaryDto>? ClassResponses { get; init; }
@@ -319,6 +320,7 @@ internal sealed class RecordingBackendClient(
     public IReadOnlyList<SessionSummaryDto>? SessionResponses { get; init; }
     public Queue<CloudProjectionReadinessView> ProjectionResponses { get; } = [];
     public List<string> PostPaths { get; } = [];
+    public List<string> GetPaths { get; } = [];
     public List<object?> PostRequests { get; } = [];
     public List<string> PutPaths { get; } = [];
     public List<object?> PutRequests { get; } = [];
@@ -430,6 +432,7 @@ internal sealed class RecordingBackendClient(
     public Task<ApiResponse<SettingsDto>?> GetSettingsAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<SettingsDto>?>(null);
     public Task<ApiResponse<T>?> GetAsync<T>(string path, CancellationToken ct = default)
     {
+        GetPaths.Add(path);
         if (ClassDetailResponse is not null && typeof(T) == typeof(ClassDetailDto))
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ClassDetailResponse, "test"));
@@ -439,6 +442,9 @@ internal sealed class RecordingBackendClient(
         if (ParticipantResponse is not null && typeof(T) == typeof(ParticipantDto))
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ParticipantResponse, "test"));
+        if (ExamManifestResponse is not null && typeof(T) == typeof(ExamManifestDto))
+            return Task.FromResult<ApiResponse<T>?>(
+                ApiResponse<T>.Ok((T)(object)ExamManifestResponse, "test"));
         if (typeof(T) == typeof(CloudProjectionReadinessView) && ProjectionResponses.Count > 0)
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ProjectionResponses.Dequeue(), "test"));

@@ -554,20 +554,70 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             cancellationToken: cancellationToken);
     }
 
-    public async Task<ExamManifestDto> GetManifestAsync(Guid examId, CancellationToken cancellationToken)
+    public async Task<ExamManifestDto> GetManifestAsync(
+        Guid examId,
+        ExamFileAccessContext access,
+        CancellationToken cancellationToken)
     {
+        await EnsureFileExamAccessAsync(examId, access, cancellationToken);
         var exam = await db.ExamsSet.AsNoTracking().Include(x => x.Files).FirstOrDefaultAsync(x => x.Id == examId, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
         var files = exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).OrderBy(x => x.OriginalName).Select(ToFileDto).ToList();
         return new ExamManifestDto(exam.Id, exam.Version, DateTimeOffset.UtcNow, files);
     }
 
-    public async Task<(string Path, string MimeType, string DownloadName)> GetFileContentAsync(Guid examId, Guid fileId, CancellationToken cancellationToken)
+    public async Task<(string Path, string MimeType, string DownloadName)> GetFileContentAsync(
+        Guid examId,
+        Guid fileId,
+        ExamFileAccessContext access,
+        CancellationToken cancellationToken)
     {
+        await EnsureFileExamAccessAsync(examId, access, cancellationToken);
         var file = await db.ExamFilesSet.AsNoTracking().FirstOrDefaultAsync(x => x.Id == fileId && x.ExamId == examId && x.TransferStatus == TransferStatus.Completed, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy file.", 404);
         var full = Path.GetFullPath(Path.Combine(paths.RootPath, file.RelativePath)); EnsureInsideRoot(full);
         if (!File.Exists(full)) throw new ApiException(ErrorCodes.NotFound, "File vật lý không tồn tại.", 404);
         return (full, file.MimeType, file.OriginalName);
     }
+
+    private async Task EnsureFileExamAccessAsync(
+        Guid examId,
+        ExamFileAccessContext access,
+        CancellationToken cancellationToken)
+    {
+        if (access.Role is UserRole.Teacher or UserRole.Admin)
+            return;
+
+        if (access.Role != UserRole.Student
+            || !access.AccountUserId.HasValue
+            || !access.SessionId.HasValue
+            || !access.ParticipantId.HasValue
+            || access.AccessMode != SessionAccessMode.LanOnly)
+            throw FileAccessDenied();
+
+        var accountUserId = access.AccountUserId.Value;
+        var sessionId = access.SessionId.Value;
+        var participantId = access.ParticipantId.Value;
+        var organizationId = access.OrganizationId;
+        var allowedStatuses = ExamDistributionAccessPolicy.FileAccessStatuses;
+        var allowed = await db.SessionParticipantsSet
+            .AsNoTracking()
+            .AnyAsync(x =>
+                x.Id == participantId
+                && x.SessionId == sessionId
+                && x.UserId == accountUserId
+                && x.Status == ParticipantStatus.Approved
+                && x.Session.ExamId == examId
+                && x.Session.AccessMode == SessionAccessMode.LanOnly
+                && allowedStatuses.Contains(x.Session.Status)
+                && db.UsersSet.Any(user =>
+                    user.Id == accountUserId
+                    && user.OrganizationId == organizationId),
+                cancellationToken);
+        if (!allowed)
+            throw FileAccessDenied();
+    }
+
+    private static ApiException FileAccessDenied() =>
+        new(ErrorCodes.Forbidden, "Không được tải đề của kỳ thi này.", 403);
 
     private async Task<List<(ExamFile Entity, string FullPath)>> PrepareDraftVersionAsync(
         Exam exam,

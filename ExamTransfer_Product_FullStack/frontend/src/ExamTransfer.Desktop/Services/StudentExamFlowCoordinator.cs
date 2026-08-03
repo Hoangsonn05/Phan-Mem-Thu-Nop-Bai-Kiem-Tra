@@ -279,15 +279,16 @@ public sealed class StudentExamFlowCoordinator(
             return new(StudentExamFlowState.PendingApproval, "S-03", false, "Lượt dự thi đang chờ giáo viên duyệt.");
         if (snapshot.ParticipantStatus is ParticipantStatus.Rejected or ParticipantStatus.NotConnected)
             return new(StudentExamFlowState.RejectedOrExpired, "S-01", false, "Lượt dự thi đã bị từ chối hoặc hết hiệu lực.");
-        if (snapshot.ParticipantStatus != ParticipantStatus.Approved
-            || snapshot.SessionStatus is not (
-                SessionStatus.InProgress
-                or SessionStatus.Paused
-                or SessionStatus.Collecting))
+        if (snapshot.ParticipantStatus != ParticipantStatus.Approved)
             return new(StudentExamFlowState.ApprovedWaiting, "S-03", false, "Phiên thi chưa bắt đầu.");
 
         if (snapshot.DeliveryType == ExamDeliveryType.MultipleChoice)
         {
+            if (!ExamDistributionAccessPolicy.CanAccessQuiz(
+                    snapshot.ParticipantStatus,
+                    snapshot.SessionStatus,
+                    snapshot.DeliveryType))
+                return new(StudentExamFlowState.ApprovedWaiting, "S-03", false, "Phiên thi chưa bắt đầu.");
             if (snapshot.SessionStatus == SessionStatus.Collecting
                 && snapshot.AttemptStatus is null)
                 return new(
@@ -305,6 +306,12 @@ public sealed class StudentExamFlowCoordinator(
                     StudentExamFlowState.ReadyToStartQuiz, "S-06", true, "Xác nhận trước khi bắt đầu nhận đề trắc nghiệm.")
             };
         }
+
+        if (!ExamDistributionAccessPolicy.CanReceiveFile(
+                snapshot.ParticipantStatus,
+                snapshot.SessionStatus,
+                snapshot.DeliveryType))
+            return new(StudentExamFlowState.ApprovedWaiting, "S-03", false, "Phiên thi chưa bắt đầu.");
 
         return snapshot.SubmissionStatus switch
         {

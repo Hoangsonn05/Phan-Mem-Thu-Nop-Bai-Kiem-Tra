@@ -1,5 +1,5 @@
 begin;
-select plan(59);
+select plan(67);
 
 insert into auth.users(id,email) values
   ('81000000-0000-0000-0000-000000000001','final-teacher@example.test'),
@@ -348,6 +348,60 @@ select is(public.approve_public_participant(
   'owning teacher approves the OpenRequest participant');
 
 reset role;
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"81000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true);
+select throws_ok($$select public.get_public_exam_manifest(
+  '81300000-0000-0000-0000-000000000001')$$,
+  '42501','PUBLIC_EXAM_MANIFEST_FORBIDDEN',
+  'Approved OpenRequest participant cannot receive the manifest while Waiting');
+select throws_ok($$select * from public.get_public_exam_file_download(
+  '81300000-0000-0000-0000-000000000001',
+  '81500000-0000-0000-0000-000000000001')$$,
+  '42501','PUBLIC_EXAM_FILE_FORBIDDEN',
+  'Approved OpenRequest participant cannot receive a file while Waiting');
+
+reset role;
+update public.exam_sessions
+set status='Distributing',updated_at=now()
+where id='81300000-0000-0000-0000-000000000001';
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"81000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true);
+select is(jsonb_array_length(public.get_public_exam_manifest(
+  '81300000-0000-0000-0000-000000000001')),
+  1,
+  'Approved OpenRequest participant receives the manifest while Distributing');
+select results_eq($$select file_name from public.get_public_exam_file_download(
+  '81300000-0000-0000-0000-000000000001',
+  '81500000-0000-0000-0000-000000000001')$$,
+  array['open-exam.pdf'::text],
+  'Approved OpenRequest participant resolves the file while Distributing');
+
+reset role;
+update public.exam_sessions
+set status='Paused',updated_at=now()
+where id='81300000-0000-0000-0000-000000000001';
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"81000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true);
+select is(jsonb_array_length(public.get_public_exam_manifest(
+  '81300000-0000-0000-0000-000000000001')),
+  1,
+  'Approved OpenRequest participant receives the manifest while Paused');
+select results_eq($$select file_name from public.get_public_exam_file_download(
+  '81300000-0000-0000-0000-000000000001',
+  '81500000-0000-0000-0000-000000000001')$$,
+  array['open-exam.pdf'::text],
+  'Approved OpenRequest participant resolves the file while Paused');
+
+reset role;
 update public.exam_sessions
 set status='InProgress',started_at=now(),accepting_participants=false,updated_at=now()
 where id='81300000-0000-0000-0000-000000000001';
@@ -555,6 +609,15 @@ select is(public.ack_public_device_command(
   '81600000-0000-0000-0000-000000000002','class-device','Received',null,null),
   'Received',
   'ClassMembersOnly command acknowledgement remains valid');
+select throws_ok($$select public.get_public_exam_manifest(
+  '81300000-0000-0000-0000-000000000005')$$,
+  '42501','PUBLIC_EXAM_MANIFEST_FORBIDDEN',
+  'Approved ClassMembersOnly participant cannot receive the manifest while Waiting');
+select throws_ok($$select * from public.get_public_exam_file_download(
+  '81300000-0000-0000-0000-000000000005',
+  '81500000-0000-0000-0000-000000000002')$$,
+  '42501','PUBLIC_EXAM_FILE_FORBIDDEN',
+  'Approved ClassMembersOnly participant cannot receive a file while Waiting');
 
 reset role;
 update public.exam_sessions

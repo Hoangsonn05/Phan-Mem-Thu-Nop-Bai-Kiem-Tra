@@ -1,16 +1,14 @@
 using ExamTransfer.Application;
-using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.LocalServer.Auth;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace ExamTransfer.LocalServer.Controllers;
 
 [Route("api/v1/exams")]
 [Authorize(AuthenticationSchemes = ExamTransferAuthSchemes.Account + "," + ExamTransferAuthSchemes.ExamParticipant)]
-public sealed class ExamsController(IExamService service, AppDbContext db) : ApiControllerBase
+public sealed class ExamsController(IExamService service) : ApiControllerBase
 {
     [HttpGet][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<PagedResult<ExamSummaryDto>>>> List([FromQuery] string? search, [FromQuery] ExamStatus? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default) => Data(await service.ListAsync(search, status, page, pageSize, ct));
@@ -46,27 +44,35 @@ public sealed class ExamsController(IExamService service, AppDbContext db) : Api
     [HttpGet("{id:guid}/manifest")]
     public async Task<ActionResult<ApiResponse<ExamManifestDto>>> Manifest(Guid id, CancellationToken ct)
     {
-        await EnsureExamAccessAsync(id, ct);
-        return Data(await service.GetManifestAsync(id, ct));
+        return Data(await service.GetManifestAsync(id, ExamFileAccess(), ct));
     }
 
     [HttpGet("{id:guid}/files/{fileId:guid}/content")]
     public async Task<IActionResult> Content(Guid id, Guid fileId, CancellationToken ct)
     {
-        await EnsureExamAccessAsync(id, ct);
-        var file = await service.GetFileContentAsync(id, fileId, ct);
+        var file = await service.GetFileContentAsync(id, fileId, ExamFileAccess(), ct);
         return PhysicalFile(file.Path, file.MimeType, file.DownloadName, enableRangeProcessing: true);
     }
 
-    private async Task EnsureExamAccessAsync(Guid examId, CancellationToken ct)
+    private ExamFileAccessContext ExamFileAccess()
     {
-        if (!IsStudent) return;
-        if (!IsExamParticipant)
-            throw new ApiException(ErrorCodes.ParticipantTokenRequired, "Endpoint này cần X-Exam-Session-Token.", 401);
-        var sessionId = RequiredGuidClaim("session_id");
-        var participantId = RequiredGuidClaim("participant_id");
-        var allowed = await db.SessionParticipantsSet.AsNoTracking()
-            .AnyAsync(x => x.Id == participantId && x.SessionId == sessionId && x.Status == ParticipantStatus.Approved && x.Session.ExamId == examId, ct);
-        if (!allowed) throw new ApiException(ErrorCodes.Forbidden, "Không được tải đề của kỳ thi này.", 403);
+        if (IsStudent)
+        {
+            if (!IsExamParticipant)
+                throw new ApiException(ErrorCodes.ParticipantTokenRequired, "Endpoint này cần X-Exam-Session-Token.", 401);
+            return new(
+                UserRole.Student,
+                RequiredGuidClaim("sub"),
+                User.FindFirst("organization_id")?.Value,
+                RequiredGuidClaim("session_id"),
+                RequiredGuidClaim("participant_id"),
+                SessionAccessMode.LanOnly);
+        }
+
+        if (User.IsInRole(UserRole.Teacher.ToString()))
+            return new(UserRole.Teacher, null, User.FindFirst("organization_id")?.Value, null, null, SessionAccessMode.LanOnly);
+        if (User.IsInRole(UserRole.Admin.ToString()))
+            return new(UserRole.Admin, null, User.FindFirst("organization_id")?.Value, null, null, SessionAccessMode.LanOnly);
+        throw new ApiException(ErrorCodes.Forbidden, "Không được truy cập đề thi.", 403);
     }
 }
