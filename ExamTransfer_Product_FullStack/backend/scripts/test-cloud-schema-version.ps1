@@ -5,6 +5,7 @@ param(
 )
 . "$PSScriptRoot/acceptance-common.ps1"
 $traceId = New-AcceptanceTraceId
+$requiredSchemaVersion = 27
 try {
     $headers = @{ apikey=$PublishableKey; Authorization="Bearer $TeacherOrServiceJwt"; 'Content-Type'='application/json' }
     $result = Invoke-RestMethod -Method Post -Uri "$($SupabaseUrl.TrimEnd('/'))/rest/v1/rpc/get_examtransfer_cloud_capabilities" -Headers $headers -Body '{}'
@@ -23,8 +24,8 @@ try {
         'approve_public_enrollment_request','reject_public_enrollment_request',
         'get_public_student_timeline'
     )
-    if ([int]$result.schemaVersion -ne 25) { throw "Expected schema 25; received $($result.schemaVersion)." }
+    if ([int]$result.schemaVersion -ne $requiredSchemaVersion) { throw "Expected schema $requiredSchemaVersion; received $($result.schemaVersion)." }
     foreach ($rpc in $required) { if ($result.criticalRpcs -notcontains $rpc) { throw "Missing RPC $rpc." } }
     foreach ($bucket in @('exam-archives','public-submission-archives')) { if ($result.buckets -notcontains $bucket) { throw "Missing bucket $bucket." } }
-    Write-AcceptanceResult -Passed $true -Code 'CLOUD_SCHEMA_VERSION_OK' -TraceId $traceId -Detail 'live capability RPC reports schema 23, critical RPCs and buckets'
+    Write-AcceptanceResult -Passed $true -Code 'CLOUD_SCHEMA_VERSION_OK' -TraceId $traceId -Detail "live capability RPC reports schema $requiredSchemaVersion, critical RPCs and buckets"
 } catch { Write-AcceptanceResult -Passed $false -Code 'CLOUD_SCHEMA_VERSION_FAILED' -TraceId $traceId -Detail $_.Exception.Message }

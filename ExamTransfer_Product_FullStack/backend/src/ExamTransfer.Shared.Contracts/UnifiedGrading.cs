@@ -13,7 +13,10 @@ public sealed record GradingWorkItemDto(
     decimal? AutoScore,
     decimal? Score,
     decimal MaxScore,
-    Guid? PrimaryFileId = null);
+    Guid? PrimaryFileId = null,
+    Guid ExamId = default,
+    int AttemptNumber = 1,
+    bool IsLate = false);
 
 public sealed record QuizChoiceReviewDto(
     Guid Id,

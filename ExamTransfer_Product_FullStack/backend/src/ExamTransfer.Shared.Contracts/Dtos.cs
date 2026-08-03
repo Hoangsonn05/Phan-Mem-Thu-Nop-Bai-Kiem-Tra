@@ -35,7 +35,7 @@ public sealed record ClassEnrollmentRequestDto(
     long CloudVersion);
 
 public sealed record ExamSummaryDto(Guid Id, Guid? ClassId, string Title, string Subject, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, int FileCount, string RowVersion, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None, bool HasCommittedQuizSource = false, int QuizQuestionCount = 0);
-public sealed record ExamDetailDto(Guid Id, Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, FileRuleDto FileRule, IReadOnlyList<FileDescriptorDto> Files, string RowVersion, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None, QuizImportSourceDto? QuizSource = null, int QuizQuestionCount = 0);
+public sealed record ExamDetailDto(Guid Id, Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, ExamDeliveryType DeliveryType, ExamStatus Status, int Version, FileRuleDto FileRule, IReadOnlyList<FileDescriptorDto> Files, string RowVersion, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None, QuizImportSourceDto? QuizSource = null, int QuizQuestionCount = 0, decimal QuizMaxScore = 0);
 public sealed record ExamManifestDto(Guid ExamId, int Version, DateTimeOffset GeneratedAtUtc, IReadOnlyList<FileDescriptorDto> Files);
 
 public sealed record SessionCountsDto(int Total, int Pending, int Approved, int Connected, int Submitted, int Uploading, int Disconnected);
@@ -96,6 +96,7 @@ public sealed record GradeDto(Guid SubmissionId, GradingStatus Status, decimal? 
 {
     public Guid? GradeId { get; init; }
     public long Revision { get; init; }
+    public IReadOnlyList<SubmissionFileDto> SubmissionFiles { get; init; } = [];
 }
 public sealed record RubricScoreDto(string CriterionKey, string Title, decimal Score, decimal MaxScore, string? Comment, int Order);
 

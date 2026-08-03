@@ -1,7 +1,13 @@
 namespace ExamTransfer.Shared.Contracts;
 
 public sealed record QuizImportFileRequest(string FileName, string Base64Content);
-public sealed record QuizImportResultDto(Guid ExamId, int Version, int QuestionCount, decimal MaxScore);
+public sealed record QuizImportResultDto(
+    Guid ExamId,
+    int Version,
+    int QuestionCount,
+    decimal MaxScore,
+    QuizImportSourceDto? Source = null,
+    string ExamRowVersion = "");
 public sealed record QuizImportPreviewRequest(string FileName, string Base64Content);
 public sealed record QuizImportCommitRequest(string PreviewToken, bool ConfirmReplace, string ExamRowVersion);
 public sealed record QuizImportIssueDto(int? QuestionNumber, int? LineNumber, string Code, string Message);

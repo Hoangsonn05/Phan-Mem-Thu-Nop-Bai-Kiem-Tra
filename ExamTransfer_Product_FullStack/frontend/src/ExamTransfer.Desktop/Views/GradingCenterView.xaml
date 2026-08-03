@@ -37,11 +37,22 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <TextBlock Text="Danh sách bài cần chấm" Style="{StaticResource SectionTitleText}"
-                               Margin="18,16,18,12" />
+                    <Grid Margin="18,16,18,12">
+                        <TextBlock Text="Danh sách bài cần chấm" Style="{StaticResource SectionTitleText}" />
+                        <TextBlock Text="Đang tải..." HorizontalAlignment="Right"
+                                   Style="{StaticResource CaptionText}"
+                                   Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    </Grid>
                     <DataGrid Grid.Row="1" ItemsSource="{Binding Queue}"
-                              SelectedItem="{Binding SelectedWorkItem}">
+                              SelectedItem="{Binding SelectedWorkItem}"
+                              EnableRowVirtualization="True"
+                              EnableColumnVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.CanContentScroll="True"
+                              RowHeight="36">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="MÃ HS" Binding="{Binding StudentCode}" Width="82" />
                             <DataGridTextColumn Header="HỌC SINH" Binding="{Binding StudentName}" Width="*" />
@@ -51,6 +62,23 @@
                             <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding StatusText}" Width="90" />
                         </DataGrid.Columns>
                     </DataGrid>
+                    <Grid Grid.Row="2" Margin="14,10,14,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Content="Mở bài đã chọn" Command="{Binding OpenWorkItemCommand}"
+                                Style="{StaticResource PrimaryButton}" />
+                        <TextBlock Grid.Column="1" Text="{Binding PageLabel}" HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" Style="{StaticResource CaptionText}" />
+                        <StackPanel Grid.Column="2" Orientation="Horizontal">
+                            <Button Content="Trước" Command="{Binding PreviousPageCommand}"
+                                    Style="{StaticResource GhostButton}" />
+                            <Button Content="Sau" Command="{Binding NextPageCommand}"
+                                    Style="{StaticResource GhostButton}" Margin="6,0,0,0" />
+                        </StackPanel>
+                    </Grid>
                 </Grid>
             </Border>
 

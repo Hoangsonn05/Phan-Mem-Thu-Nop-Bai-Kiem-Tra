@@ -1,4 +1,7 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Reflection;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
@@ -12,6 +15,8 @@ using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.Infrastructure.Storage;
+using ExamTransfer.LocalServer;
+using ExamTransfer.LocalServer.Discovery;
 using ExamTransfer.LocalServer.Workers;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
@@ -152,7 +157,7 @@ public sealed class FinalCloudSourceCompatibilityTests
                 $"/quiz-sources/{sourceId}/source.bin",
                 firstPath,
                 StringComparison.Ordinal);
-            Assert.Equal(25, CloudSchemaCompatibility.RequiredVersion);
+            Assert.Equal(27, CloudSchemaCompatibility.RequiredVersion);
         }
         finally
         {
@@ -162,9 +167,9 @@ public sealed class FinalCloudSourceCompatibilityTests
     }
 
     [Fact]
-    public void PublicCloudCapability_RequiresSchema23AndCriticalRpcs()
+    public void PublicCloudCapability_RequiresCurrentSchemaAndCriticalRpcs()
     {
-        Assert.Equal(25, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(27, CloudSchemaCompatibility.RequiredVersion);
         Assert.Contains("save_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("return_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("reopen_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
@@ -173,7 +178,10 @@ public sealed class FinalCloudSourceCompatibilityTests
 
         var script = PublicCloudTestHarness.ReadRepositoryFile(
             "backend/scripts/test-cloud-schema-version.ps1");
-        Assert.Contains("schemaVersion -ne 25", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "schemaVersion -ne $requiredSchemaVersion",
+            script,
+            StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'save_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'return_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'reopen_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
@@ -183,6 +191,287 @@ public sealed class FinalCloudSourceCompatibilityTests
     }
 
     private sealed class CloudSourcePaths(string root) : IStoragePaths
+    {
+        public string RootPath { get; } = root;
+        public string DatabasePath => Path.Combine(RootPath, "database.db");
+        public string BackupRoot => Path.Combine(RootPath, "backups");
+        public string ExportRoot => Path.Combine(RootPath, "exports");
+        public string TemporaryRoot => Path.Combine(RootPath, "temp");
+        public string ExamVersionRoot(Guid examId, int version) =>
+            Path.Combine(RootPath, "exams", examId.ToString("N"), version.ToString());
+        public string SessionRoot(Guid sessionId) =>
+            Path.Combine(RootPath, "sessions", sessionId.ToString("N"));
+        public string SubmissionRoot(Guid sessionId, string studentCode, Guid submissionId) =>
+            Path.Combine(SessionRoot(sessionId), studentCode, submissionId.ToString("N"));
+        public string ReceiptRoot(Guid sessionId) =>
+            Path.Combine(SessionRoot(sessionId), "receipts");
+        public void EnsureCreated() => Directory.CreateDirectory(RootPath);
+    }
+}
+
+public sealed class PublicCloudSchemaContractTests
+{
+    [Fact]
+    public void RequiredSchemaVersion_MatchesCanonicalMigrationAndAcceptanceScript()
+    {
+        Assert.Equal(27, CloudSchemaCompatibility.RequiredVersion);
+
+        var migration = PublicCloudTestHarness.ReadRepositoryFile(
+            "backend/supabase/migrations/20260803171422_public_student_timeline_score_visible_non_null.sql");
+        var migrationVersion = Regex.Match(
+            migration,
+            @"\bset\s+schema_version\s*=\s*(\d+)\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        Assert.True(
+            migrationVersion.Success,
+            "Canonical migration must declare the PublicCloud schema version.");
+        Assert.Equal(
+            CloudSchemaCompatibility.RequiredVersion,
+            int.Parse(migrationVersion.Groups[1].Value));
+
+        var script = PublicCloudTestHarness.ReadRepositoryFile(
+            "backend/scripts/test-cloud-schema-version.ps1");
+        var scriptVersion = Regex.Match(
+            script,
+            @"\$requiredSchemaVersion\s*=\s*(\d+)\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        Assert.True(
+            scriptVersion.Success,
+            "Acceptance script must declare its required PublicCloud schema version.");
+        Assert.Equal(
+            CloudSchemaCompatibility.RequiredVersion,
+            int.Parse(scriptVersion.Groups[1].Value));
+    }
+
+    [Fact]
+    public async Task RemoteSchema27_PassesHealthAndPreflight()
+    {
+        using var fixture = SchemaAdapterFixture.Create(27);
+
+        Assert.True(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
+        var preflight = await fixture.Adapter.PreflightAsync(CancellationToken.None);
+
+        Assert.True(preflight.Enabled);
+        Assert.True(preflight.Configured);
+        Assert.True(preflight.CanSynchronize);
+        Assert.True(preflight.Reachable);
+        Assert.Empty(preflight.Errors);
+    }
+
+    [Fact]
+    public async Task RemoteSchema26_IsRejectedAsStale()
+    {
+        using var fixture = SchemaAdapterFixture.Create(26);
+
+        Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RemoteSchema28_IsRejectedByExactMatchContract()
+    {
+        using var fixture = SchemaAdapterFixture.Create(28);
+
+        Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task MissingRemoteSchemaVersion_IsRejected()
+    {
+        using var fixture = SchemaAdapterFixture.Create(
+            schemaVersion: null,
+            includeSchemaVersion: false);
+
+        Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task MalformedRemoteSchemaVersion_IsRejected()
+    {
+        using var fixture = SchemaAdapterFixture.Create("not-a-number");
+
+        Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RemoteSchema27_UnblocksCloudWorkerAndPublicCloudPullPreflight()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        using var fixture = SchemaAdapterFixture.Create(27);
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(builder =>
+            builder.UseSqlite($"Data Source={database.Path}"));
+        services.AddSingleton<ICloudAdapter>(fixture.Adapter);
+        await using var provider = services.BuildServiceProvider();
+        var reporter = new RuntimeHealthReporter(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new ContractStoragePaths(Path.GetDirectoryName(database.Path)!),
+            fixture.Options,
+            new DiscoveryRuntimeState());
+
+        var report = await reporter.GetAsync(CancellationToken.None);
+
+        Assert.Equal("SUPABASE_SCHEMA_COMPATIBLE", report.SupabaseSchemaCompatible.Code);
+        Assert.Equal("CLOUD_WORKER_HEALTHY", report.CloudWorker.Code);
+        Assert.Equal("PUBLIC_CLOUD_PULL_HEALTHY", report.PublicCloudPullWorker.Code);
+    }
+
+    [Fact]
+    public async Task ConfigurationAndAuthenticationFailures_RemainFailClosed()
+    {
+        using var unconfigured = SchemaAdapterFixture.Create(
+            27,
+            configured: false,
+            authenticated: false);
+        var unconfiguredPreflight = await unconfigured.Adapter.PreflightAsync(
+            CancellationToken.None);
+        Assert.False(unconfiguredPreflight.Configured);
+        Assert.False(unconfiguredPreflight.CanSynchronize);
+        Assert.False(unconfiguredPreflight.Reachable);
+        Assert.Equal(0, unconfigured.Handler.CallCount);
+
+        using var unauthenticated = SchemaAdapterFixture.Create(
+            27,
+            authenticated: false);
+        var unauthenticatedPreflight = await unauthenticated.Adapter.PreflightAsync(
+            CancellationToken.None);
+        Assert.True(unauthenticatedPreflight.Configured);
+        Assert.False(unauthenticatedPreflight.CanSynchronize);
+        Assert.False(unauthenticatedPreflight.Reachable);
+        Assert.Equal(0, unauthenticated.Handler.CallCount);
+
+        using var unauthorized = SchemaAdapterFixture.Create(
+            27,
+            responseStatus: HttpStatusCode.Unauthorized);
+        var unauthorizedPreflight = await unauthorized.Adapter.PreflightAsync(
+            CancellationToken.None);
+        Assert.True(unauthorizedPreflight.Configured);
+        Assert.True(unauthorizedPreflight.CanSynchronize);
+        Assert.False(unauthorizedPreflight.Reachable);
+        Assert.Equal(1, unauthorized.Handler.CallCount);
+    }
+
+    private sealed class SchemaAdapterFixture : IDisposable
+    {
+        private readonly string root;
+
+        private SchemaAdapterFixture(
+            object? schemaVersion,
+            bool includeSchemaVersion,
+            bool configured,
+            bool authenticated,
+            HttpStatusCode responseStatus)
+        {
+            root = Path.Combine(
+                Path.GetTempPath(),
+                "ExamTransfer.PublicCloud.SchemaContract",
+                Guid.NewGuid().ToString("N"));
+            var organizationId = Guid.NewGuid().ToString();
+            Options = Microsoft.Extensions.Options.Options.Create(
+                new ExamTransferOptions
+                {
+                    Cloud = new CloudOptions
+                    {
+                        Enabled = true,
+                        SupabaseUrl = configured
+                            ? "https://schema-contract.example.test"
+                            : null,
+                        PublishableKey = configured ? "test-publishable-key" : null,
+                        OrganizationId = organizationId,
+                        Schema = "public"
+                    }
+                });
+            var state = new CloudSessionState(
+                new EphemeralDataProtectionProvider(),
+                new ContractStoragePaths(root));
+            if (authenticated)
+            {
+                state.Set(
+                    new CloudSessionSnapshot(
+                        "test-access-token",
+                        "test-refresh-token",
+                        DateTimeOffset.UtcNow.AddHours(1),
+                        Guid.NewGuid().ToString(),
+                        "teacher@example.test",
+                        organizationId,
+                        UserRole.Teacher.ToString()),
+                    persist: false);
+            }
+
+            Handler = new CapabilityHandler(
+                schemaVersion,
+                includeSchemaVersion,
+                responseStatus);
+            Adapter = new SupabaseCloudAdapter(
+                new HttpClient(Handler),
+                Options,
+                state);
+        }
+
+        public SupabaseCloudAdapter Adapter { get; }
+        public CapabilityHandler Handler { get; }
+        public IOptions<ExamTransferOptions> Options { get; }
+
+        public static SchemaAdapterFixture Create(
+            object? schemaVersion,
+            bool includeSchemaVersion = true,
+            bool configured = true,
+            bool authenticated = true,
+            HttpStatusCode responseStatus = HttpStatusCode.OK) =>
+            new(
+                schemaVersion,
+                includeSchemaVersion,
+                configured,
+                authenticated,
+                responseStatus);
+
+        public void Dispose()
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class CapabilityHandler(
+        object? schemaVersion,
+        bool includeSchemaVersion,
+        HttpStatusCode responseStatus) : HttpMessageHandler
+    {
+        public int CallCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            if (responseStatus != HttpStatusCode.OK)
+                return Task.FromResult(new HttpResponseMessage(responseStatus));
+
+            var payload = new Dictionary<string, object?>
+            {
+                ["criticalRpcs"] = CloudSchemaCompatibility.CriticalRpcs
+                    .OrderBy(x => x, StringComparer.Ordinal)
+                    .ToArray(),
+                ["buckets"] = new[]
+                {
+                    "exam-archives",
+                    "public-submission-archives"
+                }
+            };
+            if (includeSchemaVersion)
+                payload["schemaVersion"] = schemaVersion;
+
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(payload),
+                    Encoding.UTF8,
+                    "application/json")
+            };
+            return Task.FromResult(response);
+        }
+    }
+
+    private sealed class ContractStoragePaths(string root) : IStoragePaths
     {
         public string RootPath { get; } = root;
         public string DatabasePath => Path.Combine(RootPath, "database.db");

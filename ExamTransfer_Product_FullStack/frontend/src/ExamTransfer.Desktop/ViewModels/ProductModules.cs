@@ -612,7 +612,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         SupervisionMode = detail.SupervisionMode;
         currentHasCommittedQuizSource = detail.QuizSource is not null;
         currentQuizQuestionCount = detail.QuizQuestionCount;
-        QuizImport.Clear();
+        QuizImport.SetCommitted(detail.QuizSource, detail.QuizQuestionCount, detail.QuizMaxScore);
         currentAutoZip = detail.FileRule.AutoZip;
         currentRequireAtLeastOneFile = detail.FileRule.RequireAtLeastOneFile;
         currentLegacyClassId = detail.ClassId;
@@ -825,11 +825,17 @@ public sealed class ExamManagementViewModel : ProductPageBase
                 "Thay bộ câu hỏi hiện tại",
                 "Commit sẽ thay toàn bộ câu hỏi của phiên bản hiện tại. Tiếp tục?"))
             return;
-        _ = ApiGuard.Require(await api.PostAsync<QuizImportCommitRequest, QuizImportResultDto>(
+        var committed = ApiGuard.Require(await api.PostAsync<QuizImportCommitRequest, QuizImportResultDto>(
             $"api/v1/exams/{SelectedExam.Id}/quiz-import/commit",
             new(preview.PreviewToken, preview.WillReplaceExisting, currentExamRowVersion),
             ct));
-        QuizImport.Clear();
+        currentHasCommittedQuizSource = committed.Source is not null;
+        currentQuizQuestionCount = committed.QuestionCount;
+        currentExamRowVersion = committed.ExamRowVersion;
+        QuizImport.SetCommitted(committed.Source, committed.QuestionCount, committed.MaxScore);
+        Raise(nameof(CanPublish));
+        Raise(nameof(PublishHint));
+        RaiseCommands();
         await RefreshExamsCoreAsync(SelectedExam.Id, ct);
     });
 
@@ -3082,14 +3088,19 @@ public sealed class StudentDownloadViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
     private readonly StudentSessionState state;
+    private readonly IStudentExamFlowCoordinator flow;
     private FileDescriptorDto? selectedFile;
     private string destination = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ExamTransfer", "Exam");
     private double progress;
 
-    public StudentDownloadViewModel(IBackendClient api, StudentSessionState state)
+    public StudentDownloadViewModel(
+        IBackendClient api,
+        StudentSessionState state,
+        IStudentExamFlowCoordinator? flow = null)
     {
         this.api = api;
         this.state = state;
+        this.flow = flow ?? AppServices.StudentExamFlow;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         BrowseCommand = new RelayCommand(Browse);
         DownloadCommand = new AsyncRelayCommand(DownloadAsync, () => !IsBusy && SelectedFile is not null);
@@ -3107,9 +3118,21 @@ public sealed class StudentDownloadViewModel : ProductPageBase
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
+        Files.Clear();
+        SelectedFile = null;
         if (!state.SessionId.HasValue)
         {
             Status = "Hãy tham gia phòng trước khi nhận đề.";
+            StatusTone = "warning";
+            return;
+        }
+        var resolution = await flow.ResolveAsync(
+            StudentExamEntryPoint.CurrentExam,
+            false,
+            ct);
+        if (!CanReceiveExamFiles())
+        {
+            Status = resolution.Message;
             StatusTone = "warning";
             return;
         }
@@ -3123,9 +3146,9 @@ public sealed class StudentDownloadViewModel : ProductPageBase
                 return;
             }
             api.SetParticipantToken(state.AccessToken);
-            var session = ApiGuard.Require(await api.GetSessionAsync(state.SessionId.Value, token));
-            state.ExamId = session.Summary.ExamId;
-            var manifest = ApiGuard.Require(await api.GetAsync<ExamManifestDto>($"api/v1/exams/{session.Summary.ExamId}/manifest", token));
+            if (!state.ExamId.HasValue)
+                throw new InvalidOperationException("Phiên thi chưa có ExamId authoritative.");
+            var manifest = ApiGuard.Require(await api.GetAsync<ExamManifestDto>($"api/v1/exams/{state.ExamId.Value}/manifest", token));
             Files.ReplaceWith(manifest.Files);
             SelectedFile = Files.FirstOrDefault();
         });
@@ -3139,7 +3162,7 @@ public sealed class StudentDownloadViewModel : ProductPageBase
 
     private Task DownloadAsync() => RunAsync("Đang tải file đề", "File đề đã được tải về", async ct =>
     {
-        if (SelectedFile is null || !state.ExamId.HasValue) return;
+        if (!CanReceiveExamFiles() || SelectedFile is null || !state.ExamId.HasValue) return;
         if (state.AccessMode == SessionAccessMode.PublicCloud)
         {
             var signed = await AppServices.PublicCloud.GetExamFileUrlAsync(state.SessionId!.Value, SelectedFile.Id, ct);
@@ -3153,7 +3176,7 @@ public sealed class StudentDownloadViewModel : ProductPageBase
 
     private Task DownloadAllAsync() => RunAsync("Đang tải toàn bộ đề", "Tất cả file đề đã được tải về", async ct =>
     {
-        if (!state.ExamId.HasValue) return;
+        if (!CanReceiveExamFiles() || !state.ExamId.HasValue) return;
         Directory.CreateDirectory(Destination);
         var index = 0;
         foreach (var file in Files)
@@ -3176,6 +3199,12 @@ public sealed class StudentDownloadViewModel : ProductPageBase
     {
         foreach (var command in new[] { RefreshCommand, DownloadCommand, DownloadAllCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
     }
+
+    private bool CanReceiveExamFiles() =>
+        ExamDistributionAccessPolicy.CanReceiveFile(
+            state.ParticipantStatus,
+            state.SessionStatus,
+            state.DeliveryType);
 }
 
 public sealed record WorkspaceFileRow(string Name, string Size, string Modified, string Status);

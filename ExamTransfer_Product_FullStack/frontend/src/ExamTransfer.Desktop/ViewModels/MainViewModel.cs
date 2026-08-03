@@ -548,6 +548,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (isNavigating) return;
 
+        if (item.Key is "S-05" or "S-06"
+            && !CanEnterExamDelivery(item.Key))
+        {
+            var waiting = Navigation.FirstOrDefault(x => x.Key == "S-03");
+            if (waiting is not null)
+            {
+                item = waiting;
+                Set(ref selected, waiting, nameof(Selected));
+            }
+        }
+
         object? nextPage = null;
         try
         {
@@ -574,6 +585,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         RaisePageProperties();
     }
+
+    private static bool CanEnterExamDelivery(string routeKey) => routeKey switch
+    {
+        "S-05" => ExamDistributionAccessPolicy.CanReceiveFile(
+            AppServices.StudentState.ParticipantStatus,
+            AppServices.StudentState.SessionStatus,
+            AppServices.StudentState.DeliveryType),
+        "S-06" => ExamDistributionAccessPolicy.CanAccessQuiz(
+            AppServices.StudentState.ParticipantStatus,
+            AppServices.StudentState.SessionStatus,
+            AppServices.StudentState.DeliveryType),
+        _ => true
+    };
 
     private void SetCurrentPageWithoutDisposing(object? value)
     {

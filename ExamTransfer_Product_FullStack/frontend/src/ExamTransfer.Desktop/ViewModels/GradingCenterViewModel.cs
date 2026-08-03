@@ -14,6 +14,8 @@ public sealed class GradingCenterViewModel : ProductPageBase
     private readonly IFolderDialogService folders;
     private readonly IDialogService dialogs;
     private readonly ILocalFileLauncher localFiles;
+    private CancellationTokenSource? listLoadCts;
+    private long listLoadVersion;
     private CancellationTokenSource? detailLoadCts;
     private long detailLoadVersion;
     private EssaySubmissionReviewRow? selectedWorkItem;
@@ -23,6 +25,11 @@ public sealed class GradingCenterViewModel : ProductPageBase
     private QuizGradeDetailDto? quizGrade;
     private QuizReviewPresentationModel? quizReview;
     private bool isDetailLoading;
+    private int currentPage = 1;
+    private int loadedPage = 1;
+    private int totalCount;
+
+    private const int PageSize = 100;
 
     public GradingCenterViewModel(
         IBackendClient api,
@@ -36,7 +43,12 @@ public sealed class GradingCenterViewModel : ProductPageBase
         this.localFiles = localFiles ?? new LocalFileLauncher();
         Editor.PropertyChanged += OnEditorPropertyChanged;
 
-        RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
+        RefreshCommand = new AsyncRelayCommand(() => LoadPageAsync(CurrentPage, DisposeToken), () => !IsBusy);
+        PreviousPageCommand = new AsyncRelayCommand(() => ChangePageAsync(CurrentPage - 1), () => CanMovePrevious);
+        NextPageCommand = new AsyncRelayCommand(() => ChangePageAsync(CurrentPage + 1), () => CanMoveNext);
+        OpenWorkItemCommand = new RelayCommand(
+            () => OpenSelectedWorkItemAsync().SafeFireAndForget("GradingCenter.OpenSelection"),
+            CanOpenWorkItem);
         SaveGradeCommand = new AsyncRelayCommand(SaveGradeAsync, CanSaveGrade);
         ReturnGradeCommand = new AsyncRelayCommand(ReturnGradeAsync, CanReturnGrade);
         ReopenGradeCommand = new AsyncRelayCommand(ReopenGradeAsync, CanReopenGrade);
@@ -56,7 +68,8 @@ public sealed class GradingCenterViewModel : ProductPageBase
         set
         {
             if (!Set(ref selectedWorkItem, value)) return;
-            BeginDetailLoad(value);
+            CancelAndClearDetail();
+            RaiseCommands();
         }
     }
 
@@ -88,34 +101,118 @@ public sealed class GradingCenterViewModel : ProductPageBase
     }
     public bool IsQuizAttempt => SelectedWorkItem?.Type == GradingWorkItemType.QuizAttempt;
     public bool IsFileSubmission => SelectedWorkItem?.Type == GradingWorkItemType.FileSubmission;
+    public int CurrentPage
+    {
+        get => currentPage;
+        private set
+        {
+            if (Set(ref currentPage, value))
+            {
+                Raise(nameof(PageLabel));
+                Raise(nameof(CanMovePrevious));
+                Raise(nameof(CanMoveNext));
+            }
+        }
+    }
+    public int TotalCount
+    {
+        get => totalCount;
+        private set
+        {
+            if (Set(ref totalCount, value))
+            {
+                Raise(nameof(TotalPages));
+                Raise(nameof(PageLabel));
+                Raise(nameof(CanMoveNext));
+            }
+        }
+    }
+    public int TotalPages => Math.Max(1, (TotalCount + PageSize - 1) / PageSize);
+    public string PageLabel => $"Trang {CurrentPage}/{TotalPages} · {TotalCount} bài";
+    public bool CanMovePrevious => CurrentPage > 1;
+    public bool CanMoveNext => CurrentPage < TotalPages;
 
     public ICommand RefreshCommand { get; }
+    public ICommand PreviousPageCommand { get; }
+    public ICommand NextPageCommand { get; }
+    public ICommand OpenWorkItemCommand { get; }
     public ICommand SaveGradeCommand { get; }
     public ICommand ReturnGradeCommand { get; }
     public ICommand ReopenGradeCommand { get; }
     public ICommand DownloadFileCommand { get; }
     public ICommand OpenLocalFileCommand { get; }
 
-    protected override Task LoadAsync(CancellationToken ct) =>
-        RunAsync("Đang tải hàng đợi chấm", "Hàng đợi chấm bài đã được cập nhật", async token =>
-        {
-            var selectedId = SelectedWorkItem?.SubmissionId;
-            var selectedType = SelectedWorkItem?.Type;
-            var workItems = ApiGuard.Require(await api.GetAsync<PagedResult<GradingWorkItemDto>>(
-                "api/v1/grading/work-items", token));
-            var submissions = ApiGuard.Require(await api.GetAsync<PagedResult<SubmissionSummaryDto>>(
-                "api/v1/grading/queue?page=1&pageSize=100", token));
-            var submissionsById = submissions.Items.ToDictionary(item => item.Id);
-            Queue.ReplaceWith(workItems.Items.Select(item =>
-                new EssaySubmissionReviewRow(
-                    item,
-                    submissionsById.GetValueOrDefault(item.Id))));
-            SelectedWorkItem = selectedId.HasValue
-                ? Queue.FirstOrDefault(row => row.SubmissionId == selectedId && row.Type == selectedType)
-                : null;
-        });
+    protected override Task LoadAsync(CancellationToken ct) => LoadPageAsync(1, ct);
 
-    private void BeginDetailLoad(EssaySubmissionReviewRow? row)
+    private Task ChangePageAsync(int page) => LoadPageAsync(page, DisposeToken);
+
+    private async Task LoadPageAsync(int requestedPage, CancellationToken cancellationToken)
+    {
+        requestedPage = Math.Max(1, requestedPage);
+        listLoadCts?.Cancel();
+        listLoadCts?.Dispose();
+        listLoadVersion++;
+        var version = listLoadVersion;
+        listLoadCts = CancellationTokenSource.CreateLinkedTokenSource(DisposeToken, cancellationToken);
+        var token = listLoadCts.Token;
+        CurrentPage = requestedPage;
+        SelectedWorkItem = null;
+
+        try
+        {
+            IsBusy = true;
+            Status = "Đang tải hàng đợi chấm";
+            StatusTone = "primary";
+            var workItems = ApiGuard.Require(await api.GetAsync<PagedResult<GradingWorkItemDto>>(
+                $"api/v1/grading/work-items?page={requestedPage}&pageSize={PageSize}", token));
+            if (!IsCurrentListLoad(version)) return;
+
+            Queue.ReplaceWith(workItems.Items.Select(item => new EssaySubmissionReviewRow(item)));
+            loadedPage = workItems.Page;
+            CurrentPage = workItems.Page;
+            TotalCount = workItems.TotalCount;
+            Status = workItems.Items.Count == 0
+                ? "Không có bài nộp cần chấm."
+                : "Hàng đợi chấm bài đã được cập nhật";
+            StatusTone = "success";
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            if (IsCurrentListLoad(version))
+            {
+                CurrentPage = loadedPage;
+                ReportFailure(exception);
+            }
+        }
+        finally
+        {
+            if (IsCurrentListLoad(version))
+            {
+                IsBusy = false;
+                RaiseCommands();
+            }
+        }
+    }
+
+    private bool IsCurrentListLoad(long version) => !IsDisposed && version == listLoadVersion;
+
+    private bool CanOpenWorkItem() => SelectedWorkItem is not null && !IsBusy && !IsDetailLoading;
+
+    private Task OpenSelectedWorkItemAsync()
+    {
+        var row = SelectedWorkItem;
+        if (row is null) return Task.CompletedTask;
+
+        CancelAndClearDetail();
+        detailLoadCts = CancellationTokenSource.CreateLinkedTokenSource(DisposeToken);
+        IsDetailLoading = true;
+        return LoadDetailAsync(row, detailLoadVersion, detailLoadCts.Token);
+    }
+
+    private void CancelAndClearDetail()
     {
         detailLoadCts?.Cancel();
         detailLoadCts?.Dispose();
@@ -134,17 +231,7 @@ public sealed class GradingCenterViewModel : ProductPageBase
         Raise(nameof(IsQuizAttempt));
         Raise(nameof(IsFileSubmission));
 
-        if (row is null)
-        {
-            IsDetailLoading = false;
-            RaiseCommands();
-            return;
-        }
-
-        detailLoadCts = CancellationTokenSource.CreateLinkedTokenSource(DisposeToken);
-        IsDetailLoading = true;
-        LoadDetailAsync(row, detailLoadVersion, detailLoadCts.Token)
-            .SafeFireAndForget("GradingCenter.Selection");
+        IsDetailLoading = false;
     }
 
     private async Task LoadDetailAsync(
@@ -169,7 +256,7 @@ public sealed class GradingCenterViewModel : ProductPageBase
                 if (!IsCurrentSelection(row, version)) return;
                 Grade = loadedGrade;
                 Rubric.ReplaceWith(loadedGrade.RubricScores);
-                Files.ReplaceWith((row.Submission?.Files ?? []).Select(file =>
+                Files.ReplaceWith(loadedGrade.SubmissionFiles.Select(file =>
                     new SubmissionFilePresentationModel(file)));
                 Detail = new(row, loadedGrade.Status);
                 Editor.Load(loadedGrade.Score, loadedGrade.MaxScore, loadedGrade.GeneralComment, loadedGrade.Status);
@@ -184,10 +271,12 @@ public sealed class GradingCenterViewModel : ProductPageBase
         }
         finally
         {
-            if (IsCurrentSelection(row, version)) IsDetailLoading = false;
+            if (IsCurrentSelection(row, version))
+            {
+                IsDetailLoading = false;
+                RaiseCommands();
+            }
         }
-
-        RaiseCommands();
     }
 
     private bool IsCurrentSelection(EssaySubmissionReviewRow row, long version) =>
@@ -357,15 +446,20 @@ public sealed class GradingCenterViewModel : ProductPageBase
     {
         foreach (var command in new[]
         {
-            RefreshCommand, SaveGradeCommand, ReturnGradeCommand, ReopenGradeCommand, DownloadFileCommand
+            RefreshCommand, PreviousPageCommand, NextPageCommand,
+            SaveGradeCommand, ReturnGradeCommand, ReopenGradeCommand, DownloadFileCommand
         }.OfType<AsyncRelayCommand>())
             command.RaiseCanExecuteChanged();
+        (OpenWorkItemCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (OpenLocalFileCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
     public override void Dispose()
     {
         Editor.PropertyChanged -= OnEditorPropertyChanged;
+        listLoadCts?.Cancel();
+        listLoadCts?.Dispose();
+        listLoadCts = null;
         detailLoadCts?.Cancel();
         detailLoadCts?.Dispose();
         detailLoadCts = null;

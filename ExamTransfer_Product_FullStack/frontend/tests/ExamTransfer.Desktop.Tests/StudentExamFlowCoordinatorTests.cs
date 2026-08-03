@@ -1,4 +1,8 @@
 using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
 using ExamTransfer.Desktop.Infrastructure;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Shared.Contracts;
@@ -14,6 +18,8 @@ public sealed class StudentExamFlowCoordinatorTests
         { Snapshot(participant: ParticipantStatus.PendingApproval), StudentExamFlowState.PendingApproval, "S-03", false },
         { Snapshot(participant: ParticipantStatus.Rejected), StudentExamFlowState.RejectedOrExpired, "S-01", false },
         { Snapshot(status: SessionStatus.Waiting), StudentExamFlowState.ApprovedWaiting, "S-03", false },
+        { Snapshot(status: SessionStatus.Distributing, delivery: ExamDeliveryType.FileSubmission), StudentExamFlowState.ReadyToStartFileExam, "S-05", false },
+        { Snapshot(status: SessionStatus.Distributing, delivery: ExamDeliveryType.MultipleChoice), StudentExamFlowState.ApprovedWaiting, "S-03", false },
         { Snapshot(delivery: ExamDeliveryType.FileSubmission), StudentExamFlowState.ReadyToStartFileExam, "S-05", false },
         { Snapshot(delivery: ExamDeliveryType.FileSubmission, submission: SubmissionStatus.Uploading), StudentExamFlowState.InProgressFileExam, "S-07", false },
         { Snapshot(delivery: ExamDeliveryType.FileSubmission, submission: SubmissionStatus.Submitted), StudentExamFlowState.SubmittedFileExam, "S-08", false },
@@ -171,6 +177,40 @@ public sealed class StudentExamFlowCoordinatorTests
         Assert.Single(toasts.Messages, x => x.Contains("từ chối", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task ResolveAsync_DistributingFileExam_RefreshesSnapshotBeforeNavigation()
+    {
+        var now = new DateTimeOffset(2026, 8, 3, 8, 0, 0, TimeSpan.Zero);
+        var state = ActiveLanState(SessionStatus.Waiting, ParticipantStatus.Approved, 1);
+        var api = new RecordingBackendClient(now);
+        SetSnapshot(
+            api,
+            state.SessionId!.Value,
+            state.ParticipantId!.Value,
+            Guid.NewGuid(),
+            SessionStatus.Distributing,
+            2,
+            now);
+        var coordinator = new StudentExamFlowCoordinator(
+            api,
+            new SupabasePublicCloudClient(),
+            state,
+            new RecordingToastService());
+        StudentExamNavigationRequest? navigation = null;
+        coordinator.NavigationRequested += (_, request) => navigation = request;
+
+        var resolution = await coordinator.ResolveAsync(
+            StudentExamEntryPoint.CurrentExam,
+            false,
+            default);
+
+        Assert.Equal(SessionStatus.Distributing, state.SessionStatus);
+        Assert.Equal(2, state.Revision);
+        Assert.Equal(StudentExamFlowState.ReadyToStartFileExam, resolution.State);
+        Assert.Equal("S-05", resolution.RouteKey);
+        Assert.Equal("S-05", navigation?.Resolution.RouteKey);
+    }
+
     [Theory]
     [InlineData(true, StudentJoinPhase.RealtimeStartup, StudentJoinErrorCodes.PostJoinSynchronizationFailed)]
     [InlineData(false, StudentJoinPhase.LifecycleResolution, StudentJoinErrorCodes.LifecycleResolutionFailed)]
@@ -210,6 +250,85 @@ public sealed class StudentExamFlowCoordinatorTests
         Assert.Equal(participantId, state.ParticipantId);
         Assert.Equal("participant-token", state.AccessToken);
         Assert.True(state.PostJoinSynchronizationPending);
+    }
+
+    [Fact]
+    public async Task SynchronizeAfterJoinAsync_PublicCloudNoAttemptBooleanTimeline_SucceedsAndKeepsPendingAuthority()
+    {
+        var now = new DateTimeOffset(2026, 8, 4, 8, 0, 0, TimeSpan.Zero);
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var examId = Guid.NewGuid();
+        var state = new StudentSessionState();
+        state.ApplyJoin(
+            sessionId,
+            participantId,
+            "cloud-access-token",
+            "ROOM42",
+            "SV001",
+            "Student",
+            SessionAccessMode.PublicCloud);
+        state.ParticipantStatus = ParticipantStatus.PendingApproval;
+        state.SessionStatus = SessionStatus.Waiting;
+        state.DeliveryType = ExamDeliveryType.FileSubmission;
+
+        var timelineJson = JsonSerializer.Serialize(new
+        {
+            sessionId,
+            participantId,
+            participantStatus = "PendingApproval",
+            submissionStatus = "NotStarted",
+            sessionStatus = "Waiting",
+            admissionMode = "OpenRequest",
+            examId,
+            examTitle = "Cloud exam",
+            subject = "Tin",
+            examVersion = 1,
+            deliveryType = "FileSubmission",
+            supervisionMode = "None",
+            resultPolicy = "Hidden",
+            startedAtUtc = (DateTimeOffset?)null,
+            durationMinutes = 45,
+            extraTimeMinutes = 0,
+            effectiveDeadlineUtc = (DateTimeOffset?)null,
+            attemptId = (Guid?)null,
+            attemptStatus = (string?)null,
+            attemptDeadlineUtc = (DateTimeOffset?)null,
+            scoreVisible = false,
+            score = (decimal?)null,
+            maxScore = (decimal?)null,
+            serverNowUtc = now,
+            revision = 2,
+            updatedAtUtc = now
+        });
+        using var handler = new TimelineResponseHandler(timelineJson);
+        using var http = new HttpClient(handler);
+        var publicCloud = new SupabasePublicCloudClient(
+            http,
+            new ServerClock(new FakeMonotonicTimeSource()),
+            "https://project.supabase.co",
+            "publishable-key");
+        await publicCloud.LoginAsync("student", "password", CancellationToken.None);
+        var coordinator = new StudentExamFlowCoordinator(
+            new RecordingBackendClient(now),
+            publicCloud,
+            state,
+            new RecordingToastService());
+
+        var outcome = await coordinator.SynchronizeAfterJoinAsync(
+            new ControllableRealtimeService(failStart: false),
+            CancellationToken.None);
+
+        Assert.Equal(StudentJoinErrorCodes.Succeeded, outcome.Code);
+        Assert.Equal(StudentJoinPhase.Completed, outcome.Phase);
+        Assert.Null(outcome.CauseCode);
+        Assert.True(outcome.AuthorityMutationCommitted);
+        Assert.True(state.JoinMutationCommitted);
+        Assert.False(state.PostJoinSynchronizationPending);
+        Assert.Equal(ParticipantStatus.PendingApproval, state.ParticipantStatus);
+        Assert.Equal(SessionStatus.Waiting, state.SessionStatus);
+        Assert.Equal(2, state.Revision);
+        Assert.Equal(1, handler.TimelineCalls);
     }
 
     private static StudentExamFlowSnapshot Snapshot(
@@ -305,5 +424,29 @@ public sealed class StudentExamFlowCoordinatorTests
             : Task.CompletedTask;
         public Task StopAsync(CancellationToken ct = default) => Task.CompletedTask;
         public void Dispose() { }
+    }
+
+    private sealed class TimelineResponseHandler(string timelineJson) : HttpMessageHandler
+    {
+        public int TimelineCalls { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var isLogin = request.RequestUri?.AbsolutePath.EndsWith(
+                "/auth/v1/token",
+                StringComparison.Ordinal) == true;
+            if (!isLogin)
+                TimelineCalls++;
+            var content = isLogin
+                ? """{"access_token":"access","refresh_token":"refresh","expires_in":3600}"""
+                : timelineJson;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(content, Encoding.UTF8, "application/json"),
+                RequestMessage = request
+            });
+        }
     }
 }

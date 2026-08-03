@@ -6,6 +6,7 @@ using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace ExamTransfer.Infrastructure.Services;
@@ -17,6 +18,75 @@ public sealed class QuizGradingService(
     ICloudAdapter? cloud = null) : IQuizGradingService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private const string WorkItemsSql =
+        """
+        WITH "work_items" AS (
+            SELECT
+                submission."Id" AS "Id",
+                @fileType AS "Type",
+                session."ExamId" AS "ExamId",
+                submission."SessionId" AS "SessionId",
+                submission."ParticipantId" AS "ParticipantId",
+                participant."StudentCode" AS "StudentCode",
+                participant."DisplayName" AS "DisplayName",
+                exam."Title" AS "ExamTitle",
+                COALESCE(submission."ServerReceivedAtUtc", submission."ClientSubmittedAtUtc") AS "SubmittedAtUtc",
+                COALESCE(grade."Status", @notGraded) AS "Status",
+                NULL AS "AutoScore",
+                grade."Score" AS "Score",
+                COALESCE(grade."MaxScore", @defaultMaxScore) AS "MaxScore",
+                (
+                    SELECT file."Id"
+                    FROM "submission_files" AS file
+                    WHERE file."SubmissionId" = submission."Id"
+                    ORDER BY file."OriginalName", file."Id"
+                    LIMIT 1
+                ) AS "PrimaryFileId",
+                submission."AttemptNumber" AS "AttemptNumber",
+                submission."IsLate" AS "IsLate"
+            FROM "submissions" AS submission
+            INNER JOIN "session_participants" AS participant ON participant."Id" = submission."ParticipantId"
+            INNER JOIN "exam_sessions" AS session ON session."Id" = submission."SessionId"
+            INNER JOIN "exams" AS exam ON exam."Id" = session."ExamId"
+            INNER JOIN "users" AS owner ON owner."Id" = exam."CreatedBy" AND owner."IsActive" = 1
+            LEFT JOIN "grades" AS grade ON grade."SubmissionId" = submission."Id"
+            WHERE submission."IsOfficial" = 1
+                AND submission."Status" IN (@submitted, @lateSubmitted)
+                AND (exam."CreatedBy" = @actorId OR owner."OrganizationId" = @organizationId)
+                AND (@hasStatus = 0 OR COALESCE(grade."Status", @notGraded) = @status)
+
+            UNION ALL
+
+            SELECT
+                attempt."Id" AS "Id",
+                @quizType AS "Type",
+                session."ExamId" AS "ExamId",
+                attempt."SessionId" AS "SessionId",
+                attempt."ParticipantId" AS "ParticipantId",
+                participant."StudentCode" AS "StudentCode",
+                participant."DisplayName" AS "DisplayName",
+                exam."Title" AS "ExamTitle",
+                COALESCE(attempt."FinalizedAtUtc", attempt."UpdatedAtUtc") AS "SubmittedAtUtc",
+                attempt."GradingStatus" AS "Status",
+                attempt."AutoScore" AS "AutoScore",
+                attempt."Score" AS "Score",
+                attempt."MaxScore" AS "MaxScore",
+                NULL AS "PrimaryFileId",
+                attempt."AttemptNumber" AS "AttemptNumber",
+                CASE
+                    WHEN COALESCE(attempt."FinalizedAtUtc", attempt."UpdatedAtUtc") > attempt."DeadlineUtc" THEN 1
+                    ELSE 0
+                END AS "IsLate"
+            FROM "quiz_attempts" AS attempt
+            INNER JOIN "session_participants" AS participant ON participant."Id" = attempt."ParticipantId"
+            INNER JOIN "exam_sessions" AS session ON session."Id" = attempt."SessionId"
+            INNER JOIN "exams" AS exam ON exam."Id" = session."ExamId"
+            INNER JOIN "users" AS owner ON owner."Id" = exam."CreatedBy" AND owner."IsActive" = 1
+            WHERE attempt."Status" = @finalized
+                AND (exam."CreatedBy" = @actorId OR owner."OrganizationId" = @organizationId)
+                AND (@hasStatus = 0 OR attempt."GradingStatus" = @status)
+        )
+        """;
 
     public async Task<PagedResult<GradingWorkItemDto>> GetWorkItemsAsync(
         GradingStatus? status,
@@ -29,69 +99,83 @@ public sealed class QuizGradingService(
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 200);
         var actor = await RequireActorAsync(actorId, organizationId, cancellationToken);
-        var files = await db.SubmissionsSet.AsNoTracking()
-            .Include(x => x.Participant)
-            .Include(x => x.Files)
-            .Include(x => x.Session).ThenInclude(x => x.Exam)
-            .Where(x => x.IsOfficial
-                && (x.Status == SubmissionStatus.Submitted || x.Status == SubmissionStatus.LateSubmitted))
+        var parameters = WorkItemParameters(actor.Id, actor.OrganizationId!, status);
+        var total = await db.Database.SqlQueryRaw<int>(
+                WorkItemsSql + " SELECT COUNT(*) AS \"Value\" FROM \"work_items\"",
+                parameters)
+            .SingleAsync(cancellationToken);
+        var pageParameters = WorkItemParameters(actor.Id, actor.OrganizationId!, status)
+            .Concat([
+                new SqliteParameter("@limit", pageSize),
+                new SqliteParameter("@offset", (page - 1) * pageSize)
+            ])
+            .ToArray();
+        var rows = await db.Database.SqlQueryRaw<GradingWorkItemSqlRow>(
+                WorkItemsSql
+                + """
+                   SELECT *
+                   FROM "work_items"
+                   ORDER BY "SubmittedAtUtc" DESC, "StudentCode", "Type", "Id"
+                   LIMIT @limit OFFSET @offset
+                   """,
+                pageParameters)
             .ToListAsync(cancellationToken);
-        var fileGradeBySubmission = await db.GradesSet.AsNoTracking()
-            .Where(x => files.Select(s => s.Id).Contains(x.SubmissionId))
-            .ToDictionaryAsync(x => x.SubmissionId, cancellationToken);
-        var quizzes = await db.QuizAttemptsSet.AsNoTracking()
-            .Include(x => x.Participant)
-            .Include(x => x.Session).ThenInclude(x => x.Exam)
-            .Where(x => x.Status == QuizAttemptStatus.Finalized)
-            .ToListAsync(cancellationToken);
+        var items = rows.Select(x => new GradingWorkItemDto(
+            x.Id,
+            x.Type,
+            x.SessionId,
+            x.ParticipantId,
+            x.StudentCode,
+            x.DisplayName,
+            x.ExamTitle,
+            x.SubmittedAtUtc,
+            x.Status,
+            x.AutoScore,
+            x.Score,
+            x.MaxScore,
+            x.PrimaryFileId,
+            x.ExamId,
+            x.AttemptNumber,
+            x.IsLate)).ToList();
+        return new(items, page, pageSize, total);
+    }
 
-        var items = new List<GradingWorkItemDto>();
-        foreach (var submission in files)
-        {
-            if (!await CanAccessExamAsync(submission.Session.Exam, actor, cancellationToken))
-                continue;
-            fileGradeBySubmission.TryGetValue(submission.Id, out var grade);
-            items.Add(new(
-                submission.Id,
-                GradingWorkItemType.FileSubmission,
-                submission.SessionId,
-                submission.ParticipantId,
-                submission.Participant.StudentCode,
-                submission.Participant.DisplayName,
-                submission.Session.Exam.Title,
-                submission.ServerReceivedAtUtc ?? submission.ClientSubmittedAtUtc,
-                grade?.Status ?? GradingStatus.NotGraded,
-                null,
-                grade?.Score,
-                10.00m,
-                submission.Files.OrderBy(x => x.OriginalName).Select(x => (Guid?)x.Id).FirstOrDefault()));
-        }
-        foreach (var attempt in quizzes)
-        {
-            if (!await CanAccessExamAsync(attempt.Session.Exam, actor, cancellationToken))
-                continue;
-            items.Add(new(
-                attempt.Id,
-                GradingWorkItemType.QuizAttempt,
-                attempt.SessionId,
-                attempt.ParticipantId,
-                attempt.Participant.StudentCode,
-                attempt.Participant.DisplayName,
-                attempt.Session.Exam.Title,
-                attempt.FinalizedAtUtc ?? attempt.UpdatedAtUtc,
-                attempt.GradingStatus,
-                attempt.AutoScore,
-                attempt.Score,
-                attempt.MaxScore));
-        }
-        if (status.HasValue)
-            items = items.Where(x => x.Status == status.Value).ToList();
-        var ordered = items.OrderByDescending(x => x.SubmittedAtUtc).ThenBy(x => x.StudentCode).ToList();
-        return new(
-            ordered.Skip((page - 1) * pageSize).Take(pageSize).ToList(),
-            page,
-            pageSize,
-            ordered.Count);
+    private static object[] WorkItemParameters(
+        Guid actorId,
+        string organizationId,
+        GradingStatus? status) =>
+    [
+        new SqliteParameter("@actorId", actorId.ToString()),
+        new SqliteParameter("@organizationId", organizationId),
+        new SqliteParameter("@submitted", (object)(int)SubmissionStatus.Submitted),
+        new SqliteParameter("@lateSubmitted", (object)(int)SubmissionStatus.LateSubmitted),
+        new SqliteParameter("@finalized", (object)(int)QuizAttemptStatus.Finalized),
+        new SqliteParameter("@fileType", (object)(int)GradingWorkItemType.FileSubmission),
+        new SqliteParameter("@quizType", (object)(int)GradingWorkItemType.QuizAttempt),
+        new SqliteParameter("@notGraded", (object)(int)GradingStatus.NotGraded),
+        new SqliteParameter("@defaultMaxScore", (object)10.00m),
+        new SqliteParameter("@hasStatus", (object)(status.HasValue ? 1 : 0)),
+        new SqliteParameter("@status", (object)(int)(status ?? GradingStatus.NotGraded))
+    ];
+
+    private sealed class GradingWorkItemSqlRow
+    {
+        public Guid Id { get; init; }
+        public GradingWorkItemType Type { get; init; }
+        public Guid ExamId { get; init; }
+        public Guid SessionId { get; init; }
+        public Guid ParticipantId { get; init; }
+        public string StudentCode { get; init; } = string.Empty;
+        public string DisplayName { get; init; } = string.Empty;
+        public string ExamTitle { get; init; } = string.Empty;
+        public DateTimeOffset SubmittedAtUtc { get; init; }
+        public GradingStatus Status { get; init; }
+        public decimal? AutoScore { get; init; }
+        public decimal? Score { get; init; }
+        public decimal MaxScore { get; init; }
+        public Guid? PrimaryFileId { get; init; }
+        public int AttemptNumber { get; init; }
+        public bool IsLate { get; init; }
     }
 
     public async Task<QuizGradeDetailDto> GetAsync(

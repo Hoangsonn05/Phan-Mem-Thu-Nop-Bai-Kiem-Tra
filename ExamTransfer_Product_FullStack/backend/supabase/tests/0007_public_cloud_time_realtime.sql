@@ -1,8 +1,8 @@
 begin;
-select plan(23);
+select plan(30);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1), 26,
-  'ET-01 PublicCloud timeline remains available at schema version 26');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1), 27,
+  'ET-01 PublicCloud timeline remains available at schema version 27');
 select has_function('public','get_public_student_timeline',array['uuid'],
   'authoritative student timeline RPC exists');
 select ok(not has_function_privilege('anon','public.get_public_student_timeline(uuid)','EXECUTE'),
@@ -67,10 +67,10 @@ values
   ('51500000-0000-0000-0000-000000000003','51000000-0000-0000-0000-000000000000','51300000-0000-0000-0000-000000000000','51000000-0000-0000-0000-000000000004','ET01C','Student C','et01-device-c','Approved',now(),'Completed','Submitted',0,false,'PublicCloud',now(),now());
 insert into public.quiz_attempts(
   id,organization_id,session_id,participant_id,exam_version,status,started_at,
-  deadline_at,finalized_at,score,max_score,snapshot_json,source_mode,created_at,updated_at)
+  deadline_at,finalized_at,score,max_score,snapshot_json,result_policy,source_mode,created_at,updated_at)
 values
-  ('51600000-0000-0000-0000-000000000002','51000000-0000-0000-0000-000000000000','51300000-0000-0000-0000-000000000000','51500000-0000-0000-0000-000000000002',1,'InProgress','2026-07-25 01:00:00+00','2026-07-25 02:00:00+00',null,null,10,'[]','PublicCloud',now(),now()),
-  ('51600000-0000-0000-0000-000000000003','51000000-0000-0000-0000-000000000000','51300000-0000-0000-0000-000000000000','51500000-0000-0000-0000-000000000003',1,'Finalized','2026-07-25 01:00:00+00','2026-07-25 02:00:00+00','2026-07-25 01:30:00+00',8,10,'[]','PublicCloud',now(),now());
+  ('51600000-0000-0000-0000-000000000002','51000000-0000-0000-0000-000000000000','51300000-0000-0000-0000-000000000000','51500000-0000-0000-0000-000000000002',1,'InProgress','2026-07-25 01:00:00+00','2026-07-25 02:00:00+00',null,null,10,'[]','Hidden','PublicCloud',now(),now()),
+  ('51600000-0000-0000-0000-000000000003','51000000-0000-0000-0000-000000000000','51300000-0000-0000-0000-000000000000','51500000-0000-0000-0000-000000000003',1,'Finalized','2026-07-25 01:00:00+00','2026-07-25 02:00:00+00','2026-07-25 01:30:00+00',8,10,'[]','ShowAfterSubmission','PublicCloud',now(),now());
 
 create temporary table et01_results(
   key text primary key,
@@ -182,6 +182,16 @@ select results_eq($$
   array[0::bigint],
   'student RLS cannot update own extra time directly');
 
+reset role;
+update public.quiz_attempts
+set status='Finalized',
+    finalized_at='2026-07-25 01:40:00+00',
+    score=7,
+    result_policy='Hidden'
+where id='51600000-0000-0000-0000-000000000002';
+set local role authenticated;
+select set_config('request.jwt.claims','{"sub":"51000000-0000-0000-0000-000000000003","role":"authenticated"}',true);
+
 insert into et01_results(key,value) values (
   'timeline',
   public.get_public_student_timeline('51300000-0000-0000-0000-000000000000'));
@@ -195,8 +205,35 @@ select ok((select (value->>'serverNowUtc')::timestamptz is not null
 select is((select value->>'submissionStatus' from et01_results where key='timeline'),
   'NotStarted',
   'student reconnect snapshot carries the safe submission state used by the shared coordinator');
+select is((select value->>'scoreVisible' from et01_results where key='timeline'),
+  'false',
+  'timeline returns false while a quiz attempt is not score-visible');
+select is((select jsonb_typeof(value->'score') from et01_results where key='timeline'),
+  'null',
+  'timeline does not expose a hidden quiz score');
+select is((select jsonb_typeof(value->'maxScore') from et01_results where key='timeline'),
+  'null',
+  'timeline does not expose hidden score metadata');
+select ok((select not (value ?| array['gradingStatus','gradingDetails','rubricScores'])
+           from et01_results where key='timeline'),
+  'timeline does not expose protected grading details');
+
+select set_config('request.jwt.claims','{"sub":"51000000-0000-0000-0000-000000000004","role":"authenticated"}',true);
+select is((public.get_public_student_timeline(
+  '51300000-0000-0000-0000-000000000000')->>'scoreVisible'),
+  'true',
+  'timeline returns true when the quiz attempt score is visible');
 
 select set_config('request.jwt.claims','{"sub":"51000000-0000-0000-0000-000000000002","role":"authenticated"}',true);
+insert into et01_results(key,value) values (
+  'timeline_no_attempt',
+  public.get_public_student_timeline('51300000-0000-0000-0000-000000000000'));
+select is((select jsonb_typeof(value->'scoreVisible') from et01_results where key='timeline_no_attempt'),
+  'boolean',
+  'timeline emits scoreVisible as a JSON boolean when no quiz attempt exists');
+select is((select value->>'scoreVisible' from et01_results where key='timeline_no_attempt'),
+  'false',
+  'timeline returns false when no quiz attempt exists');
 select is((public.get_public_student_timeline(
   '51300000-0000-0000-0000-000000000000')->>'participantId'),
   '51500000-0000-0000-0000-000000000001',

@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Data.Common;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using ExamTransfer.Application;
@@ -9,11 +11,13 @@ using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace ExamTransfer.Infrastructure.Tests;
 
-public sealed class UnifiedGradingTests
+public sealed class UnifiedGradingTests(ITestOutputHelper output)
 {
     [Fact]
     public async Task SqliteUpgrade_BackfillsExistingFinalizedAttemptAndAdvancesSchema12()
@@ -145,7 +149,7 @@ public sealed class UnifiedGradingTests
     }
 
     [Fact]
-    public async Task WorkItems_CombinesOfficialFilesAndFinalizedQuiz_AndEnforcesTenant()
+    public async Task GradingWorkItems_CombinesOfficialFilesAndFinalizedQuiz_AndEnforcesTenant()
     {
         await using var fixture = await Fixture.CreateAsync();
 
@@ -159,6 +163,11 @@ public sealed class UnifiedGradingTests
 
         Assert.Contains(page.Items, x => x.Type == GradingWorkItemType.FileSubmission && x.Id == fixture.Submission.Id);
         Assert.Contains(page.Items, x => x.Type == GradingWorkItemType.QuizAttempt && x.Id == fixture.Attempt.Id);
+        var fileItem = page.Items.Single(x => x.Id == fixture.Submission.Id);
+        Assert.Equal(fixture.Attempt.Session.ExamId, fileItem.ExamId);
+        Assert.Equal(fixture.Submission.AttemptNumber, fileItem.AttemptNumber);
+        Assert.Equal(fixture.Submission.IsLate, fileItem.IsLate);
+        Assert.Equal(fixture.SubmissionFile.Id, fileItem.PrimaryFileId);
         var workItemsError = await Assert.ThrowsAsync<ApiException>(() => fixture.QuizGrades.GetWorkItemsAsync(
             null,
             1,
@@ -173,6 +182,90 @@ public sealed class UnifiedGradingTests
             "org-b",
             default));
         Assert.Equal(403, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task GradingWorkItems_MixedHundredEach_PaginatesAndUsesBoundedDatabaseCommands()
+    {
+        var commands = new CountingCommandInterceptor();
+        await using var fixture = await Fixture.CreateAsync(commands);
+        await fixture.SeedAdditionalWorkItemsAsync(99);
+        var staffId = await fixture.CreatePeerStaffAsync();
+        fixture.Db.ChangeTracker.Clear();
+        commands.Reset();
+
+        var stopwatch = Stopwatch.StartNew();
+        var page = await fixture.QuizGrades.GetWorkItemsAsync(
+            null,
+            1,
+            100,
+            staffId,
+            "org-a",
+            default);
+        stopwatch.Stop();
+        output.WriteLine($"WORK_ITEMS_MEASUREMENT commands={commands.Count}; elapsed_ms={stopwatch.ElapsedMilliseconds}; total={page.TotalCount}; returned={page.Items.Count}");
+
+        Assert.Equal(200, page.TotalCount);
+        Assert.Equal(100, page.Items.Count);
+        Assert.Equal(100, page.Items.Select(x => x.Id).Distinct().Count());
+        Assert.Equal(3, commands.Count);
+        Assert.True(
+            commands.Count <= 3,
+            $"Expected at most 3 database commands for 200 work items, but observed {commands.Count} in {stopwatch.ElapsedMilliseconds} ms.");
+
+        commands.Reset();
+        var firstPageAgain = await fixture.QuizGrades.GetWorkItemsAsync(
+            null, 1, 100, staffId, "org-a", default);
+        Assert.Equal(3, commands.Count);
+        commands.Reset();
+        var secondPage = await fixture.QuizGrades.GetWorkItemsAsync(
+            null, 2, 100, staffId, "org-a", default);
+        Assert.Equal(3, commands.Count);
+        Assert.Equal(page.Items.Select(x => x.Id), firstPageAgain.Items.Select(x => x.Id));
+
+        var allItems = page.Items.Concat(secondPage.Items).ToList();
+        Assert.Equal(200, allItems.Select(x => x.Id).Distinct().Count());
+        Assert.Equal(100, allItems.Count(x => x.Type == GradingWorkItemType.FileSubmission));
+        Assert.Equal(100, allItems.Count(x => x.Type == GradingWorkItemType.QuizAttempt));
+        Assert.Equal(
+            allItems.Select(x => x.Id),
+            allItems.OrderByDescending(x => x.SubmittedAtUtc)
+                .ThenBy(x => x.StudentCode)
+                .ThenBy(x => x.Type)
+                .ThenBy(x => x.Id)
+                .Select(x => x.Id));
+
+        var otherOrganizationAdmin = await fixture.CreatePeerStaffAsync("org-b", UserRole.Admin);
+        var hidden = await fixture.QuizGrades.GetWorkItemsAsync(
+            null, 1, 100, otherOrganizationAdmin, "org-b", default);
+        Assert.Empty(hidden.Items);
+        Assert.Equal(0, hidden.TotalCount);
+
+        var student = await fixture.CreatePeerStaffAsync("org-a", UserRole.Student);
+        var forbidden = await Assert.ThrowsAsync<ApiException>(() => fixture.QuizGrades.GetWorkItemsAsync(
+            null, 1, 100, student, "org-a", default));
+        Assert.Equal(403, forbidden.StatusCode);
+    }
+
+    [Fact]
+    public async Task GradingWorkItems_EmptyAndStatusFilteredQueuesAreAuthoritative()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+
+        var notGraded = await fixture.QuizGrades.GetWorkItemsAsync(
+            GradingStatus.NotGraded, 1, 100, fixture.TeacherId, "org-a", default);
+        Assert.Equal(fixture.Submission.Id, Assert.Single(notGraded.Items).Id);
+        var graded = await fixture.QuizGrades.GetWorkItemsAsync(
+            GradingStatus.Graded, 1, 100, fixture.TeacherId, "org-a", default);
+        Assert.Equal(fixture.Attempt.Id, Assert.Single(graded.Items).Id);
+
+        fixture.Submission.IsOfficial = false;
+        fixture.Attempt.Status = QuizAttemptStatus.InProgress;
+        await fixture.Db.SaveChangesAsync();
+        var empty = await fixture.QuizGrades.GetWorkItemsAsync(
+            null, 1, 100, fixture.TeacherId, "org-a", default);
+        Assert.Empty(empty.Items);
+        Assert.Equal(0, empty.TotalCount);
     }
 
     [Fact]
@@ -262,11 +355,14 @@ public sealed class UnifiedGradingTests
         public RecordingRealtime Realtime { get; }
         public QuizGradingService QuizGrades { get; }
 
-        public static async Task<Fixture> CreateAsync()
+        public static async Task<Fixture> CreateAsync(DbCommandInterceptor? interceptor = null)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
-            var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options);
+            var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection);
+            if (interceptor is not null)
+                options.AddInterceptors(interceptor);
+            var db = new AppDbContext(options.Options);
             await db.Database.EnsureCreatedAsync();
             var teacher = new User
             {
@@ -383,6 +479,85 @@ public sealed class UnifiedGradingTests
             return new(connection, db, paths, teacher.Id, participant, attempt, submission, file, new());
         }
 
+        public async Task<Guid> CreatePeerStaffAsync(
+            string organizationId = "org-a",
+            UserRole role = UserRole.Admin)
+        {
+            var staff = new User
+            {
+                Username = $"staff-{Guid.NewGuid():N}",
+                DisplayName = "Peer Staff",
+                Role = role,
+                OrganizationId = organizationId
+            };
+            Db.Add(staff);
+            await Db.SaveChangesAsync();
+            return staff.Id;
+        }
+
+        public async Task SeedAdditionalWorkItemsAsync(int count)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                var participant = new SessionParticipant
+                {
+                    SessionId = Participant.SessionId,
+                    StudentCode = $"S{index + 2:D3}",
+                    DisplayName = $"Student {index + 2:D3}",
+                    DeviceId = $"device-{index + 2:D3}",
+                    MachineName = "machine",
+                    AppVersion = "1",
+                    Status = ParticipantStatus.Approved
+                };
+                var submittedAt = DateTimeOffset.UtcNow.AddSeconds(-index - 1);
+                var submission = new Submission
+                {
+                    SessionId = Participant.SessionId,
+                    Participant = participant,
+                    ParticipantId = participant.Id,
+                    AttemptNumber = 1,
+                    IdempotencyKey = $"file-{index + 2:D3}",
+                    Status = SubmissionStatus.Submitted,
+                    ClientSubmittedAtUtc = submittedAt,
+                    ServerReceivedAtUtc = submittedAt,
+                    DeadlineUtc = submittedAt.AddMinutes(1),
+                    IsOfficial = true
+                };
+                submission.Files.Add(new SubmissionFile
+                {
+                    Submission = submission,
+                    SubmissionId = submission.Id,
+                    ClientFileId = $"file-{index + 2:D3}",
+                    OriginalName = $"submission-{index + 2:D3}.txt",
+                    StoredName = $"submission-{index + 2:D3}.txt",
+                    RelativePath = Path.Combine("files", $"submission-{index + 2:D3}.txt"),
+                    SizeBytes = index + 1,
+                    TransferStatus = TransferStatus.Completed
+                });
+                var attempt = new QuizAttempt
+                {
+                    SessionId = Participant.SessionId,
+                    Participant = participant,
+                    ParticipantId = participant.Id,
+                    AttemptNumber = 1,
+                    ExamVersion = 1,
+                    Status = QuizAttemptStatus.Finalized,
+                    StartedAtUtc = submittedAt.AddMinutes(-10),
+                    DeadlineUtc = submittedAt.AddMinutes(1),
+                    FinalizedAtUtc = submittedAt,
+                    AutoScore = 8m,
+                    Score = 8m,
+                    MaxScore = 10m,
+                    GradingStatus = GradingStatus.Graded,
+                    GradedAtUtc = submittedAt,
+                    ResultPolicySnapshot = QuizResultPolicy.Hidden,
+                    SnapshotJson = "[]"
+                };
+                Db.AddRange(participant, submission, attempt);
+            }
+            await Db.SaveChangesAsync();
+        }
+
         public void WriteArchive(params (string Name, string Content)[] entries)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(archivePath)!);
@@ -410,6 +585,32 @@ public sealed class UnifiedGradingTests
             await connection.DisposeAsync();
             if (Directory.Exists(Paths.RootPath))
                 Directory.Delete(Paths.RootPath, recursive: true);
+        }
+    }
+
+    private sealed class CountingCommandInterceptor : DbCommandInterceptor
+    {
+        public int Count { get; private set; }
+
+        public void Reset() => Count = 0;
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            Count++;
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            Count++;
+            return ValueTask.FromResult(result);
         }
     }
 

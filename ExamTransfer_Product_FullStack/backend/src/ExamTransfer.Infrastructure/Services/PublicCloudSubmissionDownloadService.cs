@@ -120,14 +120,28 @@ public sealed class PublicCloudSubmissionDownloadService(
             throw NotFound(actorId, sessionId, submissionId, traceId);
         }
 
-        var organizationId = await ResolveAuthorizedOrganizationAsync(
+        var authorization = await ExamDownloadAuthorization.AuthorizeAsync(
+            db,
             actor,
             actorOrganizationId,
+            submission.Session.Exam.Id,
             submission.Session.Exam.CreatedBy,
-            sessionId,
-            submissionId,
-            traceId,
             cancellationToken);
+        if (!authorization.Authorized)
+        {
+            throw Denied(
+                actor.Id,
+                sessionId,
+                submissionId,
+                traceId,
+                authorization.Branch,
+                actor,
+                submission.Session.Exam.Id,
+                fileId,
+                submission.Session.AccessMode,
+                submission.Session.Exam.CreatedBy);
+        }
+        var organizationId = authorization.OrganizationId!;
         var cloudObjectPath = ResolveAuthoritativeCloudObjectPath(
             file.CloudObjectPath,
             organizationId,
@@ -338,34 +352,6 @@ public sealed class PublicCloudSubmissionDownloadService(
         }
     }
 
-    private async Task<string> ResolveAuthorizedOrganizationAsync(
-        User actor,
-        string? actorOrganizationId,
-        Guid? ownerId,
-        Guid sessionId,
-        Guid submissionId,
-        string? traceId,
-        CancellationToken cancellationToken)
-    {
-        if (!ownerId.HasValue)
-            throw Denied(actor.Id, sessionId, submissionId, traceId);
-
-        var ownerOrganizationId = await db.UsersSet.AsNoTracking()
-            .Where(x => x.Id == ownerId.Value && x.IsActive)
-            .Select(x => x.OrganizationId)
-            .SingleOrDefaultAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(actorOrganizationId)
-            || string.IsNullOrWhiteSpace(actor.OrganizationId)
-            || !string.Equals(actor.OrganizationId, actorOrganizationId, StringComparison.Ordinal)
-            || string.IsNullOrWhiteSpace(ownerOrganizationId)
-            || !string.Equals(ownerOrganizationId, actorOrganizationId, StringComparison.Ordinal))
-        {
-            throw Denied(actor.Id, sessionId, submissionId, traceId);
-        }
-
-        return actorOrganizationId;
-    }
-
     private string ResolveAuthoritativeCloudObjectPath(
         string? objectKey,
         string organizationId,
@@ -569,13 +555,26 @@ public sealed class PublicCloudSubmissionDownloadService(
         Guid actorId,
         Guid? sessionId,
         Guid submissionId,
-        string? traceId)
+        string? traceId,
+        string branch = "ActorEligibility",
+        User? actor = null,
+        Guid? examId = null,
+        Guid? fileId = null,
+        SessionAccessMode? accessMode = null,
+        Guid? createdBy = null)
     {
         logger.LogWarning(
-            "PublicCloud submission download Denied. ActorId={ActorId}; SessionId={SessionId}; SubmissionId={SubmissionId}; TraceId={TraceId}",
+            "PublicCloud submission download Denied. Branch={AuthorizationBranch}; ActorId={ActorId}; ActorRole={ActorRole}; ActorOrganizationId={ActorOrganizationId}; SessionId={SessionId}; ExamId={ExamId}; SubmissionId={SubmissionId}; FileId={FileId}; AccessMode={AccessMode}; ExamCreatedBy={ExamCreatedBy}; TraceId={TraceId}",
+            branch,
             actorId,
+            actor?.Role,
+            actor?.OrganizationId,
             sessionId,
+            examId,
             submissionId,
+            fileId,
+            accessMode,
+            createdBy,
             traceId);
         return new ApiException(
             ErrorCodes.Forbidden,

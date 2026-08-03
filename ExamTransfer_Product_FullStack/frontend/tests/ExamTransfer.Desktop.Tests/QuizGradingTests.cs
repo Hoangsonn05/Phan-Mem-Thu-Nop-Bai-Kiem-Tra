@@ -10,6 +10,52 @@ namespace ExamTransfer.Desktop.Tests;
 public sealed class QuizGradingTests
 {
     [Fact]
+    public async Task HundredQuizAttemptsStayBoundedAndDoNotLoadAnswersOnNavigation()
+    {
+        var data = Enumerable.Range(1, 100)
+            .Select(index => QuizData.Create(studentCode: $"Q{index:D3}"))
+            .ToArray();
+        var api = new QuizBackendClient(data);
+        using var viewModel = CreateViewModel(api);
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.Equal(100, viewModel.Queue.Count);
+        Assert.Null(viewModel.SelectedWorkItem);
+        Assert.Empty(viewModel.QuizQuestions);
+        Assert.DoesNotContain(api.GetPaths, path => path.Contains("quiz-attempts/", StringComparison.Ordinal));
+        Assert.DoesNotContain(api.GetPaths, path => path.Contains("grading/queue", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExplicitOpenLoadsFiftyQuestionQuizWithoutBlockingListNavigation()
+    {
+        var questions = Enumerable.Range(1, 50)
+            .Select(index => new QuizQuestionReviewDto(
+                Guid.NewGuid(),
+                $"Câu hỏi {index}",
+                index,
+                0.2m,
+                0.2m,
+                [
+                    new QuizChoiceReviewDto(Guid.NewGuid(), "Đúng", 1, true, true),
+                    new QuizChoiceReviewDto(Guid.NewGuid(), "Sai", 2, false, false)
+                ]))
+            .ToArray();
+        var data = QuizData.Create(questions: questions);
+        var api = new QuizBackendClient(data);
+        using var viewModel = CreateViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        viewModel.SelectedWorkItem = Assert.Single(viewModel.Queue);
+        Assert.Empty(viewModel.QuizQuestions);
+        viewModel.OpenWorkItemCommand.Execute(null);
+        await WaitUntilAsync(() => viewModel.QuizQuestions.Count == 50 && !viewModel.IsDetailLoading);
+
+        Assert.Equal(50, viewModel.QuizQuestions.Count);
+    }
+
+    [Fact]
     public void QuestionRowsPresentAuthoritativeCorrectWrongBlankAndMultipleAnswers()
     {
         var review = new QuizReviewPresentationModel(QuizData.Create().Quiz!);
@@ -46,7 +92,7 @@ public sealed class QuizGradingTests
     }
 
     [Fact]
-    public async Task SelectingQuizLoadsReviewAndAuthoritativeEditorValues()
+    public async Task SelectingQuizRequiresExplicitOpenBeforeLoadingReview()
     {
         var data = QuizData.Create();
         var api = new QuizBackendClient(data);
@@ -54,6 +100,8 @@ public sealed class QuizGradingTests
         await viewModel.InitializeAsync(CancellationToken.None);
 
         viewModel.SelectedWorkItem = Assert.Single(viewModel.Queue);
+        Assert.Null(viewModel.QuizReview);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.QuizReview is not null && !viewModel.IsDetailLoading);
 
         Assert.Equal(data.Quiz!.AttemptId, viewModel.QuizReview!.AttemptId);
@@ -127,11 +175,13 @@ public sealed class QuizGradingTests
         await viewModel.InitializeAsync(CancellationToken.None);
 
         viewModel.SelectedWorkItem = viewModel.Queue.Single(row => row.SubmissionId == quiz.WorkItem.Id);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.QuizReview is not null);
         Assert.NotEmpty(viewModel.QuizQuestions);
         Assert.Empty(viewModel.Files);
 
         viewModel.SelectedWorkItem = viewModel.Queue.Single(row => row.SubmissionId == file.WorkItem.Id);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.Grade?.SubmissionId == file.WorkItem.Id && !viewModel.IsDetailLoading);
         Assert.Null(viewModel.QuizReview);
         Assert.Null(viewModel.QuizGrade);
@@ -140,6 +190,7 @@ public sealed class QuizGradingTests
         Assert.Equal(file.Grade!.GeneralComment, viewModel.Editor.Comment);
 
         viewModel.SelectedWorkItem = viewModel.Queue.Single(row => row.SubmissionId == quiz.WorkItem.Id);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.QuizReview?.AttemptId == quiz.WorkItem.Id && !viewModel.IsDetailLoading);
         Assert.Null(viewModel.Grade);
         Assert.Empty(viewModel.Files);
@@ -158,8 +209,10 @@ public sealed class QuizGradingTests
         await viewModel.InitializeAsync(CancellationToken.None);
 
         viewModel.SelectedWorkItem = viewModel.Queue.Single(row => row.SubmissionId == quiz.WorkItem.Id);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await delayed.Requested.Task.WaitAsync(TimeSpan.FromSeconds(2));
         viewModel.SelectedWorkItem = viewModel.Queue.Single(row => row.SubmissionId == file.WorkItem.Id);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.Grade?.SubmissionId == file.WorkItem.Id);
         delayed.Complete(quiz.Quiz!);
         await Task.Delay(50);
@@ -195,6 +248,7 @@ public sealed class QuizGradingTests
     {
         await viewModel.InitializeAsync(CancellationToken.None);
         viewModel.SelectedWorkItem = viewModel.Queue.Single(row => row.SubmissionId == id);
+        viewModel.OpenWorkItemCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.Detail?.SubmissionId == id && !viewModel.IsDetailLoading);
     }
 
@@ -241,12 +295,14 @@ public sealed class QuizGradingTests
         public int ReturnRequests { get; private set; }
         public int ReopenRequests { get; private set; }
         public SaveQuizGradeRequest? LastSave { get; private set; }
+        public List<string> GetPaths { get; } = [];
         public Uri BaseAddress { get; } = new("http://localhost:5048/");
         public bool HasTrustedAccountToken => true;
         public DelayedQuiz DelayQuiz(Guid id) => delays[id] = new();
 
         public Task<ApiResponse<T>?> GetAsync<T>(string path, CancellationToken ct = default)
         {
+            GetPaths.Add(path);
             if (typeof(T) == typeof(PagedResult<GradingWorkItemDto>))
                 return Result<T>(new PagedResult<GradingWorkItemDto>(data.Select(item => item.WorkItem).ToArray(), 1, 100, data.Length));
             if (typeof(T) == typeof(PagedResult<SubmissionSummaryDto>))
@@ -352,7 +408,8 @@ public sealed class QuizGradingTests
             var work = new GradingWorkItemDto(
                 id, GradingWorkItemType.QuizAttempt, sessionId, participantId,
                 studentCode, "Học sinh " + studentCode, "Bài trắc nghiệm", submitted,
-                status, 2m, status == GradingStatus.NotGraded ? null : 3m, 4m);
+                status, 2m, status == GradingStatus.NotGraded ? null : 3m, 4m,
+                null, Guid.NewGuid(), 1, false);
             var quiz = new QuizGradeDetailDto(
                 id, sessionId, participantId, work.StudentCode, work.DisplayName, work.ExamTitle,
                 2m, work.Score, 4m, status, "Nhận xét quiz", Guid.NewGuid(), submitted,
@@ -370,11 +427,15 @@ public sealed class QuizGradingTests
             var work = new GradingWorkItemDto(
                 id, GradingWorkItemType.FileSubmission, sessionId, participantId,
                 studentCode, "Học sinh " + studentCode, "Bài file", submitted,
-                GradingStatus.Graded, null, 8m, 10m, file.Id);
+                GradingStatus.Graded, null, 8m, 10m, file.Id,
+                Guid.NewGuid(), 1, false);
             var submission = new SubmissionSummaryDto(
                 id, sessionId, participantId, studentCode, work.DisplayName, 1,
                 SubmissionStatus.Submitted, submitted, submitted, submitted.AddMinutes(-1), false, "RC", true, [file]);
-            var grade = new GradeDto(id, GradingStatus.Graded, 8m, 10m, [], "Nhận xét file", [], null, "file-rv");
+            var grade = new GradeDto(id, GradingStatus.Graded, 8m, 10m, [], "Nhận xét file", [], null, "file-rv")
+            {
+                SubmissionFiles = [file]
+            };
             return new(work, null, submission, grade);
         }
 

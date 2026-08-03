@@ -47,6 +47,7 @@ public sealed class PublicCloudClockTests
             attemptId = (Guid?)null,
             attemptStatus = (string?)null,
             attemptDeadlineUtc = (DateTimeOffset?)null,
+            scoreVisible = false,
             serverNowUtc = serverUtc,
             revision = 42,
             updatedAtUtc = serverUtc
@@ -63,6 +64,7 @@ public sealed class PublicCloudClockTests
         var timeline = await client.GetStudentTimelineAsync(sessionId, CancellationToken.None);
 
         Assert.Equal(42, timeline.Revision);
+        Assert.False(timeline.ScoreVisible);
         Assert.True(clock.TryGetUtcNow(out var actual));
         Assert.Equal(serverUtc, actual);
     }
