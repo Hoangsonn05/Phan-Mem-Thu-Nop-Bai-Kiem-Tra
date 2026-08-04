@@ -408,9 +408,8 @@ public sealed class StudentConnectViewModel : ProductPageBase
                 "TOKEN_SERVER_MISMATCH",
                 "Máy chủ phản hồi không khớp danh tính của phòng đã tìm thấy.");
 
-        await EnsureLocalAccountAsync(identity.ServerId, ct);
-        state.Reset();
         api.SetParticipantToken(null);
+        await EnsureLocalAccountAsync(identity.ServerId, ct);
         Status = "Đang gửi yêu cầu tham gia...";
         var request = new JoinSessionRequest(
             requestedCode,
@@ -421,10 +420,36 @@ public sealed class StudentConnectViewModel : ProductPageBase
             Environment.MachineName,
             "1.0.0",
             Guid.NewGuid().ToString("N"));
-        var response = ApiGuard.Require(await api.PostAsync<JoinSessionRequest, JoinSessionResponse>(
-            "api/v1/sessions/join",
-            request,
-            ct));
+        JoinSessionResponse response;
+        try
+        {
+            response = ApiGuard.Require(
+                await api.PostAsync<JoinSessionRequest, JoinSessionResponse>(
+                    "api/v1/sessions/join",
+                    request,
+                    ct));
+        }
+        catch (BackendApiException ex) when (
+            IsRetryableLanAccountUnauthorized(ex, state))
+        {
+            FrontendLogger.LogMessage(
+                $"mode=LanOnly; phase=join_retry; endpoint={ex.Endpoint}; "
+                + $"http_status={ex.HttpStatusCode}; api_code={ex.ApiCode}; retry_attempt=1; "
+                + $"account_token_same_origin={api.HasTrustedAccountToken}; "
+                + $"join_mutation_committed={state.JoinMutationCommitted}; "
+                + $"session_id={state.SessionId}; participant_id={state.ParticipantId}",
+                "StudentConnect.Join");
+            api.SetAccountToken(null);
+            api.SetParticipantToken(null);
+            await EnsureLocalAccountAsync(identity.ServerId, ct);
+            response = ApiGuard.Require(
+                await api.PostAsync<JoinSessionRequest, JoinSessionResponse>(
+                    "api/v1/sessions/join",
+                    request,
+                    ct));
+        }
+
+        state.Reset();
         state.ApplyJoin(response, request.RoomCode, request.StudentCode, request.DisplayName, SessionAccessMode.LanOnly, room.Room.ServerId);
         state.ExamId = room.Room.ExamId;
         state.AdmissionMode = room.Room.AdmissionMode;
@@ -479,7 +504,8 @@ public sealed class StudentConnectViewModel : ProductPageBase
                     "Tài khoản trên máy giáo viên không khớp tài khoản học sinh đang đăng nhập.");
             }
             FrontendLogger.LogMessage(
-                $"server_id={expectedServerId}; phase=local_account_reauthenticated",
+                $"mode=LanOnly; phase=account_reauthenticate; endpoint=/api/v1/auth/login; "
+                + $"server_id={expectedServerId}; account_token_same_origin={api.HasTrustedAccountToken}",
                 "StudentConnect.Join");
         }
         catch (BackendApiException ex)
@@ -694,6 +720,16 @@ public sealed class StudentConnectViewModel : ProductPageBase
         "UNAUTHORIZED" or "FORBIDDEN" => "AUTH_REQUIRED",
         _ => "JOIN_REJECTED"
     };
+
+    private static bool IsRetryableLanAccountUnauthorized(
+        BackendApiException exception,
+        StudentSessionState state) =>
+        exception.HttpStatusCode == 401
+        && !state.JoinMutationCommitted
+        && string.Equals(
+            exception.Endpoint?.TrimEnd('/'),
+            "/api/v1/sessions/join",
+            StringComparison.OrdinalIgnoreCase);
 
     internal static PublicJoinErrorPresentation MapPublicJoinError(Exception exception) =>
         exception switch

@@ -349,36 +349,84 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         accountHeartbeatCts?.Cancel();
         accountHeartbeatCts?.Dispose();
-        if (!authState.IsTeacher || authState.CurrentAccount is null) return;
+        if (authState.CurrentAccount is null) return;
 
         accountHeartbeatCts = new CancellationTokenSource();
         var token = accountHeartbeatCts.Token;
-        _ = Task.Run(async () =>
+        _ = Task.Run(() => RunAccountHeartbeatLoopAsync(
+            api,
+            authState,
+            Task.Delay,
+            () => RunOnUiAsync(ClearAuthToLogin),
+            token), token);
+    }
+
+    internal static async Task RunAccountHeartbeatLoopAsync(
+        IBackendClient api,
+        AppAuthSessionState authState,
+        Func<TimeSpan, CancellationToken, Task> delay,
+        Func<Task> clearAuthToLogin,
+        CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
         {
-            while (!token.IsCancellationRequested)
+            try
             {
-                try
+                await delay(TimeSpan.FromSeconds(30), token);
+                if (authState.CurrentAccount is not { } account) continue;
+                if (authState.IsStudent && !api.HasTrustedAccountToken) continue;
+
+                var response = await api.PostAsync<AccountHeartbeatRequest, AccountHeartbeatResponse>(
+                    "api/v1/auth/heartbeat",
+                    new AccountHeartbeatRequest(account.DeviceId, Environment.MachineName, DateTimeOffset.UtcNow),
+                    token);
+                _ = ApiGuard.Require(response);
+            }
+            catch (OperationCanceledException ex) when (
+                !token.IsCancellationRequested && authState.IsStudent)
+            {
+                LogAccountHeartbeatFailure(api, ex, null, null);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (BackendApiException ex) when (
+                authState.IsStudent && ex.HttpStatusCode == 401)
+            {
+                LogAccountHeartbeatFailure(api, ex, ex.HttpStatusCode, ex.ApiCode);
+                api.SetAccountToken(null);
+            }
+            catch (Exception ex)
+            {
+                var backend = ex as BackendApiException;
+                LogAccountHeartbeatFailure(
+                    api,
+                    ex,
+                    backend?.HttpStatusCode,
+                    backend?.ApiCode);
+                if (authState.IsTeacher)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(30), token);
-                    if (authState.CurrentAccount is not { } account) continue;
-                    var response = await api.PostAsync<AccountHeartbeatRequest, AccountHeartbeatResponse>(
-                        "api/v1/auth/heartbeat",
-                        new AccountHeartbeatRequest(account.DeviceId, Environment.MachineName, DateTimeOffset.UtcNow),
-                        token);
-                    _ = ApiGuard.Require(response);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    FrontendLogger.Log(ex, "MainViewModel.AccountHeartbeat");
-                    await RunOnUiAsync(() => ClearAuthToLogin());
+                    await clearAuthToLogin();
                     break;
                 }
             }
-        }, token);
+        }
+    }
+
+    private static void LogAccountHeartbeatFailure(
+        IBackendClient api,
+        Exception exception,
+        int? httpStatusCode,
+        string? apiCode)
+    {
+        FrontendLogger.Log(exception, "MainViewModel.AccountHeartbeat");
+        FrontendLogger.LogMessage(
+            "mode=LanOnly; phase=account_heartbeat; endpoint=/api/v1/auth/heartbeat; "
+            + $"http_status={httpStatusCode?.ToString() ?? "none"}; "
+            + $"api_code={apiCode ?? "none"}; retry_attempt=0; "
+            + $"account_token_same_origin={api.HasTrustedAccountToken}",
+            "MainViewModel.AccountHeartbeat");
     }
 
     private void ClearAuthToLogin()
