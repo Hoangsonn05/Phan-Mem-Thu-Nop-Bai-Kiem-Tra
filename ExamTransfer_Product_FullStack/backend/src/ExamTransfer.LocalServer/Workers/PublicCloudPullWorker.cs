@@ -6,6 +6,7 @@ using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
+using ExamTransfer.Infrastructure;
 
 namespace ExamTransfer.LocalServer.Workers;
 
@@ -50,7 +51,24 @@ public sealed class PublicCloudPullWorker(
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cloud = scope.ServiceProvider.GetRequiredService<ICloudAdapter>();
         if (!cloud.CanSynchronize)
+        {
+            var options = scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<ExamTransferOptions>>().Value;
+            var session = cloud.CurrentSession;
+            var configOrg = options.Cloud.OrganizationId;
+            var sessionOrg = session?.OrganizationId;
+            var isTrusted = string.Equals(options.Cloud.AccessMode, "TrustedServer", StringComparison.OrdinalIgnoreCase);
+            var isOrgMatch = sessionOrg != null && configOrg != null && string.Equals(sessionOrg, configOrg, StringComparison.OrdinalIgnoreCase);
+
+            logger.LogWarning(
+                "[DIAGNOSTIC] Boundary A - CanSynchronize=false. " +
+                "Enabled={Enabled}, Configured={Configured}, Authenticated={Authenticated}, " +
+                "IsTrusted={IsTrusted}, IsOrgMatch={IsOrgMatch}, " +
+                "ConfigOrg={ConfigOrg}, SessionOrg={SessionOrg}",
+                cloud.Enabled, cloud.Configured, cloud.Authenticated,
+                isTrusted, isOrgMatch,
+                configOrg ?? "null", sessionOrg ?? "null");
             return;
+        }
         if (!await cloud.CheckHealthAsync(cancellationToken))
         {
             await RecordFailureAsync(db, "cloud_schema", null, "schema",
@@ -114,6 +132,26 @@ public sealed class PublicCloudPullWorker(
                 new CloudPullCursorValue(cursor.LastCloudVersion, cursor.LastUpdatedAtUtc, cursor.LastEntityId),
                 100,
                 cancellationToken);
+                
+            if (entityName == "session_participants")
+            {
+                if (page.Records.Count == 0)
+                {
+                    logger.LogInformation("[DIAGNOSTIC] Boundary B (Adapter) - session_participants page {Page}: 0 records after cursor. Current Cursor: v={CV} updated={Upd} id={Id}",
+                        pageNumber, cursor.LastCloudVersion, cursor.LastUpdatedAtUtc, cursor.LastEntityId);
+                }
+                else
+                {
+                    var first = page.Records[0];
+                    var last = page.Records[^1];
+                    logger.LogInformation("[DIAGNOSTIC] Boundary B (Adapter) - session_participants page {Page}: {Count} records AFTER cursor. Current Cursor: v={CV} updated={Upd} id={Id}. First Tuple: v={F_CV} updated={F_Upd} id={F_Id}. Last Tuple: v={L_CV} updated={L_Upd} id={L_Id}",
+                        pageNumber, page.Records.Count,
+                        cursor.LastCloudVersion, cursor.LastUpdatedAtUtc, cursor.LastEntityId,
+                        first.CloudVersion, first.UpdatedAtUtc, first.EntityId,
+                        last.CloudVersion, last.UpdatedAtUtc, last.EntityId);
+                }
+            }
+
             if (page.Records.Count == 0)
             {
                 await PublishProjectionUpdatesAsync(committedProjectionVersions, cancellationToken);
@@ -161,7 +199,7 @@ public sealed class PublicCloudPullWorker(
                             .FindAsync([participantId], cancellationToken))?.CloudVersion;
                     }
 
-                    var localId = await ApplyTeacherProjectionAsync(db, record, cancellationToken);
+                    var localId = await ApplyTeacherProjectionAsync(db, logger, record, cancellationToken);
                     if (localId.HasValue)
                     {
                         var mapping = await db.PublicCloudIdMappingsSet.SingleOrDefaultAsync(
@@ -212,12 +250,87 @@ public sealed class PublicCloudPullWorker(
                 cursor.LastEntityId = last.EntityId;
                 await db.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
+
+                if (entityName == "session_participants" && page.Records.Count > 0)
+                {
+                    logger.LogInformation("[DIAGNOSTIC] Boundary C - Commited {Count} records. Saved Cursor: v={CV} updated={Upd} id={Id}",
+                        page.Records.Count, cursor.LastCloudVersion, cursor.LastUpdatedAtUtc, cursor.LastEntityId);
+
+                    foreach (var record in page.Records)
+                    {
+                        var hasSession = false;
+                        var hasParticipant = false;
+                        var parseStatus = "Success";
+                        string sessionIdStr = "unknown";
+
+                        try
+                        {
+                            using var doc = System.Text.Json.JsonDocument.Parse(record.PayloadJson);
+                            if (doc.RootElement.TryGetProperty("session_id", out var sidProp) && sidProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                            {
+                                sessionIdStr = sidProp.GetString() ?? "null";
+                                if (Guid.TryParse(sessionIdStr, out var sid))
+                                {
+                                    hasSession = await db.ExamSessionsSet.AnyAsync(x => x.Id == sid, cancellationToken);
+                                }
+                            }
+                            else parseStatus = "MissingSessionId";
+
+                            if (Guid.TryParse(record.EntityId, out var pid))
+                            {
+                                hasParticipant = await db.SessionParticipantsSet.AnyAsync(x => x.Id == pid, cancellationToken);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            parseStatus = $"Error:{ex.GetType().Name}";
+                        }
+
+                        logger.LogInformation("[DIAGNOSTIC] Boundary C - Record {EntityId}: CloudVersion={CV}, ParseStatus={ParseStatus}, SessionId={SessionIdStr}, HasSessionInDb={HasSession}, HasParticipantInDb={HasParticipant}",
+                            record.EntityId, record.CloudVersion, parseStatus, sessionIdStr, hasSession, hasParticipant);
+                    }
+                }
+
                 foreach (var update in pageProjectionVersions)
                 {
                     committedProjectionVersions[update.Key] = Math.Max(
                         committedProjectionVersions.GetValueOrDefault(update.Key),
                         update.Value);
                 }
+            }
+            catch (DbUpdateException ex)
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine($"[DIAGNOSTIC] DbUpdateException when saving entity {entityName}");
+                sb.AppendLine($"Message: {ex.Message}");
+                
+                var baseEx = ex.GetBaseException();
+                sb.AppendLine($"BaseException: {baseEx.Message}");
+                if (baseEx is Microsoft.Data.Sqlite.SqliteException sqliteEx)
+                {
+                    sb.AppendLine($"SqliteErrorCode: {sqliteEx.SqliteErrorCode}");
+                    sb.AppendLine($"SqliteExtendedErrorCode: {sqliteEx.SqliteExtendedErrorCode}");
+                }
+
+                foreach (var entry in ex.Entries)
+                {
+                    sb.AppendLine($"Failed Entity: {entry.Metadata.GetTableName()} | State: {entry.State}");
+                    
+                    var pks = entry.Metadata.FindPrimaryKey()?.Properties.Select(p => $"{p.Name}={entry.Property(p.Name).CurrentValue}");
+                    if (pks != null) sb.AppendLine($"  PKs: {string.Join(", ", pks)}");
+                    
+                    var fks = entry.Metadata.GetForeignKeys().SelectMany(fk => fk.Properties).Select(p => $"{p.Name}={entry.Property(p.Name).CurrentValue}");
+                    if (fks.Any()) sb.AppendLine($"  FKs: {string.Join(", ", fks)}");
+                    
+                    var nullRequired = entry.Properties.Where(p => !p.Metadata.IsNullable && p.CurrentValue == null).Select(p => p.Metadata.Name);
+                    if (nullRequired.Any()) sb.AppendLine($"  Null Required Props: {string.Join(", ", nullRequired)}");
+                }
+                
+                logger.LogError(sb.ToString());
+                db.ChangeTracker.Clear();
+                throw;
             }
             catch
             {
@@ -275,6 +388,7 @@ public sealed class PublicCloudPullWorker(
 
     private static async Task<Guid?> ApplyTeacherProjectionAsync(
         AppDbContext db,
+        ILogger logger,
         CloudPullRecord record,
         CancellationToken cancellationToken)
     {
@@ -302,8 +416,15 @@ public sealed class PublicCloudPullWorker(
             }
             case "class_members":
             {
-                var userId = NullableGuid(row, "user_id");
                 var classId = GuidValue(row, "class_id");
+                if (!await db.ClassesSet.AnyAsync(x => x.Id == classId, cancellationToken))
+                {
+                    logger.LogWarning(
+                        "ProjectionSkippedMissingLocalParent: EntityName={EntityName}, EntityId={EntityId}, ParentType={ParentType}, ParentId={ParentId}, CloudVersion={CloudVersion}",
+                        record.EntityName, id, "classes", classId, record.CloudVersion);
+                    return null;
+                }
+                var userId = NullableGuid(row, "user_id");
                 var studentCode = StringValue(row, "student_code");
                 var entity = await db.ClassMembersSet.FindAsync([id], cancellationToken);
                 entity ??= userId.HasValue
@@ -328,6 +449,14 @@ public sealed class PublicCloudPullWorker(
             }
             case "session_participants":
             {
+                var sessionId = GuidValue(row, "session_id");
+                if (!await db.ExamSessionsSet.AnyAsync(x => x.Id == sessionId, cancellationToken))
+                {
+                    logger.LogWarning(
+                        "ProjectionSkippedMissingLocalParent: EntityName={EntityName}, EntityId={EntityId}, ParentType={ParentType}, ParentId={ParentId}, CloudVersion={CloudVersion}",
+                        record.EntityName, id, "exam_sessions", sessionId, record.CloudVersion);
+                    return null;
+                }
                 var entity = await db.SessionParticipantsSet.FindAsync([id], cancellationToken);
                 if (entity is not null && entity.CloudVersion >= record.CloudVersion) return entity.Id;
                 entity ??= new SessionParticipant { Id = id };

@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Cloud;
@@ -14,7 +15,8 @@ namespace ExamTransfer.Infrastructure.Cloud;
 public sealed class SupabaseCloudAdapter(
     HttpClient httpClient,
     IOptions<ExamTransferOptions> options,
-    CloudSessionState sessionState) : ICloudAdapter
+    CloudSessionState sessionState,
+    ILogger<SupabaseCloudAdapter>? logger = null) : ICloudAdapter
 {
     private const string TusVersion = "1.0.0";
     private static readonly JsonSerializerOptions JsonOptions =
@@ -269,6 +271,12 @@ public sealed class SupabaseCloudAdapter(
         using var document = JsonDocument.Parse(json);
         var records = new List<CloudPullRecord>();
         var rawRows = document.RootElement.EnumerateArray().ToList();
+        
+        if (entityName == "session_participants")
+        {
+            logger?.LogInformation("[DIAGNOSTIC] Boundary B (HTTP) - Raw HttpRows={HttpRows} for {Table}", rawRows.Count, table);
+        }
+
         foreach (var row in rawRows)
         {
             var id = row.GetProperty(keyColumn).GetString()

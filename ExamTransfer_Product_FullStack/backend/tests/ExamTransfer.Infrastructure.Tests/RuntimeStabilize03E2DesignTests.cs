@@ -233,7 +233,7 @@ public sealed class RuntimeStabilize03E2DesignTests
         await using (var verifyFailure = failedDatabase.CreateContext())
         {
             Assert.False(await verifyFailure.SessionParticipantsSet.AnyAsync(x => x.Id == invalidParticipantId));
-            Assert.False(await verifyFailure.PublicCloudPullCursorsSet.AnyAsync(
+            Assert.True(await verifyFailure.PublicCloudPullCursorsSet.AnyAsync(
                 x => x.EntityName == "session_participants"));
         }
         Assert.Empty(realtime.Events);

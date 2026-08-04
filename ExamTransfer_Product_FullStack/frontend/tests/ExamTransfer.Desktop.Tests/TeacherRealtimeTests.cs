@@ -432,6 +432,138 @@ public sealed class TeacherRealtimeTests
     }
 
     [Fact]
+    public async Task Lobby_PublicCloudProjectionEventRefreshesParticipantOncePerNewVersion()
+    {
+        // Arrange – Lobby với session PublicCloud đang chờ
+        var session = CreateSession(SessionStatus.Waiting, SessionAccessMode.PublicCloud);
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        var viewModel = new LobbyViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        await WaitForAsync(() => realtime.Subscribed.Contains(session.Id));
+        Assert.Equal(1, backend.SessionDetailRequests);
+        Assert.Empty(viewModel.Participants);
+
+        // Act – event sai SessionId không trigger refresh
+        var update10 = new PublicCloudProjectionUpdatedEvent(
+            session.Id,
+            PublicCloudProjectionEntityTypes.SessionParticipant,
+            10);
+        realtime.Raise(new(
+            Guid.NewGuid(),
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            10,
+            null,
+            null,
+            update10 with { SessionId = Guid.NewGuid(), ProjectionVersion = 10 }));
+        await Task.Delay(250);
+        Assert.Equal(1, backend.SessionDetailRequests);
+
+        // Act – 3 event cùng version (deduplicated) → chỉ 1 request
+        backend.Participants = [CreateParticipant(session.Id)];
+        for (var index = 0; index < 3; index++)
+            realtime.Raise(new(
+                session.Id,
+                RealtimeEvents.PublicCloudProjectionUpdated,
+                10,
+                null,
+                null,
+                update10));
+
+        await WaitForAsync(() => backend.SessionDetailRequests == 2);
+        Assert.Single(viewModel.Participants);
+        await Task.Delay(200);
+        Assert.Equal(2, backend.SessionDetailRequests);
+
+        // Act – version mới → refresh thêm 1 lần
+        var update11 = update10 with { ProjectionVersion = 11 };
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            11,
+            null,
+            null,
+            update11));
+        await WaitForAsync(() => backend.SessionDetailRequests == 3);
+
+        // Act – LanOnly event không trigger refresh trong Lobby PublicCloud
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.ParticipantJoined,
+            12,
+            null));
+        await WaitForAsync(() => backend.SessionDetailRequests == 4);
+
+        // Act – Dispose → event sau không trigger
+        viewModel.Dispose();
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            13,
+            null,
+            null,
+            update11 with { ProjectionVersion = 13 }));
+        await Task.Delay(250);
+        Assert.Equal(4, backend.SessionDetailRequests);
+    }
+
+    [Fact]
+    public async Task Lobby_PublicCloudProjection_WrongEntityType_DoesNotRefresh()
+    {
+        var session = CreateSession(SessionStatus.Waiting, SessionAccessMode.PublicCloud);
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        using var viewModel = new LobbyViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        await WaitForAsync(() => realtime.Subscribed.Contains(session.Id));
+        Assert.Equal(1, backend.SessionDetailRequests);
+
+        // Event với EntityType khác SessionParticipant → không refresh
+        var update = new PublicCloudProjectionUpdatedEvent(
+            session.Id,
+            "SessionResult",   // entity type khác
+            5);
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            5,
+            null,
+            null,
+            update));
+        await Task.Delay(250);
+        Assert.Equal(1, backend.SessionDetailRequests);
+    }
+
+    [Fact]
+    public async Task Lobby_LanOnly_DoesNotRespondToPublicCloudProjection()
+    {
+        // LanOnly session không được phản ứng với PublicCloudProjectionUpdated
+        var session = CreateSession(SessionStatus.Waiting, SessionAccessMode.LanOnly);
+        Assert.Equal(SessionAccessMode.LanOnly, session.AccessMode);
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        using var viewModel = new LobbyViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        await WaitForAsync(() => realtime.Subscribed.Contains(session.Id));
+        Assert.Equal(1, backend.SessionDetailRequests);
+
+        var update = new PublicCloudProjectionUpdatedEvent(
+            session.Id,
+            PublicCloudProjectionEntityTypes.SessionParticipant,
+            10);
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            10,
+            null,
+            null,
+            update));
+        await Task.Delay(250);
+        // LanOnly không được xử lý PublicCloudProjectionUpdated
+        Assert.Equal(1, backend.SessionDetailRequests);
+    }
+
+    [Fact]
     public async Task SubmissionCenter_SubmissionAcceptedRefreshesSelectedSessionOnlyAndDebounces()
     {
         var session = CreateSession(SessionStatus.Collecting);

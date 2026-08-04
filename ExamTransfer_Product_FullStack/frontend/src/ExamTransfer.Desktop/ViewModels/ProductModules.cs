@@ -1488,6 +1488,8 @@ public sealed class LobbyViewModel : ProductPageBase
     private readonly TeacherRealtimeSessionBinding realtimeBinding;
     private readonly RealtimeRefreshDebouncer realtimeRefresh =
         new(TimeSpan.FromMilliseconds(150), "Lobby.RealtimeRefresh");
+    private readonly ProjectionRefreshCoordinator projectionRefresh;
+    private readonly SemaphoreSlim detailRefreshGate = new(1, 1);
     private SessionSummaryDto? selectedSession;
     private ParticipantDto? selectedParticipant;
     private string message = "Kỳ thi sẽ bắt đầu trong 5 phút. Vui lòng kiểm tra thiết bị.";
@@ -1499,7 +1501,13 @@ public sealed class LobbyViewModel : ProductPageBase
         this.api = api;
         this.realtime = realtime ?? new RealtimeService(AppServices.BaseUrl);
         realtimeBinding = new TeacherRealtimeSessionBinding(this.realtime);
+        projectionRefresh = new ProjectionRefreshCoordinator(
+            RefreshProjectionSnapshotAsync,
+            TimeSpan.FromMilliseconds(150),
+            [TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500)],
+            [TimeSpan.FromMilliseconds(350), TimeSpan.FromMilliseconds(850)]);
         this.realtime.NotificationReceived += OnRealtimeNotification;
+        this.realtime.EventReceived += OnRealtimeEvent;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadSessionCommand = new AsyncRelayCommand(LoadSessionAsync, () => !IsBusy && SelectedSession is not null);
         ApproveCommand = new AsyncRelayCommand(ApproveAsync, () => !IsBusy && SelectedParticipant is not null);
@@ -1539,14 +1547,44 @@ public sealed class LobbyViewModel : ProductPageBase
         await RunAsync("Đang tải phòng chờ", "Phòng chờ đã được cập nhật", async token =>
         {
             var data = ApiGuard.Require(await api.GetSessionsAsync(token));
-            Sessions.ReplaceWith(data.Items.Where(x => x.Status is SessionStatus.Waiting or SessionStatus.Draft or SessionStatus.Distributing));
-            SelectedSession ??= Sessions.FirstOrDefault();
-            await realtimeBinding.EnsureAsync(
-                AppServices.AuthState.AccountAccessToken,
-                SelectedSession?.Id,
-                token);
+            var newSessions = data.Items.Where(x => x.Status is SessionStatus.Waiting or SessionStatus.Draft or SessionStatus.Distributing).ToList();
+
+            var prevId = SelectedSession?.Id;
+
+            void UpdateSessions()
+            {
+                Sessions.ReplaceWith(newSessions);
+                SelectedSession = prevId.HasValue ? Sessions.FirstOrDefault(x => x.Id == prevId.Value) ?? Sessions.FirstOrDefault() : Sessions.FirstOrDefault();
+            }
+
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+                UpdateSessions();
+            else
+                await dispatcher.InvokeAsync(UpdateSessions);
+
+            Exception? realtimeEx = null;
+            try
+            {
+                await realtimeBinding.EnsureAsync(
+                    AppServices.AuthState.AccountAccessToken,
+                    SelectedSession?.Id,
+                    token);
+            }
+            catch (Exception ex)
+            {
+                realtimeEx = ex;
+            }
+
             if (SelectedSession is not null)
+            {
                 await LoadSessionCoreAsync(token);
+                if (SelectedSession.AccessMode == SessionAccessMode.PublicCloud)
+                    projectionRefresh.StartRecovery();
+            }
+
+            if (realtimeEx is not null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(realtimeEx).Throw();
         });
     }
 
@@ -1554,9 +1592,31 @@ public sealed class LobbyViewModel : ProductPageBase
     private async Task LoadSessionCoreAsync(CancellationToken ct)
     {
         if (SelectedSession is null) return;
-        var detail = ApiGuard.Require(await api.GetSessionAsync(SelectedSession.Id, ct));
-        Participants.ReplaceWith(detail.Participants);
-        SelectedParticipant = Participants.FirstOrDefault();
+        if (!await detailRefreshGate.WaitAsync(0, ct)) return;
+        try
+        {
+            var sessionId = SelectedSession.Id;
+            var detail = ApiGuard.Require(await api.GetSessionAsync(sessionId, ct));
+
+            void UpdateParticipants()
+            {
+                if (SelectedSession?.Id == sessionId)
+                {
+                    Participants.ReplaceWith(detail.Participants);
+                    SelectedParticipant = Participants.FirstOrDefault();
+                }
+            }
+
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+                UpdateParticipants();
+            else
+                await dispatcher.InvokeAsync(UpdateParticipants);
+        }
+        finally
+        {
+            detailRefreshGate.Release();
+        }
     }
 
     private Task ApproveAsync() => RunAsync("Đang duyệt học sinh", "Học sinh đã được duyệt", async ct =>
@@ -1620,8 +1680,30 @@ public sealed class LobbyViewModel : ProductPageBase
     {
         if (IsDisposed
             || SelectedSession is not { } session
-            || notification.SessionId != session.Id
-            || notification.EventName is not (
+            || notification.SessionId != session.Id)
+            return;
+
+        if (notification.EventName == RealtimeEvents.PublicCloudProjectionUpdated)
+        {
+            void ScheduleProjectionRefresh()
+            {
+                var update = notification.ProjectionUpdated;
+                if (session.AccessMode != SessionAccessMode.PublicCloud
+                    || update is null
+                    || update.SessionId != session.Id
+                    || !string.Equals(update.EntityType, PublicCloudProjectionEntityTypes.SessionParticipant, StringComparison.OrdinalIgnoreCase)
+                    || !projectionRefresh.Schedule(session.Id, update.ProjectionVersion))
+                    return;
+            }
+            var projectionDispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (projectionDispatcher is null || projectionDispatcher.CheckAccess())
+                ScheduleProjectionRefresh();
+            else
+                projectionDispatcher.InvokeAsync(ScheduleProjectionRefresh);
+            return;
+        }
+
+        if (notification.EventName is not (
                 RealtimeEvents.ParticipantJoined
                 or RealtimeEvents.ParticipantApproved
                 or RealtimeEvents.ParticipantConnectionChanged))
@@ -1636,12 +1718,47 @@ public sealed class LobbyViewModel : ProductPageBase
             dispatcher.InvokeAsync(ScheduleRefresh);
     }
 
+    private async Task RefreshProjectionSnapshotAsync(
+        Guid? expectedSessionId,
+        CancellationToken cancellationToken)
+    {
+        if (IsDisposed
+            || SelectedSession is not { AccessMode: SessionAccessMode.PublicCloud } session
+            || expectedSessionId.HasValue && expectedSessionId.Value != session.Id)
+            return;
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+            await LoadSessionCoreAsync(cancellationToken);
+        else
+            await dispatcher.InvokeAsync(
+                () => LoadSessionCoreAsync(cancellationToken)).Task.Unwrap();
+    }
+
+    private void OnRealtimeEvent(object? sender, string eventName)
+    {
+        if (eventName != "Reconnected" || IsDisposed)
+            return;
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        void Recover()
+        {
+            if (SelectedSession?.AccessMode == SessionAccessMode.PublicCloud)
+                projectionRefresh.StartRecovery();
+        }
+        if (dispatcher is null || dispatcher.CheckAccess())
+            Recover();
+        else
+            dispatcher.InvokeAsync(Recover);
+    }
+
     public override void Dispose()
     {
         if (IsDisposed)
             return;
         realtime.NotificationReceived -= OnRealtimeNotification;
+        realtime.EventReceived -= OnRealtimeEvent;
         realtimeRefresh.Dispose();
+        projectionRefresh.Dispose();
+        detailRefreshGate.Dispose();
         realtimeBinding
             .StopAsync()
             .SafeFireAndForget("Lobby.DisconnectRealtime");
