@@ -1584,7 +1584,16 @@ public sealed class LobbyViewModel : ProductPageBase
             }
 
             if (realtimeEx is not null)
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(realtimeEx).Throw();
+            {
+                if (realtimeEx is Microsoft.AspNetCore.SignalR.HubException hubEx && hubEx.Message.Contains("NOT_FOUND", StringComparison.OrdinalIgnoreCase))
+                {
+                    FrontendLogger.LogWarning($"SubscribeSession returned NOT_FOUND for SessionId {SelectedSession?.Id}: {hubEx.Message}", "LobbyViewModel.EnsureRealtime.SubscribeNotFound");
+                }
+                else
+                {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(realtimeEx).Throw();
+                }
+            }
         });
     }
 

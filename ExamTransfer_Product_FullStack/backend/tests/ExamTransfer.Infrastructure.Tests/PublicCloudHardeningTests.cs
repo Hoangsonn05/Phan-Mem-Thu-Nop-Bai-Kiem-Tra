@@ -655,7 +655,7 @@ public sealed class PublicCloudTeacherMutationTests
 public sealed class PublicCloudTeacherMutationRoutingTests
 {
     [Fact]
-    public async Task Approve_PublicCloud_calls_rpc_without_mutating_sqlite_or_creating_outbox()
+    public async Task Approve_PublicCloud_calls_rpc_and_mutates_sqlite_synchronously()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
         var participant = await PublicCloudTestHarness.SeedSessionAsync(database.Context, SessionAccessMode.PublicCloud);
@@ -669,9 +669,10 @@ public sealed class PublicCloudTeacherMutationRoutingTests
         Assert.Equal(mutationRequestId, cloud.LastApproveRequestId);
         Assert.Equal(ParticipantStatus.Approved, result.Status);
         database.Context.ChangeTracker.Clear();
-        Assert.Equal(
-            ParticipantStatus.PendingApproval,
-            (await database.Context.SessionParticipantsSet.SingleAsync(x => x.Id == participant.Id)).Status);
+
+        var dbParticipant = await database.Context.SessionParticipantsSet.SingleAsync(x => x.Id == participant.Id);
+        Assert.Equal(ParticipantStatus.Approved, dbParticipant.Status);
+        Assert.Equal(42, dbParticipant.CloudVersion);
         Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
     }
 
@@ -715,7 +716,7 @@ public sealed class PublicCloudTeacherMutationRoutingTests
     }
 
     [Fact]
-    public async Task Reject_PublicCloud_calls_rpc_without_local_mutation_or_outbox()
+    public async Task Reject_PublicCloud_calls_rpc_and_mutates_sqlite_synchronously()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
         var participant = await PublicCloudTestHarness.SeedSessionAsync(
@@ -735,16 +736,15 @@ public sealed class PublicCloudTeacherMutationRoutingTests
         Assert.Equal(1, cloud.RejectParticipantCalls);
         Assert.Equal(requestId, cloud.LastRejectParticipantRequestId);
         database.Context.ChangeTracker.Clear();
-        Assert.Equal(
-            ParticipantStatus.PendingApproval,
-            (await database.Context.SessionParticipantsSet
-                .SingleAsync(x => x.Id == participant.Id))
-                .Status);
+
+        var dbParticipant = await database.Context.SessionParticipantsSet.SingleAsync(x => x.Id == participant.Id);
+        Assert.Equal(ParticipantStatus.Rejected, dbParticipant.Status);
+        Assert.Equal(43, dbParticipant.CloudVersion);
         Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
     }
 
     [Fact]
-    public async Task BulkApprove_PublicCloud_calls_rpc_without_local_mutation_or_outbox()
+    public async Task BulkApprove_PublicCloud_calls_rpc_and_mutates_sqlite_synchronously()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
         var participant = await PublicCloudTestHarness.SeedSessionAsync(
@@ -764,11 +764,10 @@ public sealed class PublicCloudTeacherMutationRoutingTests
         Assert.Equal([participant.Id], cloud.LastBulkApproveParticipantIds);
         Assert.Equal(ParticipantStatus.Approved, Assert.Single(result).Status);
         database.Context.ChangeTracker.Clear();
-        Assert.Equal(
-            ParticipantStatus.PendingApproval,
-            (await database.Context.SessionParticipantsSet
-                .SingleAsync(x => x.Id == participant.Id))
-                .Status);
+
+        var dbParticipant = await database.Context.SessionParticipantsSet.SingleAsync(x => x.Id == participant.Id);
+        Assert.Equal(ParticipantStatus.Approved, dbParticipant.Status);
+        Assert.Equal(44, dbParticipant.CloudVersion);
         Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
     }
 
@@ -854,7 +853,7 @@ public sealed class PublicCloudTeacherMutationRoutingTests
     }
 
     [Fact]
-    public async Task PublicCloud_extra_time_maps_absolute_contract_and_broadcasts_once_without_local_mutation()
+    public async Task PublicCloud_extra_time_maps_absolute_contract_and_broadcasts_once_and_mutates_sqlite_synchronously()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
         var participant = await PublicCloudTestHarness.SeedSessionAsync(database.Context, SessionAccessMode.PublicCloud);
@@ -885,10 +884,9 @@ public sealed class PublicCloudTeacherMutationRoutingTests
         Assert.Equal(requestId, payload.RequestId);
 
         database.Context.ChangeTracker.Clear();
-        Assert.Equal(
-            0,
-            (await database.Context.SessionParticipantsSet.SingleAsync(x => x.Id == participant.Id))
-                .ExtraTimeMinutes);
+        var dbParticipant = await database.Context.SessionParticipantsSet.SingleAsync(x => x.Id == participant.Id);
+        Assert.Equal(15, dbParticipant.ExtraTimeMinutes);
+        Assert.Equal(50, dbParticipant.CloudVersion);
         Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
     }
 
@@ -1560,6 +1558,7 @@ internal static class PublicCloudTestHarness
                     publisher,
                     options),
                 new PublicCloudSessionParticipantMutationHandler(
+                    db,
                     options,
                     publisher,
                     cloud)

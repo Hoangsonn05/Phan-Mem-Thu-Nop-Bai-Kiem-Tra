@@ -915,6 +915,7 @@ public sealed class OnlyLanWorkflowCharacterizationTests
                         realtime,
                         Options),
                     new PublicCloudSessionParticipantMutationHandler(
+                        Db,
                         Options,
                         realtime,
                         Cloud)

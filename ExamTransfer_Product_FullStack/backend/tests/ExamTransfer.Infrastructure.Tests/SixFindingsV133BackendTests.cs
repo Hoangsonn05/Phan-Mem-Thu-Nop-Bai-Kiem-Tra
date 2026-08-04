@@ -795,6 +795,7 @@ public sealed class SixFindingsV133BackendTests
                     realtime,
                     options),
                 new PublicCloudSessionParticipantMutationHandler(
+                    db,
                     options,
                     realtime,
                     cloud)

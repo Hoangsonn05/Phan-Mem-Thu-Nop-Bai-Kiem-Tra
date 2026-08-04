@@ -1,4 +1,4 @@
-﻿using ExamTransfer.Application;
+using ExamTransfer.Application;
 using System.Text.Json;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
@@ -1571,6 +1571,7 @@ public sealed class CoreWorkflowPersistenceTests
                     realtime,
                     options),
                 new PublicCloudSessionParticipantMutationHandler(
+                    db,
                     options,
                     realtime)
             });
