@@ -414,10 +414,33 @@ for ($iteration = 1; $iteration -le $Repeat; $iteration++) {
             -Uri "$baseUrl/api/v1/student/quiz/attempts/$attemptId/finalize" `
             -Headers $dualHeaders `
             -Body $finalizeBody
+
+        Write-Host "PARTICIPANT_ID: $participantId"
+        Write-Host "ATTEMPT_ID: $attemptId"
+        Write-Host "FIRST_FINALIZE_SUCCESS: $($finalized.success)"
+        Write-Host "FIRST_FINALIZE_SCORE: $($finalized.data.score)"
+        Write-Host "FIRST_FINALIZE_MAX_SCORE: $($finalized.data.maxScore)"
+        Write-Host "FIRST_FINALIZE_BODY_SUMMARY: $($finalized | ConvertTo-Json -Depth 5 -Compress)"
+        Write-Host "SECOND_FINALIZE_SUCCESS: $($repeated.success)"
+        Write-Host "SECOND_FINALIZE_SCORE: $($repeated.data.score)"
+        Write-Host "SECOND_FINALIZE_MAX_SCORE: $($repeated.data.maxScore)"
+        Write-Host "SECOND_FINALIZE_BODY_SUMMARY: $($repeated | ConvertTo-Json -Depth 5 -Compress)"
+        Write-Host "EXPECTED_SCORE: 10.0"
+        Write-Host "EXPECTED_MAX_SCORE: 10.0"
+        Write-Host "SAME_ATTEMPT_ID: $([string]$repeated.data.id -eq [string]$finalized.data.id)"
+        Write-Host "SAME_SCORE: $([decimal]$repeated.data.score -eq [decimal]$finalized.data.score)"
+        Write-Host "SAME_FINALIZATION_STATE: $([string]$repeated.data.status -eq [string]$finalized.data.status)"
+        Write-Host "IDEMPOTENCY_KEY_OR_NONCE: $finalizeKey"
+
         if (-not $finalized.success -or
             [string]$finalized.data.status -ne 'Finalized' -or
             [decimal]$finalized.data.score -ne 10.0 -or
             [string]$repeated.data.id -ne [string]$finalized.data.id) {
+            Write-Host "FAILED_CONDITION:"
+            if (-not $finalized.success) { Write-Host "- SUCCESS" }
+            if ([string]$finalized.data.status -ne 'Finalized') { Write-Host "- NOT_FINALIZED" }
+            if ([decimal]$finalized.data.score -ne 10.0) { Write-Host "- FULL_SCORE" }
+            if ([string]$repeated.data.id -ne [string]$finalized.data.id) { Write-Host "- IDEMPOTENCY" }
             throw 'Quiz finalize was not successful, full-score, and idempotent.'
         }
 
