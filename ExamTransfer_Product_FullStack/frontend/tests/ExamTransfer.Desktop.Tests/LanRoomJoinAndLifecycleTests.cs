@@ -216,6 +216,112 @@ public sealed class LanRoomJoinAndLifecycleTests
         auth.Clear();
     }
 
+    // Characterization test A – spec ET-TASK2-PHASE1-DIAG-POSTJOIN-R1
+    // Tái hiện: POST join thành công → ApplyJoin → participant token đặt →
+    // JoinMutationCommitted = true → StudentRealtime.StartAsync ném exception →
+    // ViewModel giữ nguyên SessionId, ParticipantId, AccessToken và JoinCalls vẫn bằng 1.
+    [Fact]
+    public void FirstJoin_RealtimeStartupFailure_PreservesCommittedParticipant()
+    {
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var room = Room(sessionId, Guid.NewGuid());
+        var handler = new JoinRecordingHandler(room, participantId);
+        var api = new BackendClient("http://192.168.1.7:5048", handler);
+        api.SetAccountToken("server-account-token");
+        var auth = StudentAuth();
+        var state = new StudentSessionState();
+        var completionCalls = 0;
+        using var viewModel = new StudentConnectViewModel(
+            api,
+            state,
+            auth,
+            new RecordingDiscovery(room),
+            _ =>
+            {
+                completionCalls++;
+                throw new System.IO.IOException("simulated: SignalR negotiate 401 – participant token rejected by AccountAuthHandler");
+            });
+        viewModel.RoomCode = room.RoomCode;
+
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && completionCalls == 1,
+            TimeSpan.FromSeconds(3)));
+
+        // join đã commit: participant được tạo phía server
+        Assert.Equal(1, handler.JoinCalls);
+        Assert.True(state.JoinMutationCommitted);
+        Assert.True(state.HasSession);
+        Assert.Equal(sessionId, state.SessionId);
+        Assert.Equal(participantId, state.ParticipantId);
+        Assert.Equal("participant-token", state.AccessToken);
+        Assert.True(state.PostJoinSynchronizationPending);
+        // outcome phải là POST_JOIN_SYNCHRONIZATION_FAILED, không phải JOIN_MUTATION_FAILED
+        Assert.Equal(
+            StudentJoinErrorCodes.PostJoinSynchronizationFailed,
+            viewModel.LastJoinOutcome?.Code);
+        Assert.True(viewModel.LastJoinOutcome?.AuthorityMutationCommitted);
+        Assert.Contains(
+            StudentJoinErrorCodes.PostJoinSynchronizationFailed,
+            viewModel.Status,
+            StringComparison.Ordinal);
+        auth.Clear();
+    }
+
+    // Characterization test B – spec ET-TASK2-PHASE1-DIAG-POSTJOIN-R1
+    // Tái hiện: POST join thành công → realtime start thành công →
+    // completeLanJoin (lifecycle/resolve) ném exception →
+    // ViewModel giữ nguyên SessionId, ParticipantId, AccessToken và JoinCalls vẫn bằng 1.
+    [Fact]
+    public void FirstJoin_LifecycleResolutionFailure_PreservesCommittedParticipant()
+    {
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var room = Room(sessionId, Guid.NewGuid());
+        var handler = new JoinRecordingHandler(room, participantId);
+        var api = new BackendClient("http://192.168.1.7:5048", handler);
+        api.SetAccountToken("server-account-token");
+        var auth = StudentAuth();
+        var state = new StudentSessionState();
+        var completionCalls = 0;
+        var realtimeSucceeded = false;
+        using var viewModel = new StudentConnectViewModel(
+            api,
+            state,
+            auth,
+            new RecordingDiscovery(room),
+            ct =>
+            {
+                // Simulate: realtime.StartAsync() OK nhưng ResolveAsync() (lifecycle) fail
+                completionCalls++;
+                realtimeSucceeded = true;
+                throw new InvalidOperationException("simulated: GET /sessions/{id} returned 401 in LifecycleResolution");
+            });
+        viewModel.RoomCode = room.RoomCode;
+
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && completionCalls == 1,
+            TimeSpan.FromSeconds(3)));
+
+        // realtime đã được gọi nhưng lifecycle fail
+        Assert.True(realtimeSucceeded);
+        // join đã commit trước lifecycle bắt đầu
+        Assert.Equal(1, handler.JoinCalls);
+        Assert.True(state.JoinMutationCommitted);
+        Assert.True(state.HasSession);
+        Assert.Equal(sessionId, state.SessionId);
+        Assert.Equal(participantId, state.ParticipantId);
+        Assert.Equal("participant-token", state.AccessToken);
+        Assert.True(state.PostJoinSynchronizationPending);
+        Assert.Equal(
+            StudentJoinErrorCodes.PostJoinSynchronizationFailed,
+            viewModel.LastJoinOutcome?.Code);
+        Assert.True(viewModel.LastJoinOutcome?.AuthorityMutationCommitted);
+        auth.Clear();
+    }
+
     [Fact]
     public void LanPostJoinSynchronizationFailure_RetainsIdentityAndReturnsTypedSyncFailure()
     {
