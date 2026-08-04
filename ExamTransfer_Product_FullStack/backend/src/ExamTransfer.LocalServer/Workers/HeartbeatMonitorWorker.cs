@@ -37,7 +37,8 @@ public sealed class HeartbeatMonitorWorker(IServiceScopeFactory scopeFactory, IO
         var activeCandidates = await db.SessionParticipantsSet
             .Include(x => x.Session)
             .Where(x =>
-                x.Status != ParticipantStatus.Rejected
+                x.Session.AccessMode == SessionAccessMode.LanOnly
+                && x.Status != ParticipantStatus.Rejected
                 && x.Status != ParticipantStatus.Disconnected
                 && (x.Session.Status == SessionStatus.Waiting
                     || x.Session.Status == SessionStatus.Distributing

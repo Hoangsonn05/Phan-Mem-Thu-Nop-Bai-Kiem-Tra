@@ -1,4 +1,5 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
+using System.Threading;
 using System.Windows;
 using System.Windows.Input;
 using ExamTransfer.Desktop.Core;
@@ -14,6 +15,7 @@ public sealed class LiveMonitorViewModel : ProductPageBase
     private readonly IRealtimeService realtime;
     private readonly TeacherRealtimeSessionBinding realtimeBinding;
     private readonly ProjectionRefreshCoordinator projectionRefresh;
+    private readonly SemaphoreSlim loadSessionSemaphore = new(1, 1);
     private readonly RealtimeRefreshDebouncer realtimeRefresh =
         new(TimeSpan.FromMilliseconds(150), "LiveMonitor.RealtimeRefresh");
     private SessionSummaryDto? selectedSession;
@@ -78,16 +80,35 @@ public sealed class LiveMonitorViewModel : ProductPageBase
         await RunAsync("Đang tải các phiên trực tiếp", "Giám sát trực tiếp đã được cập nhật", async token =>
         {
             var data = ApiGuard.Require(await api.GetSessionsAsync(token));
-            Sessions.ReplaceWith(data.Items.Where(x => x.Status is SessionStatus.Waiting or SessionStatus.Distributing or SessionStatus.InProgress or SessionStatus.Paused or SessionStatus.Collecting));
-            SelectedSession ??= Sessions.FirstOrDefault();
-            await realtimeBinding.EnsureAsync(
-                AppServices.AuthState.AccountAccessToken,
-                SelectedSession?.Id,
-                token);
-            if (SelectedSession is not null)
+            var dispatcher = Application.Current?.Dispatcher;
+            void UpdateSessionsUI()
             {
+                var previousSessionId = SelectedSession?.Id;
+                Sessions.ReplaceWith(data.Items.Where(x => x.Status is SessionStatus.Waiting or SessionStatus.Distributing or SessionStatus.InProgress or SessionStatus.Paused or SessionStatus.Collecting));
+                SelectedSession = Sessions.FirstOrDefault(x => x.Id == previousSessionId) ?? Sessions.FirstOrDefault();
+            }
+            if (dispatcher is null || dispatcher.CheckAccess())
+                UpdateSessionsUI();
+            else
+                dispatcher.Invoke(UpdateSessionsUI);
+
+            var currentSession = SelectedSession;
+            if (currentSession is not null)
+            {
+                try
+                {
+                    await realtimeBinding.EnsureAsync(
+                        AppServices.AuthState.AccountAccessToken,
+                        currentSession.Id,
+                        token);
+                }
+                catch (Microsoft.AspNetCore.SignalR.HubException ex) when (ex.Message.Contains("NOT_FOUND"))
+                {
+                    System.Diagnostics.Trace.TraceWarning($"LiveMonitor realtime binding NOT_FOUND: {ex.Message}");
+                }
+
                 await LoadSessionCoreAsync(token);
-                if (SelectedSession.AccessMode == SessionAccessMode.PublicCloud)
+                if (currentSession.AccessMode == SessionAccessMode.PublicCloud)
                     projectionRefresh.StartRecovery();
             }
         });
@@ -96,11 +117,32 @@ public sealed class LiveMonitorViewModel : ProductPageBase
     private Task LoadSessionAsync() => RunAsync("Đang đồng bộ trạng thái học sinh", "Trạng thái học sinh đã được cập nhật", LoadSessionCoreAsync);
     private async Task LoadSessionCoreAsync(CancellationToken ct)
     {
-        if (SelectedSession is null) return;
-        var detail = ApiGuard.Require(await api.GetSessionAsync(SelectedSession.Id, ct));
-        Participants.ReplaceWith(detail.Participants);
-        SelectedParticipant = Participants.FirstOrDefault();
-        Events.Insert(0, new(DateTime.Now.ToString("HH:mm:ss"), "Đồng bộ snapshot", $"Đã nhận {Participants.Count} trạng thái thiết bị", "primary", "\uE72C"));
+        var currentSession = SelectedSession;
+        if (currentSession is null) return;
+        var sessionId = currentSession.Id;
+
+        await loadSessionSemaphore.WaitAsync(ct);
+        try
+        {
+            var detail = ApiGuard.Require(await api.GetSessionAsync(sessionId, ct));
+            if (SelectedSession?.Id != sessionId) return;
+
+            var dispatcher = Application.Current?.Dispatcher;
+            void UpdateParticipantsUI()
+            {
+                Participants.ReplaceWith(detail.Participants);
+                SelectedParticipant = Participants.FirstOrDefault();
+                Events.Insert(0, new(DateTime.Now.ToString("HH:mm:ss"), "Đồng bộ snapshot", $"Đã nhận {Participants.Count} trạng thái thiết bị", "primary", "\uE72C"));
+            }
+            if (dispatcher is null || dispatcher.CheckAccess())
+                UpdateParticipantsUI();
+            else
+                dispatcher.Invoke(UpdateParticipantsUI);
+        }
+        finally
+        {
+            loadSessionSemaphore.Release();
+        }
     }
 
     private Task MessageAsync() => RunAsync("Đang gửi thông báo", "Thông báo đã được gửi", async ct =>
@@ -161,7 +203,7 @@ public sealed class LiveMonitorViewModel : ProductPageBase
                 if (session.AccessMode != SessionAccessMode.PublicCloud
                     || update is null
                     || update.SessionId != session.Id
-                    || update.EntityType != PublicCloudProjectionEntityTypes.SessionParticipant
+                    || !string.Equals(update.EntityType, PublicCloudProjectionEntityTypes.SessionParticipant, StringComparison.OrdinalIgnoreCase)
                     || !projectionRefresh.Schedule(session.Id, update.ProjectionVersion))
                     return;
                 AddRealtimeEvent(notification.EventName);
@@ -235,6 +277,7 @@ public sealed class LiveMonitorViewModel : ProductPageBase
         realtime.EventReceived -= OnRealtimeEvent;
         realtimeRefresh.Dispose();
         projectionRefresh.Dispose();
+        loadSessionSemaphore.Dispose();
         realtimeBinding
             .StopAsync()
             .SafeFireAndForget("LiveMonitor.DisconnectRealtime");
