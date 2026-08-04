@@ -1,6 +1,7 @@
 using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.AspNetCore.Http.Connections.Client;
 using Microsoft.AspNetCore.SignalR.Client;
 using System.Text.Json;
 
@@ -17,7 +18,24 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
     public event EventHandler<string>? EventReceived;
     public event EventHandler<StudentRealtimeNotification>? NotificationReceived;
 
-    public async Task ConnectAsync(string? token = null, CancellationToken ct = default)
+    public Task ConnectAsync(string? token = null, CancellationToken ct = default) =>
+        ConnectCoreAsync(
+            options => options.AccessTokenProvider = () => Task.FromResult(token),
+            ct);
+
+    public Task ConnectParticipantAsync(
+        string participantToken,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(participantToken);
+        return ConnectCoreAsync(
+            options => options.Headers["X-Exam-Session-Token"] = participantToken,
+            ct);
+    }
+
+    private async Task ConnectCoreAsync(
+        Action<HttpConnectionOptions> configureAuthentication,
+        CancellationToken ct)
     {
         if (IsConnected)
         {
@@ -30,10 +48,9 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
         }
 
         var connection = new HubConnectionBuilder()
-            .WithUrl(baseUrl.TrimEnd('/') + ContractInfo.HubPath, options =>
-            {
-                options.AccessTokenProvider = () => Task.FromResult(token);
-            })
+            .WithUrl(
+                baseUrl.TrimEnd('/') + ContractInfo.HubPath,
+                configureAuthentication)
             .WithAutomaticReconnect(new[]
             {
                 TimeSpan.Zero,

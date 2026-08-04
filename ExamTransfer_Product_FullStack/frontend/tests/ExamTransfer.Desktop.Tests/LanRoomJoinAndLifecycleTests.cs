@@ -323,6 +323,49 @@ public sealed class LanRoomJoinAndLifecycleTests
     }
 
     [Fact]
+    public void FirstJoin_RealtimeStarts_ClearsPostJoinSynchronizationPending()
+    {
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var room = Room(sessionId, Guid.NewGuid());
+        var handler = new JoinRecordingHandler(room, participantId);
+        var api = new BackendClient("http://192.168.1.7:5048", handler);
+        api.SetAccountToken("server-account-token");
+        var auth = StudentAuth();
+        var state = new StudentSessionState();
+        var completionCalls = 0;
+        using var viewModel = new StudentConnectViewModel(
+            api,
+            state,
+            auth,
+            new RecordingDiscovery(room),
+            _ =>
+            {
+                completionCalls++;
+                return Task.CompletedTask;
+            });
+        viewModel.RoomCode = room.RoomCode;
+
+        viewModel.JoinCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => !viewModel.IsBusy && completionCalls == 1,
+            TimeSpan.FromSeconds(3)));
+
+        Assert.Equal(1, handler.JoinCalls);
+        Assert.True(state.JoinMutationCommitted);
+        Assert.Equal(sessionId, state.SessionId);
+        Assert.Equal(participantId, state.ParticipantId);
+        Assert.False(state.PostJoinSynchronizationPending);
+        Assert.True(viewModel.LastJoinOutcome?.Succeeded);
+        Assert.Equal(StudentJoinErrorCodes.Succeeded, viewModel.LastJoinOutcome?.Code);
+        Assert.DoesNotContain(
+            StudentJoinErrorCodes.PostJoinSynchronizationFailed,
+            viewModel.Status,
+            StringComparison.Ordinal);
+        auth.Clear();
+    }
+
+    [Fact]
     public void LanPostJoinSynchronizationFailure_RetainsIdentityAndReturnsTypedSyncFailure()
     {
         var sessionId = Guid.NewGuid();

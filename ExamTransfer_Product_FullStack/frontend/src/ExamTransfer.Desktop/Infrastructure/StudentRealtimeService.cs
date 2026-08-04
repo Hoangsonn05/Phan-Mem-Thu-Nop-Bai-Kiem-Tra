@@ -90,7 +90,7 @@ public sealed class StudentRealtimeService : IStudentRealtimeService
             realtime = new RealtimeService(api.BaseAddress.ToString());
             realtime.EventReceived += Forward;
             realtime.NotificationReceived += ForwardNotification;
-            await realtime.ConnectAsync(session.AccessToken, ct);
+            await realtime.ConnectParticipantAsync(session.AccessToken, ct);
         }
         finally { gate.Release(); }
     }
