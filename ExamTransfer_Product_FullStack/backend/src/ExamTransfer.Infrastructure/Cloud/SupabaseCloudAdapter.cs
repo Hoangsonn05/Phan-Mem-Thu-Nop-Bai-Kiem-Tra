@@ -590,30 +590,103 @@ public sealed class SupabaseCloudAdapter(
                 || content.Contains(
                     "ESSAY_GRADE_VERSION_CONFLICT",
                     StringComparison.OrdinalIgnoreCase);
-            var status = concurrencyConflict
-                ? 409
-                : response.StatusCode is HttpStatusCode.Unauthorized
-                ? 401
-                : response.StatusCode is HttpStatusCode.Forbidden
-                    ? 403
-                    : 502;
-            var code = concurrencyConflict
-                ? ErrorCodes.ConcurrencyConflict
-                : status == 401
-                ? ErrorCodes.Unauthorized
-                : status == 403
-                    ? ErrorCodes.Forbidden
-                    : ErrorCodes.CloudUploadFailed;
+            var upstream = ParsePostgrestError(content);
+            var (code, status) = concurrencyConflict
+                ? (ErrorCodes.ConcurrencyConflict, 409)
+                : MapTeacherRpcError(response.StatusCode, upstream?.Code);
+            logger?.LogWarning(
+                "Supabase RPC {RpcName} failed with HTTP {UpstreamStatus}, code {UpstreamCode}, trace {TraceId}.",
+                rpcName,
+                (int)response.StatusCode,
+                upstream?.Code,
+                traceId);
             throw new ApiException(
                 code,
-                $"Supabase RPC {rpcName} thất bại.",
+                $"Supabase RPC {rpcName} thất bại"
+                    + (string.IsNullOrWhiteSpace(upstream?.Message)
+                        ? "."
+                        : $": {upstream.Message}."),
                 status,
-                details: new { traceId, upstreamStatus = (int)response.StatusCode, response = content });
+                details: new
+                {
+                    traceId,
+                    upstreamStatus = (int)response.StatusCode,
+                    code = upstream?.Code,
+                    message = upstream?.Message,
+                    details = upstream?.Details,
+                    hint = upstream?.Hint
+                });
         }
 
         using var document = JsonDocument.Parse(content);
         return document.RootElement.Clone();
     }
+
+    private static (string Code, int Status) MapTeacherRpcError(
+        HttpStatusCode upstreamStatus,
+        string? upstreamCode)
+    {
+        if (upstreamStatus == HttpStatusCode.Unauthorized)
+            return (ErrorCodes.Unauthorized, 401);
+        if (upstreamStatus == HttpStatusCode.Forbidden)
+            return (ErrorCodes.Forbidden, 403);
+
+        return upstreamCode?.ToUpperInvariant() switch
+        {
+            "28000" => (ErrorCodes.Unauthorized, 401),
+            "42501" => (ErrorCodes.Forbidden, 403),
+            "P0002" => (ErrorCodes.NotFound, 404),
+            "22023" => (ErrorCodes.ValidationFailed, 422),
+            "55000" => (ErrorCodes.InvalidStateTransition, 409),
+            "23505" => (ErrorCodes.Conflict, 409),
+            _ when upstreamStatus == HttpStatusCode.Conflict =>
+                (ErrorCodes.Conflict, 409),
+            _ when upstreamStatus == HttpStatusCode.UnprocessableEntity =>
+                (ErrorCodes.ValidationFailed, 422),
+            _ => (ErrorCodes.CloudUploadFailed, 502)
+        };
+    }
+
+    private static PostgrestError? ParsePostgrestError(string content)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return null;
+            return new(
+                PostgrestText(root, "code"),
+                PostgrestText(root, "message"),
+                PostgrestText(root, "details"),
+                PostgrestText(root, "hint"));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? PostgrestText(
+        JsonElement element,
+        string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value)
+            || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        return value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : value.GetRawText();
+    }
+
+    private sealed record PostgrestError(
+        string? Code,
+        string? Message,
+        string? Details,
+        string? Hint);
 
     private static bool IsAfterCursor(
         long cloudVersion,

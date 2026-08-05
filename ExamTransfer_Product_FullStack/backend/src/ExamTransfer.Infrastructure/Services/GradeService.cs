@@ -64,7 +64,8 @@ public sealed class GradeService(
             s.IsLate,
             s.ReceiptCode,
             s.IsOfficial,
-            s.Files.Select(f => f.ToDto([])).ToList())).ToList();
+            s.Files.Select(f => f.ToDto([])).ToList(),
+            s.Participant.ResubmitAllowed)).ToList();
         return new(items, page, pageSize, total);
     }
 

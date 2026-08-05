@@ -58,6 +58,157 @@ public sealed class FinalCloudSourceCompatibilityTests
         Assert.Contains("Mã phòng PublicCloud", error.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("55000", "RESUBMISSION_NOT_APPLICABLE", ErrorCodes.InvalidStateTransition, 409)]
+    [InlineData("P0002", "PUBLIC_PARTICIPANT_NOT_FOUND", ErrorCodes.NotFound, 404)]
+    [InlineData("22023", "RESUBMISSION_REASON_REQUIRED", ErrorCodes.ValidationFailed, 422)]
+    [InlineData("42501", "PUBLIC_SESSION_FORBIDDEN", ErrorCodes.Forbidden, 403)]
+    public async Task PublicResubmissionRpc_preserves_typed_Postgrest_business_error(
+        string upstreamCode,
+        string upstreamMessage,
+        string expectedCode,
+        int expectedStatus)
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "ExamTransfer.PublicResubmission.Tests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            var organizationId = Guid.NewGuid();
+            var participantId = Guid.NewGuid();
+            var requestId = Guid.NewGuid();
+            var handler = new TeacherRpcErrorHandler(
+                HttpStatusCode.BadRequest,
+                JsonSerializer.Serialize(new
+                {
+                    code = upstreamCode,
+                    details = "upstream-details",
+                    hint = "upstream-hint",
+                    message = upstreamMessage
+                }));
+            var options = Options.Create(new ExamTransferOptions
+            {
+                Cloud = new CloudOptions
+                {
+                    Enabled = true,
+                    SupabaseUrl = "https://resubmit.example.test",
+                    PublishableKey = "test-publishable-key",
+                    OrganizationId = organizationId.ToString(),
+                    Schema = "public"
+                }
+            });
+            var state = new CloudSessionState(
+                new EphemeralDataProtectionProvider(),
+                new CloudSourcePaths(root));
+            state.Set(
+                new CloudSessionSnapshot(
+                    "test-access-token",
+                    "test-refresh-token",
+                    DateTimeOffset.UtcNow.AddHours(1),
+                    Guid.NewGuid().ToString(),
+                    "teacher@example.test",
+                    organizationId.ToString(),
+                    UserRole.Teacher.ToString()),
+                persist: false);
+            var adapter = new SupabaseCloudAdapter(
+                new HttpClient(handler),
+                options,
+                state);
+
+            var error = await Assert.ThrowsAsync<ApiException>(() =>
+                adapter.AllowPublicResubmissionAsync(
+                    participantId,
+                    "Approved retry",
+                    requestId,
+                    CancellationToken.None));
+
+            Assert.Equal(expectedCode, error.Code);
+            Assert.Equal(expectedStatus, error.StatusCode);
+            Assert.Equal(
+                "/rest/v1/rpc/allow_public_resubmission",
+                handler.RequestPath);
+            using var payload = JsonDocument.Parse(Assert.IsType<string>(handler.RequestBody));
+            Assert.Equal(participantId, payload.RootElement.GetProperty("p_participant_id").GetGuid());
+            Assert.Equal("Approved retry", payload.RootElement.GetProperty("p_reason").GetString());
+            Assert.Equal(requestId, payload.RootElement.GetProperty("p_request_id").GetGuid());
+            var details = JsonSerializer.Serialize(error.Details);
+            Assert.Contains(upstreamCode, details, StringComparison.Ordinal);
+            Assert.Contains(upstreamMessage, details, StringComparison.Ordinal);
+            Assert.Contains("upstream-details", details, StringComparison.Ordinal);
+            Assert.Contains("upstream-hint", details, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PublicResubmissionRpc_unknown_upstream_error_remains_502()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "ExamTransfer.PublicResubmission.Tests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            var organizationId = Guid.NewGuid();
+            var handler = new TeacherRpcErrorHandler(
+                HttpStatusCode.InternalServerError,
+                """
+                {"code":"XX000","details":{"statement":"database failure"},"hint":null,"message":"INTERNAL_DATABASE_ERROR"}
+                """);
+            var options = Options.Create(new ExamTransferOptions
+            {
+                Cloud = new CloudOptions
+                {
+                    Enabled = true,
+                    SupabaseUrl = "https://resubmit.example.test",
+                    PublishableKey = "test-publishable-key",
+                    OrganizationId = organizationId.ToString(),
+                    Schema = "public"
+                }
+            });
+            var state = new CloudSessionState(
+                new EphemeralDataProtectionProvider(),
+                new CloudSourcePaths(root));
+            state.Set(
+                new CloudSessionSnapshot(
+                    "test-access-token",
+                    "test-refresh-token",
+                    DateTimeOffset.UtcNow.AddHours(1),
+                    Guid.NewGuid().ToString(),
+                    "teacher@example.test",
+                    organizationId.ToString(),
+                    UserRole.Teacher.ToString()),
+                persist: false);
+            var adapter = new SupabaseCloudAdapter(
+                new HttpClient(handler),
+                options,
+                state);
+
+            var error = await Assert.ThrowsAsync<ApiException>(() =>
+                adapter.AllowPublicResubmissionAsync(
+                    Guid.NewGuid(),
+                    "Approved retry",
+                    Guid.NewGuid(),
+                    CancellationToken.None));
+
+            Assert.Equal(ErrorCodes.CloudUploadFailed, error.Code);
+            Assert.Equal(502, error.StatusCode);
+            var details = JsonSerializer.Serialize(error.Details);
+            Assert.Contains("XX000", details, StringComparison.Ordinal);
+            Assert.Contains("database failure", details, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public void ForwardMigration_AddsOnlySourceCloudVersionAndCapability18()
     {
@@ -206,6 +357,31 @@ public sealed class FinalCloudSourceCompatibilityTests
         public string ReceiptRoot(Guid sessionId) =>
             Path.Combine(SessionRoot(sessionId), "receipts");
         public void EnsureCreated() => Directory.CreateDirectory(RootPath);
+    }
+
+    private sealed class TeacherRpcErrorHandler(
+        HttpStatusCode status,
+        string responseBody) : HttpMessageHandler
+    {
+        public string? RequestPath { get; private set; }
+        public string? RequestBody { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestPath = request.RequestUri?.AbsolutePath;
+            RequestBody = request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+            return new HttpResponseMessage(status)
+            {
+                Content = new StringContent(
+                    responseBody,
+                    Encoding.UTF8,
+                    "application/json")
+            };
+        }
     }
 }
 

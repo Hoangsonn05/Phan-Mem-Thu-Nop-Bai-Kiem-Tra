@@ -1383,16 +1383,48 @@ public sealed class CoreWorkflowPersistenceTests
         Assert.Equal(0, cloud.TeacherMutationCalls);
     }
 
-    [Fact]
-    public async Task AllowResubmit_LanOnly_preserves_attempt_and_updates_participant_only()
+    [Theory]
+    [InlineData(SubmissionStatus.Submitted)]
+    [InlineData(SubmissionStatus.LateSubmitted)]
+    [InlineData(SubmissionStatus.Rejected)]
+    public async Task AllowResubmit_LanOnly_allows_completed_official_submission_and_preserves_history(
+        SubmissionStatus status)
     {
         await using var database = await FileDatabase.CreateAsync();
         var seeded = await SeedSubmissionMutationAsync(
             database.Context,
             SessionAccessMode.LanOnly);
-        seeded.Submission.Status = SubmissionStatus.Rejected;
-        seeded.Participant.SubmissionStatus = SubmissionStatus.Rejected;
+        var receivedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        seeded.Submission.Status = status;
+        seeded.Submission.IsOfficial = true;
+        seeded.Submission.ServerReceivedAtUtc = receivedAt;
+        seeded.Submission.ReceiptCode = "RECEIPT-ORIGINAL";
+        seeded.Submission.ReceiptSignature = "SIGNATURE-ORIGINAL";
+        seeded.Participant.SubmissionStatus = status;
         await database.Context.SaveChangesAsync();
+        database.Context.ChangeTracker.Clear();
+        var storedSubmission = await database.Context.SubmissionsSet
+            .SingleAsync(x => x.Id == seeded.Submission.Id);
+        var originalFile = new SubmissionFile
+        {
+            Submission = storedSubmission,
+            SubmissionId = storedSubmission.Id,
+            ClientFileId = "client-file-original",
+            OriginalName = "original.zip",
+            StoredName = "original.zip",
+            RelativePath = "submissions/original.zip",
+            MimeType = "application/zip",
+            SizeBytes = 512,
+            Sha256 = new string('a', 64),
+            ChunkSizeBytes = 512,
+            TotalChunks = 1,
+            ReceivedChunksJson = "[0]",
+            TransferStatus = TransferStatus.Completed,
+            SyncStatus = SyncStatus.LocalOnly
+        };
+        database.Context.SubmissionFilesSet.Add(originalFile);
+        await database.Context.SaveChangesAsync();
+        var originalFileId = originalFile.Id;
         var outbox = new RecordingOutbox();
         var realtime = new RecordingRealtimePublisher();
         var cloud = new OfflineCloudAdapter();
@@ -1411,11 +1443,21 @@ public sealed class CoreWorkflowPersistenceTests
         var participant = await database.Context.SessionParticipantsSet
             .SingleAsync(x => x.Id == seeded.Participant.Id);
         var submission = await database.Context.SubmissionsSet
+            .Include(x => x.Files)
             .SingleAsync(x => x.Id == seeded.Submission.Id);
         Assert.True(participant.ResubmitAllowed);
         Assert.Equal("Approved retry", participant.ResubmitReason);
-        Assert.Equal(SubmissionStatus.Rejected, submission.Status);
+        Assert.Equal(status, submission.Status);
         Assert.Equal(1, submission.AttemptNumber);
+        Assert.True(submission.IsOfficial);
+        Assert.Equal(receivedAt, submission.ServerReceivedAtUtc);
+        Assert.Equal("RECEIPT-ORIGINAL", submission.ReceiptCode);
+        Assert.Equal("SIGNATURE-ORIGINAL", submission.ReceiptSignature);
+        var file = Assert.Single(submission.Files);
+        Assert.Equal(originalFileId, file.Id);
+        Assert.Equal("original.zip", file.OriginalName);
+        Assert.Equal(new string('a', 64), file.Sha256);
+        Assert.Equal(TransferStatus.Completed, file.TransferStatus);
         var outboxCall = Assert.Single(outbox.Calls);
         Assert.Equal("session_participants", outboxCall.EntityType);
         Assert.Equal(seeded.Participant.Id.ToString(), outboxCall.EntityId);
@@ -1428,7 +1470,120 @@ public sealed class CoreWorkflowPersistenceTests
             await database.Context.AuditLogsSet.ToListAsync(),
             x => x.Action == "ResubmitAllowed"
                 && x.EntityId == seeded.Participant.Id.ToString());
+        var summary = Assert.Single((await service.ListForSessionAsync(
+            seeded.Session.Id,
+            null,
+            1,
+            100,
+            CancellationToken.None)).Items);
+        Assert.True(summary.ResubmitAllowed);
         Assert.Equal(0, cloud.TeacherMutationCalls);
+    }
+
+    [Theory]
+    [InlineData(SubmissionStatus.NotStarted)]
+    [InlineData(SubmissionStatus.Preparing)]
+    [InlineData(SubmissionStatus.Uploading)]
+    [InlineData(SubmissionStatus.Verifying)]
+    [InlineData(SubmissionStatus.Failed)]
+    public async Task AllowResubmit_LanOnly_rejects_non_completed_submission_status(
+        SubmissionStatus status)
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var seeded = await SeedSubmissionMutationAsync(
+            database.Context,
+            SessionAccessMode.LanOnly);
+        seeded.Submission.Status = status;
+        seeded.Submission.IsOfficial = true;
+        seeded.Participant.SubmissionStatus = status;
+        await database.Context.SaveChangesAsync();
+        var outbox = new RecordingOutbox();
+        var service = SubmissionMutations(
+            database.Context,
+            outbox,
+            new RecordingRealtimePublisher(),
+            new OfflineCloudAdapter());
+
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            service.AllowResubmitAsync(
+                seeded.Participant.Id,
+                new AllowResubmitRequest("Approved retry", Guid.NewGuid()),
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.InvalidStateTransition, error.Code);
+        database.Context.ChangeTracker.Clear();
+        Assert.False((await database.Context.SessionParticipantsSet
+            .SingleAsync(x => x.Id == seeded.Participant.Id)).ResubmitAllowed);
+        Assert.Empty(outbox.Calls);
+        Assert.Empty(await database.Context.AuditLogsSet.ToListAsync());
+        Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+    }
+
+    [Fact]
+    public async Task AllowResubmit_LanOnly_rejects_when_no_official_submission_exists()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var seeded = await SeedSubmissionMutationAsync(
+            database.Context,
+            SessionAccessMode.LanOnly);
+        seeded.Submission.Status = SubmissionStatus.Submitted;
+        seeded.Submission.IsOfficial = false;
+        await database.Context.SaveChangesAsync();
+        var outbox = new RecordingOutbox();
+        var service = SubmissionMutations(
+            database.Context,
+            outbox,
+            new RecordingRealtimePublisher(),
+            new OfflineCloudAdapter());
+
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            service.AllowResubmitAsync(
+                seeded.Participant.Id,
+                new AllowResubmitRequest("Approved retry", Guid.NewGuid()),
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.InvalidStateTransition, error.Code);
+        database.Context.ChangeTracker.Clear();
+        Assert.False((await database.Context.SessionParticipantsSet
+            .SingleAsync(x => x.Id == seeded.Participant.Id)).ResubmitAllowed);
+        Assert.Empty(outbox.Calls);
+        Assert.Empty(await database.Context.AuditLogsSet.ToListAsync());
+        Assert.Empty(await database.Context.SyncQueueSet.ToListAsync());
+    }
+
+    [Fact]
+    public async Task AllowResubmit_LanOnly_regrant_keeps_authority_true_and_preserves_submission()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var seeded = await SeedSubmissionMutationAsync(
+            database.Context,
+            SessionAccessMode.LanOnly);
+        seeded.Submission.Status = SubmissionStatus.Submitted;
+        seeded.Submission.IsOfficial = true;
+        seeded.Participant.SubmissionStatus = SubmissionStatus.Submitted;
+        seeded.Participant.ResubmitAllowed = true;
+        seeded.Participant.ResubmitReason = "Earlier reason";
+        await database.Context.SaveChangesAsync();
+        var service = SubmissionMutations(
+            database.Context,
+            new RecordingOutbox(),
+            new RecordingRealtimePublisher(),
+            new OfflineCloudAdapter());
+
+        await service.AllowResubmitAsync(
+            seeded.Participant.Id,
+            new AllowResubmitRequest("Updated reason", Guid.NewGuid()),
+            CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var participant = await database.Context.SessionParticipantsSet
+            .SingleAsync(x => x.Id == seeded.Participant.Id);
+        var submission = await database.Context.SubmissionsSet
+            .SingleAsync(x => x.Id == seeded.Submission.Id);
+        Assert.True(participant.ResubmitAllowed);
+        Assert.Equal("Updated reason", participant.ResubmitReason);
+        Assert.Equal(SubmissionStatus.Submitted, submission.Status);
+        Assert.Equal(1, submission.AttemptNumber);
     }
 
     [Fact]

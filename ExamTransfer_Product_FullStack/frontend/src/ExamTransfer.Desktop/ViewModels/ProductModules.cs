@@ -1807,7 +1807,11 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSubmissionsAsync, () => !IsBusy && SelectedSession is not null);
         RejectCommand = new AsyncRelayCommand(RejectAsync, () => !IsBusy && SelectedSubmission is not null);
-        ResubmitCommand = new AsyncRelayCommand(ResubmitAsync, () => !IsBusy && SelectedSubmission is not null);
+        ResubmitCommand = new AsyncRelayCommand(
+            ResubmitAsync,
+            () => !IsBusy
+                && SelectedSession is not null
+                && SelectedSubmission?.CanAllowResubmit == true);
         CopyReceiptCommand = new RelayCommand(CopyReceipt);
         SelectAllCommand = new RelayCommand(
             SelectAll,
@@ -1936,10 +1940,15 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     private Task ResubmitAsync() => RunAsync("Đang cấp quyền nộp lại", "Học sinh đã được phép tạo attempt mới", async ct =>
     {
         if (SelectedSubmission is null) return;
-        var mutationKey = $"allow-resubmit:{SelectedSubmission.ParticipantId:N}";
+        var participantId = SelectedSubmission.ParticipantId;
+        var mutationKey = $"allow-resubmit:{participantId:N}";
         var mutationId = GetMutationRequestId(mutationKey);
-        _ = ApiGuard.Require(await api.PostAsync<AllowResubmitRequest, object>($"api/v1/participants/{SelectedSubmission.ParticipantId}/allow-resubmit", new(Reason, mutationId), ct));
+        _ = ApiGuard.Require(await api.PostAsync<AllowResubmitRequest, object>($"api/v1/participants/{participantId}/allow-resubmit", new(Reason, mutationId), ct));
         CompleteMutationRequest(mutationKey);
+        await LoadSubmissionsCoreAsync(ct);
+        foreach (var row in Submissions.Where(row => row.ParticipantId == participantId))
+            row.MarkResubmitAllowed();
+        RaiseCommands();
     });
 
     private async Task DownloadSelectedAsync()

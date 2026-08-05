@@ -298,7 +298,7 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
     }
 
     private InitSubmissionResponse ToInitResponse(Submission s) => new(s.Id, s.AttemptNumber, _options.Transfer.ChunkSizeBytes, s.Files.Select(f => new ChunkPlanDto(f.Id, f.TotalChunks, Enumerable.Range(0, f.TotalChunks).Except(chunks.ReadReceivedChunks(f.ReceivedChunksJson)).ToList())).ToList(), s.DeadlineUtc);
-    private SubmissionSummaryDto ToSummary(Submission s) => new(s.Id, s.SessionId, s.ParticipantId, s.Participant.StudentCode, s.Participant.DisplayName, s.AttemptNumber, s.Status, s.ClientSubmittedAtUtc, s.ServerReceivedAtUtc, s.DeadlineUtc, s.IsLate, s.ReceiptCode, s.IsOfficial, s.Files.Select(f => f.ToDto(chunks.ReadReceivedChunks(f.ReceivedChunksJson))).ToList());
+    private SubmissionSummaryDto ToSummary(Submission s) => new(s.Id, s.SessionId, s.ParticipantId, s.Participant.StudentCode, s.Participant.DisplayName, s.AttemptNumber, s.Status, s.ClientSubmittedAtUtc, s.ServerReceivedAtUtc, s.DeadlineUtc, s.IsLate, s.ReceiptCode, s.IsOfficial, s.Files.Select(f => f.ToDto(chunks.ReadReceivedChunks(f.ReceivedChunksJson))).ToList(), s.Participant.ResubmitAllowed);
     private static FileDescriptorDto ToDescriptor(SubmissionFile f) => new(f.Id, f.OriginalName, f.SizeBytes, f.Sha256, f.MimeType, $"/api/v1/submissions/{f.SubmissionId}/files/{f.Id}/content");
     private static object ToCloud(Submission x) =>
         SubmissionMutationPayloads.ToCloud(x);

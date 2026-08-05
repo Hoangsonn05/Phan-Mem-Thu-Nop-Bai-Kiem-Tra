@@ -64,7 +64,10 @@ public sealed class LanSubmissionMutationHandler(
         var submissionCandidates = await db.SubmissionsSet
             .Where(x => x.ParticipantId == participant.Id
                 && x.SessionId == participant.SessionId
-                && x.Status == SubmissionStatus.Rejected)
+                && x.IsOfficial
+                && (x.Status == SubmissionStatus.Submitted
+                    || x.Status == SubmissionStatus.LateSubmitted
+                    || x.Status == SubmissionStatus.Rejected))
             .ToListAsync(cancellationToken);
         var submission = submissionCandidates
             .OrderByDescending(x => x.AttemptNumber)
@@ -72,7 +75,7 @@ public sealed class LanSubmissionMutationHandler(
             .FirstOrDefault()
             ?? throw new ApiException(
                 ErrorCodes.InvalidStateTransition,
-                "Không tìm thấy bài bị từ chối để cho phép nộp lại.",
+                "Không tìm thấy bài nộp chính thức đã hoàn tất để cho phép nộp lại.",
                 409);
         participant.ResubmitAllowed = true;
         participant.ResubmitReason = request.Reason;

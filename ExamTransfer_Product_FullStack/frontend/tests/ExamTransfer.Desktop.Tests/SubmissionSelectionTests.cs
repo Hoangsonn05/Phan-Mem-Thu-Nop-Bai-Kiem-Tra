@@ -33,6 +33,9 @@ public sealed class SubmissionSelectionTests
         Assert.Equal(submittedAt, row.SubmittedAt);
         Assert.True(row.IsLate);
         Assert.Equal(submission.Status, row.Status);
+        Assert.True(row.IsOfficial);
+        Assert.False(row.ResubmitAllowed);
+        Assert.True(row.CanAllowResubmit);
         Assert.Equal(1, row.CompletedFileCount);
         Assert.True(row.CanDownload);
         Assert.Equal([nameof(SubmissionSelectionRow.IsSelected)], changes);
@@ -159,6 +162,103 @@ public sealed class SubmissionSelectionTests
         Assert.Equal(1, viewModel.SelectedCount);
     }
 
+    [Theory]
+    [InlineData(SubmissionStatus.Submitted, true)]
+    [InlineData(SubmissionStatus.LateSubmitted, true)]
+    [InlineData(SubmissionStatus.Rejected, true)]
+    [InlineData(SubmissionStatus.NotStarted, false)]
+    [InlineData(SubmissionStatus.Preparing, false)]
+    [InlineData(SubmissionStatus.Uploading, false)]
+    [InlineData(SubmissionStatus.Verifying, false)]
+    [InlineData(SubmissionStatus.Failed, false)]
+    public async Task ResubmitCommand_RequiresCompletedSubmissionStatus(
+        SubmissionStatus status,
+        bool expected)
+    {
+        var session = MakeSession();
+        var submission = MakeSubmission(
+            "HS001",
+            isLate: status == SubmissionStatus.LateSubmitted,
+            DateTimeOffset.UtcNow,
+            TransferStatus.Completed) with
+        {
+            Status = status
+        };
+        var api = new SubmissionBackendClient(session)
+        {
+            Submissions = [submission]
+        };
+        using var viewModel = new SubmissionCenterViewModel(
+            api,
+            new SilentRealtimeService());
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.Equal(expected, viewModel.ResubmitCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task ResubmitCommand_DisablesWhenAuthorityIsAlreadyGranted()
+    {
+        var session = MakeSession();
+        var submission = MakeSubmission(
+            "HS001",
+            isLate: false,
+            DateTimeOffset.UtcNow,
+            TransferStatus.Completed) with
+        {
+            ResubmitAllowed = true
+        };
+        var api = new SubmissionBackendClient(session)
+        {
+            Submissions = [submission]
+        };
+        using var viewModel = new SubmissionCenterViewModel(
+            api,
+            new SilentRealtimeService());
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.False(viewModel.ResubmitCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task ResubmitCommand_RefreshesSnapshotAndDisablesAfterSuccess()
+    {
+        var session = MakeSession();
+        var submission = MakeSubmission(
+            "HS001",
+            isLate: false,
+            DateTimeOffset.UtcNow,
+            TransferStatus.Completed);
+        var api = new SubmissionBackendClient(session)
+        {
+            Submissions = [submission]
+        };
+        api.OnResubmit = request =>
+        {
+            api.Submissions = [submission with { ResubmitAllowed = true }];
+            api.LastResubmitRequest = request;
+        };
+        using var viewModel = new SubmissionCenterViewModel(
+            api,
+            new SilentRealtimeService());
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        viewModel.ResubmitCommand.Execute(null);
+        viewModel.ResubmitCommand.Execute(null);
+
+        Assert.True(SpinWait.SpinUntil(
+            () => api.ResubmitRequests == 1
+                && api.SubmissionRequests == 2
+                && !viewModel.IsBusy,
+            TimeSpan.FromSeconds(3)));
+        Assert.NotNull(api.LastResubmitRequest);
+        Assert.NotEqual(Guid.Empty, api.LastResubmitRequest!.MutationRequestId);
+        Assert.True(Assert.Single(viewModel.Submissions).ResubmitAllowed);
+        Assert.False(viewModel.ResubmitCommand.CanExecute(null));
+    }
+
     [Fact]
     public void ProductionXaml_SeparatesInteractiveSelectionFromReadOnlyLateFlag()
     {
@@ -267,6 +367,9 @@ public sealed class SubmissionSelectionTests
     {
         public IReadOnlyList<SubmissionSummaryDto> Submissions { get; set; } = [];
         public int SubmissionRequests { get; private set; }
+        public int ResubmitRequests { get; private set; }
+        public AllowResubmitRequest? LastResubmitRequest { get; set; }
+        public Action<AllowResubmitRequest>? OnResubmit { get; set; }
         public Uri BaseAddress { get; } = new("http://localhost:5048/");
         public bool HasTrustedAccountToken => true;
 
@@ -302,7 +405,20 @@ public sealed class SubmissionSelectionTests
         public Task<ApiResponse<CloudSyncStatusDto>?> GetCloudStatusAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<CloudSyncStatusDto>?>(null);
         public Task<ApiResponse<SettingsDto>?> GetSettingsAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<SettingsDto>?>(null);
         public Task<ApiResponse<T>?> GetAsync<T>(string path, CancellationToken ct = default) => Task.FromResult<ApiResponse<T>?>(null);
-        public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);
+        public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
+        {
+            if (path.Contains("/allow-resubmit", StringComparison.Ordinal)
+                && request is AllowResubmitRequest resubmitRequest
+                && typeof(TResponse) == typeof(object))
+            {
+                ResubmitRequests++;
+                OnResubmit?.Invoke(resubmitRequest);
+                var response = ApiResponse<object>.Ok(new object(), "test");
+                return Task.FromResult<ApiResponse<TResponse>?>((ApiResponse<TResponse>)(object)response);
+            }
+
+            return Task.FromResult<ApiResponse<TResponse>?>(null);
+        }
         public Task<ApiResponse<TResponse>?> PutAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);
         public Task<ApiResponse<TResponse>?> DeleteAsync<TResponse>(string path, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);
         public Task<ApiResponse<object>?> UploadChunkAsync(string path, Stream content, long contentLength, string? sha256 = null, CancellationToken ct = default) => Task.FromResult<ApiResponse<object>?>(null);
