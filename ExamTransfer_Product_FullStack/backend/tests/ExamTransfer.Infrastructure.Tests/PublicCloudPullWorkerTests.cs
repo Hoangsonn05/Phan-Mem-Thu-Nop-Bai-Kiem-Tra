@@ -7,6 +7,8 @@ using System.Threading.Tasks;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.Infrastructure.Services;
+using ExamTransfer.Infrastructure.Storage;
 using ExamTransfer.LocalServer.Workers;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
@@ -332,6 +334,145 @@ public sealed class PublicCloudPullWorkerTests
     }
 
     [Fact]
+    public async Task OrphanSubmissionRows_DoNotBlockValidCurrentSessionProjection()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var session = new ExamSession
+        {
+            Id = Guid.NewGuid(),
+            Status = SessionStatus.Collecting,
+            AccessMode = SessionAccessMode.PublicCloud,
+            ExamId = Guid.NewGuid()
+        };
+        database.Context.ExamsSet.Add(new Exam
+        {
+            Id = session.ExamId,
+            Title = "PublicCloud submission visibility",
+            DurationMinutes = 10,
+            Status = ExamStatus.Published
+        });
+        database.Context.ExamSessionsSet.Add(session);
+        await database.Context.SaveChangesAsync();
+
+        var participantId = Guid.NewGuid();
+        var submissionId = Guid.NewGuid();
+        var fileId = Guid.NewGuid();
+        var orphanSubmissionId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var adapter = new PullMockAdapter
+        {
+            ReturnRecords =
+            [
+                new CloudPullRecord(
+                    "session_participants",
+                    participantId.ToString(),
+                    233,
+                    now,
+                    JsonSerializer.Serialize(new
+                    {
+                        session_id = session.Id,
+                        student_code = "PC001",
+                        display_name = "PublicCloud Student",
+                        status = "Approved",
+                        submission_status = "Submitted"
+                    })),
+                new CloudPullRecord(
+                    "submissions",
+                    orphanSubmissionId.ToString(),
+                    199,
+                    now.AddMinutes(-2),
+                    JsonSerializer.Serialize(new
+                    {
+                        session_id = Guid.NewGuid(),
+                        participant_id = Guid.NewGuid(),
+                        attempt_number = 1,
+                        status = "Submitted",
+                        client_submitted_at = now.AddMinutes(-2),
+                        server_received_at = now.AddMinutes(-2),
+                        deadline_at = now,
+                        is_late = false,
+                        is_official = true
+                    })),
+                new CloudPullRecord(
+                    "submissions",
+                    submissionId.ToString(),
+                    231,
+                    now,
+                    JsonSerializer.Serialize(new
+                    {
+                        session_id = session.Id,
+                        participant_id = participantId,
+                        attempt_number = 1,
+                        status = "Submitted",
+                        client_submitted_at = now,
+                        server_received_at = now,
+                        deadline_at = now.AddMinutes(10),
+                        is_late = false,
+                        is_official = true,
+                        receipt_code = "RECEIPT",
+                        receipt_signature = "SIGNATURE"
+                    })),
+                new CloudPullRecord(
+                    "submission_files",
+                    Guid.NewGuid().ToString(),
+                    203,
+                    now.AddMinutes(-2),
+                    JsonSerializer.Serialize(new
+                    {
+                        submission_id = orphanSubmissionId,
+                        name = "orphan.rar",
+                        size_bytes = 460,
+                        sha256 = new string('b', 64),
+                        transfer_status = "Completed",
+                        sync_status = "Synced"
+                    })),
+                new CloudPullRecord(
+                    "submission_files",
+                    fileId.ToString(),
+                    229,
+                    now,
+                    JsonSerializer.Serialize(new
+                    {
+                        submission_id = submissionId,
+                        name = "answer.rar",
+                        size_bytes = 460,
+                        sha256 = new string('a', 64),
+                        transfer_status = "Completed",
+                        sync_status = "Synced",
+                        cloud_object_path = $"public-submissions/{submissionId:N}/{fileId:N}/answer.rar"
+                    }))
+            ]
+        };
+
+        var worker = await CreateWorkerAsync(database.Path, adapter);
+        await worker.PullOnceAsync(CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var submission = await database.Context.SubmissionsSet
+            .Include(x => x.Files)
+            .SingleAsync();
+        Assert.Equal(session.Id, submission.SessionId);
+        Assert.Equal(participantId, submission.ParticipantId);
+        Assert.Equal(fileId, Assert.Single(submission.Files).Id);
+
+        var service = CreateSubmissionService(database.Context);
+        var summary = Assert.Single((await service.ListForSessionAsync(
+            session.Id,
+            null,
+            1,
+            100,
+            CancellationToken.None)).Items);
+        Assert.Equal(submissionId, summary.Id);
+        Assert.Equal(session.Id, summary.SessionId);
+        Assert.Equal(fileId, Assert.Single(summary.Files).Id);
+
+        Assert.Equal(231, (await database.Context.PublicCloudPullCursorsSet
+            .SingleAsync(x => x.EntityName == "submissions")).LastCloudVersion);
+        Assert.Equal(229, (await database.Context.PublicCloudPullCursorsSet
+            .SingleAsync(x => x.EntityName == "submission_files")).LastCloudVersion);
+    }
+
+    [Fact]
     public void OwnershipRegression_EntityOrderDoesNotContainLocalOwned()
     {
         var entityOrderField = typeof(PublicCloudPullWorker).GetField("EntityOrder", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
@@ -341,4 +482,16 @@ public sealed class PublicCloudPullWorkerTests
         Assert.DoesNotContain("exams", entityOrder);
         Assert.DoesNotContain("exam_sessions", entityOrder);
     }
+
+    private static SubmissionService CreateSubmissionService(AppDbContext db)
+        => new(
+            db,
+            null!,
+            new ChunkStorage(),
+            null!,
+            null!,
+            null!,
+            null!,
+            Options.Create(new ExamTransferOptions()),
+            null!);
 }
