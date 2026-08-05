@@ -624,8 +624,14 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         return page;
     }
 
-    private static QuizAttemptDto ToQuizAttempt(PublicQuizAttemptSnapshot row) =>
-        new(row.Id, row.SessionId, row.ParticipantId,
+    private static QuizAttemptDto ToQuizAttempt(PublicQuizAttemptSnapshot row)
+    {
+        if (row.Questions is not { Count: > 0 })
+            throw new PublicCloudApiException(
+                ErrorCodes.QuizAttemptSnapshotInvalid,
+                "PublicCloud quiz attempt has no valid questions.",
+                HttpStatusCode.Conflict);
+        return new(row.Id, row.SessionId, row.ParticipantId,
             Enum.Parse<QuizAttemptStatus>(row.Status, true), row.ExamVersion,
             row.StartedAtUtc, row.DeadlineUtc, row.FinalizedAtUtc,
             row.ScoreVisible ? row.Score : null, row.MaxScore,
@@ -634,6 +640,7 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             row.Answers.Select(a => new QuizAnswerDto(a.QuestionId, a.ChoiceIds, a.Revision, a.ClientUpdatedAtUtc)).ToList(),
             row.ScoreVisible,
             Enum.TryParse<QuizResultPolicy>(row.ResultPolicy, true, out var policy) ? policy : QuizResultPolicy.Hidden);
+    }
 
     private static QuizAttemptDto ApplyTimeline(
         QuizAttemptDto attempt,
@@ -1167,10 +1174,13 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
                  {
                      "OPEN_PUBLIC_SESSION_NOT_FOUND",
                      "AUTHENTICATION_REQUIRED",
-                     "PUBLIC_SESSION_CAPACITY_REACHED",
-                     "PUBLIC_SESSION_NOT_JOINABLE",
-                     "PUBLICCLOUD_SCHEMA_INCOMPATIBLE"
-                 })
+                      "PUBLIC_SESSION_CAPACITY_REACHED",
+                      "PUBLIC_SESSION_NOT_JOINABLE",
+                      "PUBLICCLOUD_SCHEMA_INCOMPATIBLE",
+                      ErrorCodes.QuizHasNoQuestions,
+                      ErrorCodes.QuizQuestionGraphInvalid,
+                      ErrorCodes.QuizAttemptSnapshotInvalid
+                  })
         {
             if (detail.Contains(known, StringComparison.Ordinal))
                 return known;

@@ -1,6 +1,8 @@
+using ExamTransfer.Desktop.Infrastructure;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Desktop.ViewModels;
 using ExamTransfer.Shared.Contracts;
+using System.Net;
 using Xunit;
 
 namespace ExamTransfer.Desktop.Tests;
@@ -84,7 +86,7 @@ public sealed class StudentTimelineViewModelTests
             null,
             null,
             10,
-            [],
+            [Question()],
             []);
         var api = new RecordingBackendClient(now) { QuizAttemptResponse = attempt };
         var source = new FakeMonotonicTimeSource();
@@ -122,6 +124,100 @@ public sealed class StudentTimelineViewModelTests
         Assert.Equal(now.AddMinutes(75), viewModel.Attempt.DeadlineUtc);
         Assert.True(ticker.IsRunning);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StudentQuizRejectsMissingQuestionsWithoutStartingTickerOrReadyState(bool nullQuestions)
+    {
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var attempt = new QuizAttemptDto(
+            Guid.NewGuid(),
+            sessionId,
+            participantId,
+            QuizAttemptStatus.InProgress,
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddMinutes(29),
+            null,
+            null,
+            10,
+            nullQuestions ? null! : [],
+            []);
+        var state = new StudentSessionState
+        {
+            SessionId = sessionId,
+            ParticipantId = participantId,
+            AccessMode = SessionAccessMode.LanOnly,
+            AccessToken = "test"
+        };
+        var ticker = new FakeCountdownTicker();
+        using var viewModel = new StudentQuizViewModel(
+            new RecordingBackendClient(DateTimeOffset.UtcNow),
+            state,
+            new ServerClock(new FakeMonotonicTimeSource()),
+            ticker,
+            new FakeStudentRealtimeService(),
+            new FixedStudentExamFlowCoordinator(state, attempt));
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.Null(viewModel.Attempt);
+        Assert.Empty(viewModel.Questions);
+        Assert.False(ticker.IsRunning);
+        Assert.Equal("danger", viewModel.StatusTone);
+        Assert.Contains("Không thể tải nội dung bài trắc nghiệm", viewModel.Status);
+        Assert.Contains(ErrorCodes.QuizAttemptSnapshotInvalid, viewModel.Status);
+        Assert.DoesNotContain("đã sẵn sàng", viewModel.Status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(ErrorCodes.QuizAttemptSnapshotInvalid, "Dữ liệu đề thi chưa hợp lệ")]
+    [InlineData(ErrorCodes.QuizHasNoQuestions, "Đề trắc nghiệm chưa có câu hỏi")]
+    public async Task StudentQuizMapsIntegrityCodesToBusinessErrors(
+        string errorCode,
+        string expectedMessage)
+    {
+        var state = new StudentSessionState
+        {
+            SessionId = Guid.NewGuid(),
+            ParticipantId = Guid.NewGuid(),
+            AccessMode = SessionAccessMode.PublicCloud,
+            AccessToken = "test"
+        };
+        var ticker = new FakeCountdownTicker();
+        using var viewModel = new StudentQuizViewModel(
+            new RecordingBackendClient(DateTimeOffset.UtcNow),
+            state,
+            new ServerClock(new FakeMonotonicTimeSource()),
+            ticker,
+            new FakeStudentRealtimeService(),
+            new ThrowingStudentExamFlowCoordinator(new PublicCloudApiException(
+                errorCode,
+                errorCode,
+                HttpStatusCode.Conflict)));
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.False(ticker.IsRunning);
+        Assert.Equal("danger", viewModel.StatusTone);
+        Assert.Contains(expectedMessage, viewModel.Status);
+        Assert.Contains(errorCode, viewModel.Status);
+        Assert.DoesNotContain("mạng", viewModel.Status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static QuizQuestionDto Question() =>
+        new(
+            Guid.NewGuid(),
+            "Question",
+            1,
+            10,
+            false,
+            [
+                new QuizChoiceDto(Guid.NewGuid(), "A", 1),
+                new QuizChoiceDto(Guid.NewGuid(), "B", 2)
+            ]);
 
     private static StudentRealtimeNotification Notification(
         Guid sessionId,
@@ -166,6 +262,32 @@ internal sealed class FixedStudentExamFlowCoordinator(
             false,
             "resume"));
     }
+
+    public Task<StudentJoinOutcome> SynchronizeAfterJoinAsync(
+        IStudentRealtimeService realtime,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new StudentJoinOutcome(
+            StudentJoinErrorCodes.Succeeded,
+            StudentJoinPhase.Completed,
+            true));
+
+    public void ReturnToCurrentExam() { }
+}
+
+internal sealed class ThrowingStudentExamFlowCoordinator(Exception exception)
+    : IStudentExamFlowCoordinator
+{
+    public event EventHandler<StudentExamNavigationRequest>? NavigationRequested
+    {
+        add { }
+        remove { }
+    }
+
+    public Task<StudentExamFlowResolution> ResolveAsync(
+        StudentExamEntryPoint entryPoint,
+        bool startConfirmed,
+        CancellationToken cancellationToken) =>
+        Task.FromException<StudentExamFlowResolution>(exception);
 
     public Task<StudentJoinOutcome> SynchronizeAfterJoinAsync(
         IStudentRealtimeService realtime,

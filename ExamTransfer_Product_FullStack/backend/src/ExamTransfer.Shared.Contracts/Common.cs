@@ -123,6 +123,9 @@ public static class ErrorCodes
     public const string CloudUploadFailed = "CLOUD_UPLOAD_FAILED";
     public const string ConcurrencyConflict = "CONCURRENCY_CONFLICT";
     public const string QuizImportLegacyDisabled = "QUIZ_IMPORT_LEGACY_DISABLED";
+    public const string QuizHasNoQuestions = "QUIZ_HAS_NO_QUESTIONS";
+    public const string QuizQuestionGraphInvalid = "QUIZ_QUESTION_GRAPH_INVALID";
+    public const string QuizAttemptSnapshotInvalid = "QUIZ_ATTEMPT_SNAPSHOT_INVALID";
     public const string ExamDurationImmutable = "EXAM_DURATION_IMMUTABLE";
     public const string InvalidCredentials = "INVALID_CREDENTIALS";
     public const string AccountInactive = "ACCOUNT_INACTIVE";

@@ -200,9 +200,23 @@ public sealed class StudentExamFlowCoordinator(
                     ParseEnum<SessionStatus>(timeline.SessionStatus),
                     timeline.Revision))
                 return Publish(entryPoint, ResolveSnapshot(CurrentSnapshot()));
-            attempt = timeline.AttemptId.HasValue
-                ? await publicCloud.GetQuizAttemptAsync(timeline.AttemptId.Value, cancellationToken)
-                : null;
+            attempt = null;
+            if (timeline.AttemptId.HasValue)
+            {
+                try
+                {
+                    attempt = await publicCloud.GetQuizAttemptAsync(
+                        timeline.AttemptId.Value,
+                        cancellationToken);
+                }
+                catch (PublicCloudApiException ex) when (
+                    ex.Code == ErrorCodes.QuizAttemptSnapshotInvalid)
+                {
+                    attempt = await publicCloud.StartQuizAttemptAsync(
+                        state.SessionId!.Value,
+                        cancellationToken);
+                }
+            }
             ApplyPublicTimeline(timeline, attempt);
             snapshot = new(
                 true,
@@ -230,11 +244,24 @@ public sealed class StudentExamFlowCoordinator(
             state.ParticipantStatus = participant.Status;
             state.SubmissionStatus = participant.SubmissionStatus;
             state.ApplyResubmitAuthority(participant.ResubmitAllowed);
-            attempt = detail.Summary.DeliveryType == ExamDeliveryType.MultipleChoice
-                ? ApiGuard.Require(await api.GetAsync<QuizAttemptLookupDto>(
-                    $"api/v1/student/quiz/sessions/{state.SessionId}/attempt",
-                    cancellationToken)).Attempt
-                : null;
+            attempt = null;
+            if (detail.Summary.DeliveryType == ExamDeliveryType.MultipleChoice)
+            {
+                try
+                {
+                    attempt = ApiGuard.Require(await api.GetAsync<QuizAttemptLookupDto>(
+                        $"api/v1/student/quiz/sessions/{state.SessionId}/attempt",
+                        cancellationToken)).Attempt;
+                }
+                catch (BackendApiException ex) when (
+                    ex.ApiCode == ErrorCodes.QuizAttemptSnapshotInvalid)
+                {
+                    attempt = ApiGuard.Require(await api.PostAsync<object, QuizAttemptDto>(
+                        $"api/v1/student/quiz/sessions/{state.SessionId}/attempt",
+                        new { },
+                        cancellationToken));
+                }
+            }
             state.CurrentAttempt = attempt;
             state.Revision = detail.Summary.Sequence;
             snapshot = new(

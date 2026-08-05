@@ -270,55 +270,57 @@ public sealed class QuizService(
 
     public async Task<QuizAttemptDto> StartOrGetAttemptAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken)
     {
-        var existing = await db.QuizAttemptsSet.Include(x => x.Answers)
+        var existing = await db.QuizAttemptsSet.AsNoTracking().Include(x => x.Answers)
             .FirstOrDefaultAsync(x => x.SessionId == sessionId && x.ParticipantId == participantId, cancellationToken);
-        if (existing is not null) return ToStudentDto(existing);
+        if (existing is not null)
+        {
+            var parsed = ParseSnapshot(existing);
+            var authority = await LoadAttemptAuthorityAsync(sessionId, participantId, cancellationToken);
+            if (parsed.State == SnapshotState.Valid
+                && existing.ExamVersion == authority.Session.ExamVersionSnapshot)
+                return ToStudentDto(existing, parsed.Questions);
+            return await RepairAttemptAsync(existing, parsed, authority, cancellationToken);
+        }
 
-        var participant = await db.SessionParticipantsSet.AsNoTracking()
-            .Include(x => x.Session).ThenInclude(x => x.Exam).ThenInclude(x => x.QuizQuestions).ThenInclude(x => x.Choices)
-            .FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lượt dự thi.", 404);
+        var participant = await LoadAttemptAuthorityAsync(sessionId, participantId, cancellationToken);
         var session = participant.Session;
-        if (participant.Status != ParticipantStatus.Approved)
-            throw new ApiException(ErrorCodes.Forbidden, "Lượt dự thi chưa được duyệt.", 403);
-        if (session.Status is not (SessionStatus.InProgress or SessionStatus.Paused))
-            throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài trắc nghiệm chưa bắt đầu.", 409);
-        if (session.DeliveryTypeSnapshot != ExamDeliveryType.MultipleChoice)
-            throw new ApiException(ErrorCodes.InvalidStateTransition, "Đề này không phải đề trắc nghiệm.", 409);
-        if (session.SupervisionModeSnapshot != SupervisionMode.Standard)
-            throw new ApiException(ErrorCodes.Forbidden, "Phiên trắc nghiệm không có giám sát chuẩn hợp lệ.", 403);
-        var latestPolicyVersion = await db.ControlPoliciesSet.AsNoTracking()
-            .Where(x => x.SessionId == session.Id)
-            .MaxAsync(x => (int?)x.Version, cancellationToken);
-        var supervisionReady = latestPolicyVersion.HasValue
-            && await db.DevicePolicyStatusesSet.AsNoTracking().AnyAsync(
-                x => x.SessionId == session.Id
-                    && x.ParticipantId == participant.Id
-                    && x.PolicyVersion == latestPolicyVersion.Value
-                    && x.Status == PolicyApplyStatus.Applied,
-                cancellationToken);
-        if (!supervisionReady)
-            throw new ApiException(ErrorCodes.Forbidden, "Thiết bị chưa áp dụng xong chính sách giám sát chuẩn.", 403);
-        var questions = session.Exam.QuizQuestions.Where(x => x.Version == session.ExamVersionSnapshot).OrderBy(x => x.Order).Select(ToQuestionDto).ToList();
-        if (questions.Count == 0) throw new ApiException(ErrorCodes.InvalidStateTransition, "Đề chưa có câu hỏi trắc nghiệm.", 409);
-        if (questions.Sum(x => x.Points) != 10.00m)
-            throw new ApiException(
-                ErrorCodes.InvalidStateTransition,
-                "Đề trắc nghiệm chưa được chuẩn hóa về thang điểm 10.00; hãy nhập lại hoặc nhân bản đề trước khi mở lượt làm bài.",
-                409);
+        await EnsureAttemptCanStartAsync(participant, cancellationToken);
+        var questions = BuildAuthoritativeSnapshot(participant);
         var deadline = session.StartedAtUtc!.Value.AddMinutes(session.Exam.DurationMinutes + participant.ExtraTimeMinutes);
         if (DateTimeOffset.UtcNow > deadline) throw new ApiException(ErrorCodes.DeadlinePassed, "Đã hết thời gian làm bài.", 409);
+        var snapshotJson = JsonSerializer.Serialize(questions, Json);
+        var generated = ParseSnapshot(snapshotJson, Guid.Empty, sessionId, participantId);
+        if (generated.State != SnapshotState.Valid)
+            throw QuestionGraphInvalid();
         var attempt = new QuizAttempt
         {
             SessionId = sessionId, ParticipantId = participantId, ExamVersion = session.ExamVersionSnapshot,
             StartedAtUtc = DateTimeOffset.UtcNow, DeadlineUtc = deadline,
-            MaxScore = 10.00m, SnapshotJson = JsonSerializer.Serialize(questions, Json),
+            MaxScore = 10.00m, SnapshotJson = snapshotJson,
             ResultPolicySnapshot = session.QuizResultPolicySnapshot
         };
         db.QuizAttemptsSet.Add(attempt);
-        await db.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            db.Entry(attempt).State = EntityState.Detached;
+            var raced = await db.QuizAttemptsSet.AsNoTracking().Include(x => x.Answers)
+                .FirstOrDefaultAsync(
+                    x => x.SessionId == sessionId && x.ParticipantId == participantId,
+                    cancellationToken);
+            if (raced is null)
+                throw;
+            var racedSnapshot = ParseSnapshot(raced);
+            if (racedSnapshot.State != SnapshotState.Valid
+                || raced.ExamVersion != session.ExamVersionSnapshot)
+                throw SnapshotInvalid();
+            return ToStudentDto(raced, racedSnapshot.Questions);
+        }
         await projectionOutbox.EnqueueAttemptUpsertAsync(attempt, cancellationToken);
-        return ToStudentDto(attempt);
+        return ToStudentDto(attempt, generated.Questions);
     }
 
     public async Task<QuizAttemptDto?> GetAttemptAsync(
@@ -331,7 +333,17 @@ public sealed class QuizService(
             .FirstOrDefaultAsync(
                 x => x.SessionId == sessionId && x.ParticipantId == participantId,
                 cancellationToken);
-        return attempt is null ? null : ToStudentDto(attempt);
+        if (attempt is null) return null;
+        var parsed = ParseSnapshot(attempt);
+        if (parsed.State != SnapshotState.Valid)
+            throw SnapshotInvalid();
+        var sessionVersion = await db.ExamSessionsSet.AsNoTracking()
+            .Where(x => x.Id == sessionId)
+            .Select(x => (int?)x.ExamVersionSnapshot)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (!sessionVersion.HasValue || attempt.ExamVersion != sessionVersion.Value)
+            throw SnapshotInvalid();
+        return ToStudentDto(attempt, parsed.Questions);
     }
 
     public async Task<SyncQuizAnswersResultDto> SyncAnswersAsync(Guid attemptId, Guid participantId, SyncQuizAnswersRequest request, CancellationToken cancellationToken)
@@ -402,7 +414,9 @@ public sealed class QuizService(
         await db.QuizAttemptsSet.Include(x => x.Answers).FirstOrDefaultAsync(x => x.Id == attemptId && x.ParticipantId == participantId, ct)
         ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài làm trắc nghiệm.", 404);
 
-    private static QuizAttemptDto ToStudentDto(QuizAttempt attempt)
+    private QuizAttemptDto ToStudentDto(
+        QuizAttempt attempt,
+        IReadOnlyList<QuizQuestionDto>? parsedQuestions = null)
     {
         var scoreVisible = attempt.Status == QuizAttemptStatus.Finalized
             && attempt.GradingStatus == GradingStatus.Returned
@@ -411,52 +425,334 @@ public sealed class QuizService(
             attempt.Id, attempt.SessionId, attempt.ParticipantId, attempt.Status, attempt.ExamVersion,
             attempt.StartedAtUtc, attempt.DeadlineUtc, attempt.FinalizedAtUtc,
             scoreVisible ? attempt.Score : null, attempt.MaxScore,
-            Snapshot(attempt), attempt.Answers.Select(ToAnswerDto).ToList(),
+            parsedQuestions ?? Snapshot(attempt), attempt.Answers.Select(ToAnswerDto).ToList(),
             scoreVisible, attempt.ResultPolicySnapshot);
     }
 
-    private static QuizAttemptDto ToTeacherDto(QuizAttempt attempt) => new(
+    private QuizAttemptDto ToTeacherDto(QuizAttempt attempt) => new(
         attempt.Id, attempt.SessionId, attempt.ParticipantId, attempt.Status, attempt.ExamVersion,
         attempt.StartedAtUtc, attempt.DeadlineUtc, attempt.FinalizedAtUtc, attempt.Score, attempt.MaxScore,
-        Snapshot(attempt), attempt.Answers.Select(ToAnswerDto).ToList(),
+        SnapshotForTeacher(attempt), attempt.Answers.Select(ToAnswerDto).ToList(),
         attempt.Status == QuizAttemptStatus.Finalized, attempt.ResultPolicySnapshot);
     private static QuizAnswerDto ToAnswerDto(QuizAnswer x) => new(x.QuestionId, JsonSerializer.Deserialize<List<Guid>>(x.ChoiceIdsJson, Json) ?? [], x.Revision, x.ClientUpdatedAtUtc);
-    private static IReadOnlyList<QuizQuestionDto> Snapshot(QuizAttempt x)
+    private IReadOnlyList<QuizQuestionDto> Snapshot(QuizAttempt attempt)
     {
-        using var document = JsonDocument.Parse(x.SnapshotJson);
-        if (document.RootElement.ValueKind != JsonValueKind.Array) return [];
-        return document.RootElement.EnumerateArray().Select(question =>
-        {
-            var choices = question.TryGetProperty("choices", out var choiceRows)
-                && choiceRows.ValueKind == JsonValueKind.Array
-                ? choiceRows.EnumerateArray().Select(choice => new QuizChoiceDto(
-                    choice.GetProperty("id").GetGuid(),
-                    StringProperty(choice, "text", "choiceText"),
-                    IntProperty(choice, "order", "sortOrder"))).ToList()
-                : [];
-            return new QuizQuestionDto(
-                question.GetProperty("id").GetGuid(),
-                StringProperty(question, "text", "questionText"),
-                IntProperty(question, "order", "sortOrder"),
-                question.TryGetProperty("points", out var points) ? points.GetDecimal() : 0,
-                question.TryGetProperty("multiple", out var multiple) && multiple.GetBoolean(),
-                choices);
-        }).ToList();
+        var parsed = ParseSnapshot(attempt);
+        if (parsed.State != SnapshotState.Valid)
+            throw SnapshotInvalid();
+        return parsed.Questions;
     }
 
-    private static string StringProperty(JsonElement element, string primary, string fallback) =>
-        element.TryGetProperty(primary, out var value)
-            ? value.GetString() ?? string.Empty
-            : element.TryGetProperty(fallback, out value)
-                ? value.GetString() ?? string.Empty
-                : string.Empty;
+    private IReadOnlyList<QuizQuestionDto> SnapshotForTeacher(QuizAttempt attempt)
+    {
+        var parsed = ParseSnapshot(attempt, validateIntegrity: false);
+        return parsed.State switch
+        {
+            SnapshotState.Valid => parsed.Questions,
+            SnapshotState.Empty or SnapshotState.InvalidGraph => [],
+            _ => throw SnapshotInvalid()
+        };
+    }
 
-    private static int IntProperty(JsonElement element, string primary, string fallback) =>
-        element.TryGetProperty(primary, out var value)
-            ? value.GetInt32()
-            : element.TryGetProperty(fallback, out value)
-                ? value.GetInt32()
-                : 0;
+    private SnapshotParseResult ParseSnapshot(
+        QuizAttempt attempt,
+        bool validateIntegrity = true) =>
+        ParseSnapshot(
+            attempt.SnapshotJson,
+            attempt.Id,
+            attempt.SessionId,
+            attempt.ParticipantId,
+            validateIntegrity);
+
+    private SnapshotParseResult ParseSnapshot(
+        string snapshotJson,
+        Guid attemptId,
+        Guid sessionId,
+        Guid participantId,
+        bool validateIntegrity = true)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(snapshotJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+                return new(SnapshotState.InvalidGraph, []);
+            if (document.RootElement.GetArrayLength() == 0)
+                return new(SnapshotState.Empty, []);
+            var questions = new List<QuizQuestionDto>();
+            foreach (var question in document.RootElement.EnumerateArray())
+            {
+                if (question.ValueKind != JsonValueKind.Object
+                    || ContainsAnswerKey(question)
+                    || !TryGuid(question, "id", out var questionId)
+                    || !TryString(question, "text", "questionText", out var text)
+                    || !TryInt(question, "order", "sortOrder", out var order)
+                    || !question.TryGetProperty("points", out var pointValue)
+                    || !pointValue.TryGetDecimal(out var points)
+                    || !question.TryGetProperty("multiple", out var multipleValue)
+                    || multipleValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                    || !question.TryGetProperty("choices", out var choiceRows)
+                    || choiceRows.ValueKind != JsonValueKind.Array)
+                    return new(SnapshotState.InvalidGraph, []);
+                var choices = new List<QuizChoiceDto>();
+                foreach (var choice in choiceRows.EnumerateArray())
+                {
+                    if (choice.ValueKind != JsonValueKind.Object
+                        || ContainsAnswerKey(choice)
+                        || !TryGuid(choice, "id", out var choiceId)
+                        || !TryString(choice, "text", "choiceText", out var choiceText)
+                        || !TryInt(choice, "order", "sortOrder", out var choiceOrder))
+                        return new(SnapshotState.InvalidGraph, []);
+                    choices.Add(new(choiceId, choiceText, choiceOrder));
+                }
+                questions.Add(new(
+                    questionId,
+                    text,
+                    order,
+                    points,
+                    multipleValue.GetBoolean(),
+                    choices));
+            }
+            return (!validateIntegrity || ValidateSnapshotQuestions(questions))
+                ? new(SnapshotState.Valid, questions)
+                : new(SnapshotState.InvalidGraph, []);
+        }
+        catch (JsonException ex)
+        {
+            logger?.LogWarning(
+                ex,
+                "Quiz attempt snapshot malformed. AttemptId={AttemptId} SessionId={SessionId} ParticipantId={ParticipantId}",
+                attemptId,
+                sessionId,
+                participantId);
+            return new(SnapshotState.Malformed, []);
+        }
+    }
+
+    private async Task<SessionParticipant> LoadAttemptAuthorityAsync(
+        Guid sessionId,
+        Guid participantId,
+        CancellationToken cancellationToken) =>
+        await db.SessionParticipantsSet.AsNoTracking()
+            .Include(x => x.Session).ThenInclude(x => x.Exam).ThenInclude(x => x.QuizQuestions).ThenInclude(x => x.Choices)
+            .FirstOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, cancellationToken)
+        ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lượt dự thi.", 404);
+
+    private async Task EnsureAttemptCanStartAsync(
+        SessionParticipant participant,
+        CancellationToken cancellationToken)
+    {
+        var session = participant.Session;
+        if (participant.Status != ParticipantStatus.Approved)
+            throw new ApiException(ErrorCodes.Forbidden, "Lượt dự thi chưa được duyệt.", 403);
+        if (session.Status is not (SessionStatus.InProgress or SessionStatus.Paused))
+            throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài trắc nghiệm chưa bắt đầu.", 409);
+        if (session.DeliveryTypeSnapshot != ExamDeliveryType.MultipleChoice)
+            throw new ApiException(ErrorCodes.InvalidStateTransition, "Đề này không phải đề trắc nghiệm.", 409);
+        if (session.SupervisionModeSnapshot != SupervisionMode.Standard)
+            throw new ApiException(ErrorCodes.Forbidden, "Phiên trắc nghiệm không có giám sát chuẩn hợp lệ.", 403);
+        var latestPolicyVersion = await db.ControlPoliciesSet.AsNoTracking()
+            .Where(x => x.SessionId == session.Id)
+            .MaxAsync(x => (int?)x.Version, cancellationToken);
+        var supervisionReady = latestPolicyVersion.HasValue
+            && await db.DevicePolicyStatusesSet.AsNoTracking().AnyAsync(
+                x => x.SessionId == session.Id
+                    && x.ParticipantId == participant.Id
+                    && x.PolicyVersion == latestPolicyVersion.Value
+                    && x.Status == PolicyApplyStatus.Applied,
+                cancellationToken);
+        if (!supervisionReady)
+            throw new ApiException(ErrorCodes.Forbidden, "Thiết bị chưa áp dụng xong chính sách giám sát chuẩn.", 403);
+    }
+
+    private static IReadOnlyList<QuizQuestionDto> BuildAuthoritativeSnapshot(SessionParticipant participant)
+    {
+        var session = participant.Session;
+        var graph = session.Exam.QuizQuestions
+            .Where(x => x.Version == session.ExamVersionSnapshot)
+            .OrderBy(x => x.Order)
+            .ToList();
+        if (graph.Count == 0)
+            throw new ApiException(ErrorCodes.QuizHasNoQuestions, "Đề chưa có câu hỏi trắc nghiệm.", 409);
+        if (!ValidateAuthoritativeGraph(graph))
+            throw QuestionGraphInvalid();
+        return graph.Select(ToQuestionDto).ToList();
+    }
+
+    private async Task<QuizAttemptDto> RepairAttemptAsync(
+        QuizAttempt existing,
+        SnapshotParseResult parsed,
+        SessionParticipant authority,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAttemptCanStartAsync(authority, cancellationToken);
+        if (parsed.State == SnapshotState.Valid
+            || existing.Status != QuizAttemptStatus.InProgress
+            || existing.FinalizedAtUtc.HasValue
+            || existing.GradingStatus != GradingStatus.InProgress
+            || existing.AutoScore.HasValue
+            || existing.Score.HasValue
+            || existing.GradedAtUtc.HasValue
+            || existing.ReturnedAtUtc.HasValue
+            || existing.Answers.Count != 0
+            || existing.ExamVersion != authority.Session.ExamVersionSnapshot)
+            throw SnapshotInvalid();
+
+        var questions = BuildAuthoritativeSnapshot(authority);
+        var repairedJson = JsonSerializer.Serialize(questions, Json);
+        var repaired = ParseSnapshot(
+            repairedJson,
+            existing.Id,
+            existing.SessionId,
+            existing.ParticipantId);
+        if (repaired.State != SnapshotState.Valid)
+            throw QuestionGraphInvalid();
+
+        var updatedAtUtc = DateTimeOffset.UtcNow;
+        var rowVersion = Guid.NewGuid().ToString("N");
+        var updated = await db.QuizAttemptsSet
+            .Where(x => x.Id == existing.Id
+                && x.SessionId == existing.SessionId
+                && x.ParticipantId == existing.ParticipantId
+                && x.ExamVersion == authority.Session.ExamVersionSnapshot
+                && x.Status == QuizAttemptStatus.InProgress
+                && x.FinalizedAtUtc == null
+                && x.GradingStatus == GradingStatus.InProgress
+                && x.AutoScore == null
+                && x.Score == null
+                && x.GradedAtUtc == null
+                && x.ReturnedAtUtc == null
+                && x.SnapshotJson == existing.SnapshotJson
+                && !db.QuizAnswersSet.Any(answer => answer.AttemptId == x.Id))
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(x => x.SnapshotJson, repairedJson)
+                    .SetProperty(x => x.UpdatedAtUtc, updatedAtUtc)
+                    .SetProperty(x => x.RowVersion, rowVersion),
+                cancellationToken);
+        if (updated == 0)
+        {
+            var current = await db.QuizAttemptsSet.AsNoTracking().Include(x => x.Answers)
+                .SingleAsync(x => x.Id == existing.Id, cancellationToken);
+            var currentSnapshot = ParseSnapshot(current);
+            if (currentSnapshot.State == SnapshotState.Valid
+                && current.ExamVersion == authority.Session.ExamVersionSnapshot)
+                return ToStudentDto(current, currentSnapshot.Questions);
+            throw SnapshotInvalid();
+        }
+
+        existing.SnapshotJson = repairedJson;
+        existing.UpdatedAtUtc = updatedAtUtc;
+        existing.RowVersion = rowVersion;
+        await projectionOutbox.EnqueueAttemptUpsertAsync(existing, cancellationToken);
+        return ToStudentDto(existing, repaired.Questions);
+    }
+
+    private static bool ValidateAuthoritativeGraph(IReadOnlyList<QuizQuestion> questions) =>
+        questions.Count is >= 1 and <= 500
+        && questions.Select(x => x.Id).All(x => x != Guid.Empty)
+        && questions.Select(x => x.Id).Distinct().Count() == questions.Count
+        && questions.Select(x => x.Order).All(x => x > 0)
+        && questions.Select(x => x.Order).Distinct().Count() == questions.Count
+        && questions.Sum(x => x.Points) == 10.00m
+        && questions.All(question =>
+            !string.IsNullOrWhiteSpace(question.Text)
+            && question.Text.Length <= 5000
+            && question.Points > 0
+            && decimal.Round(question.Points, 2, MidpointRounding.ToEven) == question.Points
+            && question.Choices.Count is >= 2 and <= 10
+            && question.Choices.Select(x => x.Id).All(x => x != Guid.Empty)
+            && question.Choices.Select(x => x.Id).Distinct().Count() == question.Choices.Count
+            && question.Choices.Select(x => x.Order).All(x => x > 0)
+            && question.Choices.Select(x => x.Order).Distinct().Count() == question.Choices.Count
+            && question.Choices.All(x => !string.IsNullOrWhiteSpace(x.Text) && x.Text.Length <= 5000)
+            && question.Choices.Count(x => x.IsCorrect) >= 1
+            && (question.Multiple || question.Choices.Count(x => x.IsCorrect) == 1));
+
+    private static bool ValidateSnapshotQuestions(IReadOnlyList<QuizQuestionDto> questions) =>
+        questions.Count is >= 1 and <= 500
+        && questions.Select(x => x.Id).All(x => x != Guid.Empty)
+        && questions.Select(x => x.Id).Distinct().Count() == questions.Count
+        && questions.Select(x => x.Order).All(x => x > 0)
+        && questions.Select(x => x.Order).Distinct().Count() == questions.Count
+        && questions.Sum(x => x.Points) == 10.00m
+        && questions.All(question =>
+            !string.IsNullOrWhiteSpace(question.Text)
+            && question.Text.Length <= 5000
+            && question.Points > 0
+            && decimal.Round(question.Points, 2, MidpointRounding.ToEven) == question.Points
+            && question.Choices.Count is >= 2 and <= 10
+            && question.Choices.Select(x => x.Id).All(x => x != Guid.Empty)
+            && question.Choices.Select(x => x.Id).Distinct().Count() == question.Choices.Count
+            && question.Choices.Select(x => x.Order).All(x => x > 0)
+            && question.Choices.Select(x => x.Order).Distinct().Count() == question.Choices.Count
+            && question.Choices.All(x => !string.IsNullOrWhiteSpace(x.Text) && x.Text.Length <= 5000));
+
+    private static bool ContainsAnswerKey(JsonElement element) =>
+        element.EnumerateObject().Any(property =>
+            property.Name.Equals("isCorrect", StringComparison.OrdinalIgnoreCase)
+            || property.Name.Equals("correct", StringComparison.OrdinalIgnoreCase));
+
+    private static bool TryGuid(JsonElement element, string name, out Guid value)
+    {
+        value = Guid.Empty;
+        return element.TryGetProperty(name, out var property)
+            && property.ValueKind == JsonValueKind.String
+            && property.TryGetGuid(out value)
+            && value != Guid.Empty;
+    }
+
+    private static bool TryString(
+        JsonElement element,
+        string primary,
+        string fallback,
+        out string value)
+    {
+        value = string.Empty;
+        if (!element.TryGetProperty(primary, out var property)
+            && !element.TryGetProperty(fallback, out property))
+            return false;
+        if (property.ValueKind != JsonValueKind.String)
+            return false;
+        value = property.GetString() ?? string.Empty;
+        return true;
+    }
+
+    private static bool TryInt(
+        JsonElement element,
+        string primary,
+        string fallback,
+        out int value)
+    {
+        value = 0;
+        if (!element.TryGetProperty(primary, out var property)
+            && !element.TryGetProperty(fallback, out property))
+            return false;
+        return property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt32(out value);
+    }
+
+    private static ApiException SnapshotInvalid() => new(
+        ErrorCodes.QuizAttemptSnapshotInvalid,
+        "Snapshot lượt làm bài trắc nghiệm không hợp lệ và không thể phục hồi an toàn.",
+        409);
+
+    private static ApiException QuestionGraphInvalid() => new(
+        ErrorCodes.QuizQuestionGraphInvalid,
+        "Graph câu hỏi trắc nghiệm không hợp lệ.",
+        409);
+
+    private enum SnapshotState
+    {
+        Valid,
+        Empty,
+        Malformed,
+        InvalidGraph
+    }
+
+    private sealed record SnapshotParseResult(
+        SnapshotState State,
+        IReadOnlyList<QuizQuestionDto> Questions);
+
     private static QuizQuestionDto ToQuestionDto(QuizQuestion x) => new(x.Id, x.Text, x.Order, x.Points, x.Multiple, x.Choices.OrderBy(c => c.Order).Select(c => new QuizChoiceDto(c.Id, c.Text, c.Order)).ToList());
 
     private async Task<PersistedImport> ReadPersistedImportAsync(

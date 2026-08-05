@@ -63,7 +63,6 @@ public sealed class StudentQuizViewModel : ProductPageBase
             () => this.flowCoordinator.ReturnToCurrentExam(),
             () => Attempt?.Status == QuizAttemptStatus.Finalized);
         ticker.Tick += OnTick;
-        ticker.Start();
         realtime.EventReceived += OnRealtimeEvent;
         realtime.NotificationReceived += OnRealtimeNotification;
     }
@@ -152,6 +151,10 @@ public sealed class StudentQuizViewModel : ProductPageBase
             }
             var loadedAttempt = session.CurrentAttempt
                 ?? throw new InvalidDataException("Coordinator chưa cung cấp snapshot lượt làm bài an toàn.");
+            if (loadedAttempt.Questions is not { Count: > 0 })
+                throw new QuizAttemptContentException(
+                    ErrorCodes.QuizAttemptSnapshotInvalid,
+                    loadedAttempt.Id);
             Attempt = loadedAttempt;
             Review = null;
             localAnswers.Clear();
@@ -159,6 +162,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
             foreach (var answer in await QuizLocalStore.LoadAsync(Attempt.Id, token))
                 if (!localAnswers.TryGetValue(answer.QuestionId, out var current) || answer.Revision > current.Revision) localAnswers[answer.QuestionId] = answer;
             ApplyQuestions();
+            ticker.Start();
             if (Attempt.Status == QuizAttemptStatus.InProgress) await SyncAsync(token, false);
             else await LoadReviewCoreAsync(token);
             UpdateCountdown();
@@ -166,6 +170,40 @@ public sealed class StudentQuizViewModel : ProductPageBase
                 ref expiredSnapshotRefreshRequested,
                 remaining is { } value && value <= TimeSpan.Zero ? 1 : 0);
         });
+    }
+
+    protected override void ReportFailure(Exception exception)
+    {
+        var code = exception switch
+        {
+            QuizAttemptContentException content => content.Code,
+            BackendApiException backend => backend.ApiCode,
+            PublicCloudApiException cloud => cloud.Code,
+            _ => null
+        };
+        if (code is ErrorCodes.QuizAttemptSnapshotInvalid or ErrorCodes.QuizQuestionGraphInvalid)
+        {
+            var traceId = FrontendLogger.Log(exception, GetType().Name);
+            Attempt = null;
+            Questions.Clear();
+            ticker.Stop();
+            Status = "Không thể tải nội dung bài trắc nghiệm. Dữ liệu đề thi chưa hợp lệ. Vui lòng liên hệ giảng viên. "
+                + $"(Mã lỗi: {code}; Mã tra cứu: {traceId})";
+            StatusTone = "danger";
+            return;
+        }
+        if (code == ErrorCodes.QuizHasNoQuestions)
+        {
+            var traceId = FrontendLogger.Log(exception, GetType().Name);
+            Attempt = null;
+            Questions.Clear();
+            ticker.Stop();
+            Status = "Đề trắc nghiệm chưa có câu hỏi. Vui lòng liên hệ giảng viên. "
+                + $"(Mã lỗi: {code}; Mã tra cứu: {traceId})";
+            StatusTone = "danger";
+            return;
+        }
+        base.ReportFailure(exception);
     }
 
     private void ApplyQuestions()
@@ -475,6 +513,12 @@ public sealed class StudentQuizViewModel : ProductPageBase
         ticker.Dispose();
         base.Dispose();
     }
+}
+
+internal sealed class QuizAttemptContentException(string code, Guid attemptId)
+    : Exception($"{code}: Quiz attempt {attemptId} has no valid questions.")
+{
+    public string Code { get; } = code;
 }
 
 public sealed class QuizQuestionState(Guid id, string text, int order, decimal points, bool multiple)

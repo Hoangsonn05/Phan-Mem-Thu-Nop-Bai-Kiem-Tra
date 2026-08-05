@@ -110,7 +110,7 @@ public abstract class ProductPageBase : ObservableObject, IAsyncInitializable, I
         }
     }
 
-    protected void ReportFailure(Exception exception)
+    protected virtual void ReportFailure(Exception exception)
     {
         if (exception is ExamTransfer.Desktop.Infrastructure.PublicCloudApiException cloud)
         {
