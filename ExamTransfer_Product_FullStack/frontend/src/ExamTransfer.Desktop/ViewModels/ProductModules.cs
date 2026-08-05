@@ -1860,12 +1860,39 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             var sessions = ApiGuard.Require(await api.GetSessionsAsync(token));
             Sessions.ReplaceWith(sessions.Items);
             SelectedSession ??= Sessions.FirstOrDefault();
-            await realtimeBinding.EnsureAsync(
-                AppServices.AuthState.AccountAccessToken,
-                SelectedSession?.Id,
-                token);
+
+            Exception? realtimeEx = null;
+            try
+            {
+                await realtimeBinding.EnsureAsync(
+                    AppServices.AuthState.AccountAccessToken,
+                    SelectedSession?.Id,
+                    token);
+            }
+            catch (Exception ex)
+            {
+                realtimeEx = ex;
+            }
+
             if (SelectedSession is not null)
                 await LoadSubmissionsCoreAsync(token);
+
+            if (realtimeEx is not null)
+            {
+                if (realtimeEx is Microsoft.AspNetCore.SignalR.HubException hubEx
+                    && hubEx.Message.Contains("NOT_FOUND", StringComparison.OrdinalIgnoreCase))
+                {
+                    FrontendLogger.LogWarning(
+                        $"SubscribeSession returned NOT_FOUND for SessionId {SelectedSession?.Id}: {hubEx.Message}",
+                        "SubmissionCenterViewModel.EnsureRealtime.SubscribeNotFound");
+                }
+                else
+                {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                        .Capture(realtimeEx)
+                        .Throw();
+                }
+            }
         });
     }
 

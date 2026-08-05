@@ -564,6 +564,29 @@ public sealed class TeacherRealtimeTests
     }
 
     [Fact]
+    public async Task SubmissionCenter_RealtimeSubscribeFailureDoesNotBlockSnapshotLoad()
+    {
+        var session = CreateSession(
+            SessionStatus.Collecting,
+            SessionAccessMode.PublicCloud);
+        var submission = CreateSubmission(session.Id);
+        var backend = new TeacherRealtimeBackend(session)
+        {
+            Submissions = [submission]
+        };
+        var realtime = new FakeTeacherRealtime
+        {
+            SubscribeFailure = new InvalidOperationException("realtime unavailable")
+        };
+
+        using var viewModel = new SubmissionCenterViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+
+        Assert.Equal(1, backend.SubmissionRequests);
+        Assert.Equal(submission.Id, Assert.Single(viewModel.Submissions).SubmissionId);
+    }
+
+    [Fact]
     public async Task SubmissionCenter_SubmissionAcceptedRefreshesSelectedSessionOnlyAndDebounces()
     {
         var session = CreateSession(SessionStatus.Collecting);
@@ -670,6 +693,7 @@ public sealed class TeacherRealtimeTests
     {
         public bool IsConnected { get; private set; } = true;
         public bool FailNextUnsubscribe { get; set; }
+        public Exception? SubscribeFailure { get; set; }
         public int DisconnectCount { get; private set; }
         public HashSet<Guid> Subscribed { get; } = [];
         public List<Guid> Unsubscribed { get; } = [];
@@ -688,6 +712,8 @@ public sealed class TeacherRealtimeTests
             Guid sessionId,
             CancellationToken ct = default)
         {
+            if (SubscribeFailure is not null)
+                throw SubscribeFailure;
             Subscribed.Add(sessionId);
             return Task.CompletedTask;
         }

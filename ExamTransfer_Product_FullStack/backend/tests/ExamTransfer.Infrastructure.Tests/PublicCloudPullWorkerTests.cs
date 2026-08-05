@@ -236,6 +236,102 @@ public sealed class PublicCloudPullWorkerTests
     }
 
     [Fact]
+    public async Task CompletedSubmissionProjection_PersistsParticipantSubmissionAndFile()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var session = new ExamSession
+        {
+            Id = Guid.NewGuid(),
+            Status = SessionStatus.Collecting,
+            AccessMode = SessionAccessMode.PublicCloud,
+            ExamId = Guid.NewGuid()
+        };
+        database.Context.ExamsSet.Add(new Exam
+        {
+            Id = session.ExamId,
+            Title = "PublicCloud submission",
+            DurationMinutes = 10,
+            Status = ExamStatus.Published
+        });
+        database.Context.ExamSessionsSet.Add(session);
+        await database.Context.SaveChangesAsync();
+
+        var participantId = Guid.NewGuid();
+        var submissionId = Guid.NewGuid();
+        var fileId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var adapter = new PullMockAdapter
+        {
+            ReturnRecords =
+            [
+                new CloudPullRecord(
+                    "session_participants",
+                    participantId.ToString(),
+                    218,
+                    now,
+                    JsonSerializer.Serialize(new
+                    {
+                        session_id = session.Id,
+                        student_code = "PC001",
+                        display_name = "PublicCloud Student",
+                        status = "Approved",
+                        submission_status = "Submitted"
+                    })),
+                new CloudPullRecord(
+                    "submissions",
+                    submissionId.ToString(),
+                    216,
+                    now,
+                    JsonSerializer.Serialize(new
+                    {
+                        session_id = session.Id,
+                        participant_id = participantId,
+                        attempt_number = 1,
+                        status = "Submitted",
+                        client_submitted_at = now,
+                        server_received_at = now,
+                        deadline_at = now.AddMinutes(10),
+                        is_late = false,
+                        is_official = true,
+                        receipt_code = "RECEIPT",
+                        receipt_signature = "SIGNATURE"
+                    })),
+                new CloudPullRecord(
+                    "submission_files",
+                    fileId.ToString(),
+                    214,
+                    now,
+                    JsonSerializer.Serialize(new
+                    {
+                        submission_id = submissionId,
+                        name = "answer.rar",
+                        size_bytes = 460,
+                        sha256 = new string('a', 64),
+                        transfer_status = "Completed",
+                        sync_status = "Synced",
+                        cloud_object_path = $"public-submissions/{submissionId:N}/{fileId:N}/answer.rar"
+                    }))
+            ]
+        };
+
+        var worker = await CreateWorkerAsync(database.Path, adapter);
+        await worker.PullOnceAsync(CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var participant = await database.Context.SessionParticipantsSet.SingleAsync();
+        var submission = await database.Context.SubmissionsSet
+            .Include(x => x.Files)
+            .SingleAsync();
+
+        Assert.Equal(SubmissionStatus.Submitted, participant.SubmissionStatus);
+        Assert.Equal("RECEIPT", submission.ReceiptCode);
+        Assert.True(submission.IsOfficial);
+        var file = Assert.Single(submission.Files);
+        Assert.Equal(TransferStatus.Completed, file.TransferStatus);
+        Assert.Equal(new string('a', 64), file.Sha256);
+    }
+
+    [Fact]
     public void OwnershipRegression_EntityOrderDoesNotContainLocalOwned()
     {
         var entityOrderField = typeof(PublicCloudPullWorker).GetField("EntityOrder", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
