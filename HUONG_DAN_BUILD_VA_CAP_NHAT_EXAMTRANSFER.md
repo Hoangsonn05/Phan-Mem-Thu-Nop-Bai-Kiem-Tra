@@ -14,15 +14,15 @@
 File thành phẩm:
 
 ```text
-ExamTransfer-Setup-x.y.z.exe
+Khoa-DT-KTMT-Setup-x.y.z.exe
 ```
 
 Trong đó `x.y.z` là phiên bản, ví dụ:
 
 ```text
-ExamTransfer-Setup-1.2.0.exe
-ExamTransfer-Setup-1.2.1.exe
-ExamTransfer-Setup-1.3.0.exe
+Khoa-DT-KTMT-Setup-1.2.0.exe
+Khoa-DT-KTMT-Setup-1.2.1.exe
+Khoa-DT-KTMT-Setup-1.3.0.exe
 ```
 
 ---
@@ -91,7 +91,7 @@ Không được tạo GUID mới cho mỗi phiên bản.
 Cũng phải giữ ổn định:
 
 ```ini
-AppName=ExamTransfer
+AppName=Khoa-DT-KTMT
 DefaultDirName={autopf}\ExamTransfer
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -142,7 +142,7 @@ Nên build trên Windows 10 hoặc Windows 11 x64.
 
 ---
 
-## 5. Chuẩn bị ba file hỗ trợ
+## 5. Ba file canonical của luồng phát hành
 
 Tại thư mục gốc của dự án:
 
@@ -166,6 +166,7 @@ Bên trong đặt:
 
 ```text
 installer\ExamTransfer.iss
+installer\assets\Khoa-DT-KTMT.ico
 ```
 
 Cấu trúc sau khi thêm:
@@ -175,6 +176,8 @@ ExamTransfer_Product_v1.0.0_FullStack\
 ├── backend\
 ├── frontend\
 ├── installer\
+│   ├── assets\
+│   │   └── Khoa-DT-KTMT.ico
 │   └── ExamTransfer.iss
 ├── artifacts\
 ├── build-release.ps1
@@ -182,10 +185,11 @@ ExamTransfer_Product_v1.0.0_FullStack\
 └── global.json
 ```
 
-Hai file mẫu đi kèm tài liệu này:
+Ba file canonical của luồng phát hành:
 
 - `build-release.ps1`
 - `ExamTransfer.iss`
+- `installer\assets\Khoa-DT-KTMT.ico`
 
 ---
 
@@ -296,9 +300,9 @@ Script sẽ tự thực hiện:
 7. Publish frontend cho `win-x64`.
 8. Publish Local Server cho `win-x64`.
 9. Tạo installer bằng Inno Setup.
-10. Tạo mã SHA-256 cho installer.
+10. Kiểm tra lại artifact và tạo mã SHA-256 cho installer.
 
-Không dùng `-SkipTests` cho bản đem nộp hoặc phát hành.
+Script từ chối `-SkipTests`; installer chính thức chỉ được tạo khi worktree sạch và toàn bộ gate bắt buộc PASS.
 
 ---
 
@@ -319,19 +323,19 @@ artifacts\release\Server\ExamTransfer.LocalServer.exe
 Installer:
 
 ```text
-artifacts\installer\ExamTransfer-Setup-1.2.0.exe
+artifacts\installer\Khoa-DT-KTMT-Setup-1.2.0.exe
 ```
 
 Mã kiểm tra file:
 
 ```text
-artifacts\installer\ExamTransfer-Setup-1.2.0.exe.sha256.txt
+artifacts\installer\Khoa-DT-KTMT-Setup-1.2.0.exe.sha256.txt
 ```
 
 File cần gửi cho người dùng là:
 
 ```text
-ExamTransfer-Setup-1.2.0.exe
+Khoa-DT-KTMT-Setup-1.2.0.exe
 ```
 
 Không gửi riêng thư mục `Client` hoặc `Server` cho người dùng bình thường.
@@ -355,7 +359,7 @@ Installer sẽ:
 - Tạo shortcut.
 - Cho phép chọn tự chạy Local Server khi đăng nhập Windows.
 - Mở TCP 5048.
-- Mở UDP 5050.
+- Mở UDP 40550.
 
 Sau khi cài:
 
@@ -534,7 +538,7 @@ powershell -ExecutionPolicy Bypass -File ".\build-release.ps1" -Version "1.2.1"
 Kết quả:
 
 ```text
-artifacts\installer\ExamTransfer-Setup-1.2.1.exe
+artifacts\installer\Khoa-DT-KTMT-Setup-1.2.1.exe
 ```
 
 ### Bước 7 — Cài thử lên bản cũ
@@ -546,7 +550,7 @@ Không gỡ bản cũ.
 Chạy:
 
 ```text
-ExamTransfer-Setup-1.2.1.exe
+Khoa-DT-KTMT-Setup-1.2.1.exe
 ```
 
 Installer phải nhận lại loại cài đặt trước đó:
@@ -668,7 +672,7 @@ Không phát hành update khi chưa thử cài đè trên bản cũ.
 
 Không update khi phòng thi đang hoạt động.
 
-Không dùng `-SkipTests` cho bản phát hành chính thức.
+Không dùng `-SkipTests`; canonical build từ chối tham số này trước khi tạo installer.
 
 ---
 
@@ -737,7 +741,7 @@ Kiểm tra bản cũ và bản mới đều được cài ở chế độ admin,
 
 ### Sau build
 
-- [ ] Có `ExamTransfer-Setup-x.y.z.exe`.
+- [ ] Có `Khoa-DT-KTMT-Setup-x.y.z.exe`.
 - [ ] Có file SHA-256.
 - [ ] Cài mới trên máy sạch thành công.
 - [ ] Cài đè trên bản cũ thành công.
@@ -746,7 +750,7 @@ Kiểm tra bản cũ và bản mới đều được cài ở chế độ admin,
 - [ ] Cấu hình Local Server còn nguyên.
 - [ ] Máy học sinh vẫn kết nối được.
 - [ ] Firewall TCP 5048 hoạt động.
-- [ ] UDP 5050 hoạt động.
+- [ ] UDP 40550 hoạt động.
 - [ ] `/health` trả về thành công.
 
 ---
@@ -771,13 +775,9 @@ powershell -ExecutionPolicy Bypass -File ".\build-release.ps1" -Version "1.2.1"
 powershell -ExecutionPolicy Bypass -File ".\build-release.ps1" -Version "1.3.0"
 ```
 
-### Chỉ build thử nội bộ, bỏ qua test
+### Gate bắt buộc
 
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\build-release.ps1" -Version "1.3.0" -SkipTests
-```
-
-Không dùng lệnh cuối cho bản gửi người dùng.
+Không có luồng tạo installer bỏ qua test. Tham số `-SkipTests` bị từ chối để tránh phát hành artifact chưa được xác minh.
 
 ---
 

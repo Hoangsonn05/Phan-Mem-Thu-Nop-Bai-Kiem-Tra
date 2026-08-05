@@ -4,7 +4,7 @@
         xmlns:vm="clr-namespace:ExamTransfer.Desktop.ViewModels"
         xmlns:views="clr-namespace:ExamTransfer.Desktop.Views"
         xmlns:models="clr-namespace:ExamTransfer.Desktop.Models"
-        Title="ExamTransfer - Thu và gửi bài kiểm tra"
+        Title="Khoa-DT-KTMT - Thu và gửi bài kiểm tra"
         Width="1440"
         Height="900"
         MinWidth="1180"
@@ -86,7 +86,7 @@
                                    Foreground="White" />
                     </Border>
                     <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
-                        <TextBlock Text="ExamTransfer"
+                        <TextBlock Text="Khoa-DT-KTMT"
                                    FontSize="14"
                                    FontWeight="Bold"
                                    Foreground="{DynamicResource SidebarTextBrush}" />

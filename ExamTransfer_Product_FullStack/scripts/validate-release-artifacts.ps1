@@ -85,7 +85,7 @@ try {
         'manifest-build-id' `
         'Manifest Build ID does not match version, HEAD, and clean source state.'
 
-    $expectedInstallerName = "ExamTransfer-Setup-$ExpectedVersion.exe"
+    $expectedInstallerName = "Khoa-DT-KTMT-Setup-$ExpectedVersion.exe"
     Assert-IdentityCheck `
         ((Test-Path -LiteralPath $InstallerPath -PathType Leaf) -and
             [IO.Path]::GetFileName($InstallerPath) -eq $expectedInstallerName) `
@@ -136,9 +136,9 @@ try {
         'installer-product-version' `
         'Installer ProductVersion does not match the candidate.'
     Assert-IdentityCheck `
-        (([string]$versionInfo.ProductName).Trim() -eq 'ExamTransfer') `
+        (([string]$versionInfo.ProductName).Trim() -eq 'Khoa-DT-KTMT') `
         'installer-product-name' `
-        'Installer ProductName does not match ExamTransfer.'
+        'Installer ProductName does not match Khoa-DT-KTMT.'
 
     $manifestInstaller = $manifest.installer
     $manifestInstallerMatches = $null -ne $manifestInstaller -and
@@ -149,7 +149,7 @@ try {
         (ConvertFrom-InstallerVersionText `
             -Value ([string]$manifestInstaller.productVersion) `
             -MetadataName 'manifest installer ProductVersion') -eq $ExpectedVersion -and
-        [string]$manifestInstaller.productName -eq 'ExamTransfer' -and
+        [string]$manifestInstaller.productName -eq 'Khoa-DT-KTMT' -and
         $windowsVersion -eq [string]$manifestInstaller.fileVersion
     Assert-IdentityCheck `
         $manifestInstallerMatches `

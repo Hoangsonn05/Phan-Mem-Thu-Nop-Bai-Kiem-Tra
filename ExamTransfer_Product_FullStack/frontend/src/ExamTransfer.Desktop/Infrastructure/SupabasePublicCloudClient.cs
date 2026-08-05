@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using ExamTransfer.Desktop.Core;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Shared.Contracts;
 
@@ -39,17 +40,34 @@ public sealed class PublicCloudRuntimeOptionsProvider(
 
     public PublicCloudRuntimeOptions Get()
     {
-        var environmentUrl = getEnvironment("EXAMTRANSFER_SUPABASE_URL");
-        var environmentKey = getEnvironment("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY");
-        var environmentOrganizationId = getEnvironment("EXAMTRANSFER_ORGANIZATION_ID");
-        if (!string.IsNullOrWhiteSpace(environmentUrl)
-            || !string.IsNullOrWhiteSpace(environmentKey))
+        var allowEnvironmentOverride = string.Equals(
+            getEnvironment("EXAMTRANSFER_ALLOW_PUBLICCLOUD_ENV_OVERRIDE")?.Trim(),
+            "1",
+            StringComparison.Ordinal);
+        if (allowEnvironmentOverride)
+        {
+            var environmentUrl = getEnvironment("EXAMTRANSFER_SUPABASE_URL");
+            var environmentKey = getEnvironment("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY");
+            var environmentOrganizationId = getEnvironment("EXAMTRANSFER_ORGANIZATION_ID");
+            if (string.IsNullOrWhiteSpace(environmentUrl)
+                || string.IsNullOrWhiteSpace(environmentKey)
+                || string.IsNullOrWhiteSpace(environmentOrganizationId))
+            {
+                return new(
+                    null,
+                    null,
+                    "PUBLICCLOUD_ENV_OVERRIDE_INCOMPLETE",
+                    "ExplicitEnvironment");
+            }
+
             return Validate(
                 environmentUrl,
                 environmentKey,
-                "Environment",
+                "ExplicitEnvironment",
                 allowLoopbackHttp: true,
-                organizationId: environmentOrganizationId);
+                organizationId: environmentOrganizationId,
+                requireOrganizationId: true);
+        }
 
         if (!File.Exists(path))
             return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", "Missing");
@@ -71,15 +89,16 @@ public sealed class PublicCloudRuntimeOptionsProvider(
                 key,
                 "InstalledFile",
                 allowLoopbackHttp: false,
-                organizationId: organizationId);
+                organizationId: organizationId,
+                requireOrganizationId: true);
         }
         catch (JsonException)
         {
-            return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", "InvalidFile");
+            return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", "Invalid");
         }
         catch (IOException)
         {
-            return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", "UnreadableFile");
+            return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", "Invalid");
         }
     }
 
@@ -89,7 +108,8 @@ public sealed class PublicCloudRuntimeOptionsProvider(
         string source,
         bool allowLoopbackHttp = false,
         bool allowExplicitTestKey = false,
-        string? organizationId = null)
+        string? organizationId = null,
+        bool requireOrganizationId = false)
     {
         if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(key))
             return new(null, null, "PUBLICCLOUD_NOT_CONFIGURED", source);
@@ -111,13 +131,25 @@ public sealed class PublicCloudRuntimeOptionsProvider(
                 return new(projectUri, normalizedKey, "PUBLICCLOUD_INVALID_ORGANIZATION_ID", source);
             parsedOrganizationId = organizationGuid;
         }
+        else if (requireOrganizationId)
+        {
+            return new(
+                projectUri,
+                normalizedKey,
+                "PUBLICCLOUD_INVALID_ORGANIZATION_ID",
+                source);
+        }
         return new(projectUri, normalizedKey, null, source, parsedOrganizationId);
     }
 
     private static bool IsPublishableKey(string key, bool allowExplicitTestKey)
     {
         if (key.StartsWith("sb_secret_", StringComparison.OrdinalIgnoreCase)
-            || key.Contains("service_role", StringComparison.OrdinalIgnoreCase))
+            || key.Contains("service_role", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("placeholder", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("change-me", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("change_me", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("example", StringComparison.OrdinalIgnoreCase))
             return false;
         if (key.StartsWith("sb_publishable_", StringComparison.Ordinal))
             return key.Length > "sb_publishable_".Length;
@@ -184,7 +216,9 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
     private readonly IServerClock serverClock;
     private readonly IPublicCloudRuntimeOptionsProvider optionsProvider;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
+    private readonly Func<int> retryJitterMilliseconds;
     private readonly SemaphoreSlim refreshGate = new(1, 1);
+    private readonly SemaphoreSlim authenticationGate = new(1, 1);
     private CancellationTokenSource authLifetime = new();
     private string? accessToken;
     private string? refreshToken;
@@ -198,7 +232,8 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         string? supabaseUrl = null,
         string? publishableKey = null,
         IPublicCloudRuntimeOptionsProvider? optionsProvider = null,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        Func<int>? retryJitterMilliseconds = null)
     {
         this.http = http ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         this.serverClock = serverClock ?? new ServerClock();
@@ -213,6 +248,8 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
                         allowExplicitTestKey: true))
                 : new PublicCloudRuntimeOptionsProvider());
         this.delay = delay ?? Task.Delay;
+        this.retryJitterMilliseconds = retryJitterMilliseconds
+            ?? (() => Random.Shared.Next(25, 101));
     }
 
     public PublicCloudRuntimeOptions RuntimeOptions => optionsProvider.Get();
@@ -229,9 +266,29 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         var domain = Environment.GetEnvironmentVariable("EXAMTRANSFER_STUDENT_EMAIL_DOMAIN")
             ?? "students.examtransfer.local";
         var email = account.Contains('@') ? account.Trim() : $"{account.Trim()}@{domain.Trim().TrimStart('@')}";
-        using var request = ProjectRequest(HttpMethod.Post, "/auth/v1/token?grant_type=password", false);
-        request.Content = JsonContent.Create(new { email = email.ToLowerInvariant(), password });
-        using var response = await SendAsync(request, cancellationToken);
+        using var response = await SendAuthenticationRequestWithRetryAsync(
+            () =>
+            {
+                var request = ProjectRequest(
+                    HttpMethod.Post,
+                    "/auth/v1/token?grant_type=password",
+                    false);
+                request.Content = JsonContent.Create(new
+                {
+                    email = email.ToLowerInvariant(),
+                    password
+                });
+                return request;
+            },
+            "FrontendAuth",
+            cancellationToken);
+        if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized)
+        {
+            throw new PublicCloudApiException(
+                ErrorCodes.InvalidCredentials,
+                "Tài khoản hoặc mật khẩu không đúng.",
+                HttpStatusCode.Unauthorized);
+        }
         await EnsureSuccessAsync(response, "Supabase Auth", cancellationToken);
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         await refreshGate.WaitAsync(cancellationToken);
@@ -802,9 +859,10 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         string deviceId,
         CancellationToken cancellationToken)
     {
-        await LoginAsync(account, password, cancellationToken);
+        await authenticationGate.WaitAsync(cancellationToken);
         try
         {
+            await LoginAsync(account, password, cancellationToken);
             var current = await ReadAuthoritativeAccountAsync(deviceId, cancellationToken);
             return new(
                 current,
@@ -818,6 +876,10 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         {
             Logout();
             throw;
+        }
+        finally
+        {
+            authenticationGate.Release();
         }
     }
 
@@ -964,10 +1026,12 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         }
 
         var encodedId = Uri.EscapeDataString(providerUserId);
-        using var request = ProjectRequest(
-            HttpMethod.Get,
-            $"/rest/v1/profiles?select=id,organization_id,username,display_name,student_code,date_of_birth,must_change_password,role,is_active&id=eq.{encodedId}&limit=2");
-        using var response = await SendAsync(request, cancellationToken);
+        using var response = await SendAuthenticationRequestWithRetryAsync(
+            () => ProjectRequest(
+                HttpMethod.Get,
+                $"/rest/v1/profiles?select=id,organization_id,username,display_name,student_code,date_of_birth,must_change_password,role,is_active&id=eq.{encodedId}&limit=2"),
+            "ProfileRead",
+            cancellationToken);
         await EnsureSuccessAsync(response, "Supabase application profile", cancellationToken);
         using var document = JsonDocument.Parse(
             await response.Content.ReadAsStringAsync(cancellationToken));
@@ -1012,6 +1076,13 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         }
         else
         {
+            if (!string.IsNullOrWhiteSpace(studentCode))
+            {
+                throw new PublicCloudApiException(
+                    ErrorCodes.AuthProfileRoleInconsistent,
+                    $"{ErrorCodes.AuthProfileRoleInconsistent}: Hồ sơ tài khoản không nhất quán. Vui lòng liên hệ quản trị viên.",
+                    HttpStatusCode.Forbidden);
+            }
             if (string.IsNullOrWhiteSpace(authenticatedEmail))
                 throw InvalidAuthenticatedRole("Supabase authenticated email is missing.");
             accountIdentifier = authenticatedEmail.Trim();
@@ -1142,6 +1213,119 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
                 "PublicCloud runtime configuration is missing or invalid.",
                 HttpStatusCode.ServiceUnavailable);
     }
+
+    private async Task<HttpResponseMessage> SendAuthenticationRequestWithRetryAsync(
+        Func<HttpRequestMessage> requestFactory,
+        string step,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var request = requestFactory();
+            try
+            {
+                var response = await http.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
+                if (!IsTransientAuthStatus(response.StatusCode))
+                    return response;
+
+                if (attempt == maxAttempts)
+                {
+                    var statusCode = response.StatusCode;
+                    response.Dispose();
+                    throw AuthProviderUnavailable(statusCode);
+                }
+
+                var retryDelay = GetAuthenticationRetryDelay(response, attempt);
+                LogAuthenticationRetry(step, attempt, response.StatusCode);
+                response.Dispose();
+                await delay(retryDelay, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (TaskCanceledException) when (attempt < maxAttempts)
+            {
+                LogAuthenticationRetry(step, attempt, null);
+                await delay(GetAuthenticationRetryDelay(null, attempt), cancellationToken);
+            }
+            catch (HttpRequestException) when (attempt < maxAttempts)
+            {
+                LogAuthenticationRetry(step, attempt, null);
+                await delay(GetAuthenticationRetryDelay(null, attempt), cancellationToken);
+            }
+            catch (TaskCanceledException)
+            {
+                throw AuthProviderUnavailable(HttpStatusCode.RequestTimeout);
+            }
+            catch (HttpRequestException)
+            {
+                throw AuthProviderUnavailable(HttpStatusCode.ServiceUnavailable);
+            }
+        }
+
+        throw AuthProviderUnavailable(HttpStatusCode.ServiceUnavailable);
+    }
+
+    private TimeSpan GetAuthenticationRetryDelay(
+        HttpResponseMessage? response,
+        int failedAttempt)
+    {
+        var retryAfter = response?.Headers.RetryAfter;
+        TimeSpan value;
+        if (retryAfter?.Delta is { } delta)
+        {
+            value = delta;
+        }
+        else if (retryAfter?.Date is { } date)
+        {
+            value = date - DateTimeOffset.UtcNow;
+        }
+        else
+        {
+            var baseMilliseconds = failedAttempt == 1 ? 250 : 750;
+            var jitter = Math.Clamp(retryJitterMilliseconds(), 0, 100);
+            value = TimeSpan.FromMilliseconds(baseMilliseconds + jitter);
+        }
+
+        if (value < TimeSpan.Zero)
+            return TimeSpan.Zero;
+        return value > TimeSpan.FromSeconds(5)
+            ? TimeSpan.FromSeconds(5)
+            : value;
+    }
+
+    private void LogAuthenticationRetry(
+        string step,
+        int attempt,
+        HttpStatusCode? statusCode)
+    {
+        var options = RuntimeOptions;
+        FrontendLogger.LogWarning(
+            $"step={step}; configSource={options.Source}; host={options.ProjectUri?.Host ?? "<missing>"}; " +
+            $"organizationId={options.OrganizationId?.ToString("D") ?? "<missing>"}; " +
+            $"status={(statusCode.HasValue ? ((int)statusCode.Value).ToString() : "network")}; retryAttempt={attempt}",
+            "SupabaseAuthenticationRetry");
+    }
+
+    private static bool IsTransientAuthStatus(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable
+            or HttpStatusCode.GatewayTimeout;
+
+    private static PublicCloudApiException AuthProviderUnavailable(
+        HttpStatusCode statusCode) =>
+        new(
+            ErrorCodes.AuthProviderUnavailable,
+            "Nhà cung cấp xác thực tạm thời không khả dụng. Vui lòng thử lại.",
+            statusCode);
 
     private async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,

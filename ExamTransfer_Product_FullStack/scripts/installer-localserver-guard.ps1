@@ -237,6 +237,68 @@ function Set-MissingProperty(
     }
 }
 
+function Set-AuthoritativeProperty(
+    $Parent,
+    [string]$Name,
+    $Value,
+    [ref]$Changed) {
+    $property = $Parent.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        $Parent | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+        $Changed.Value = $true
+        return
+    }
+
+    $equal = if ($Value -is [string]) {
+        [string]::Equals(
+            [string]$property.Value,
+            [string]$Value,
+            [StringComparison]::Ordinal)
+    }
+    else {
+        [object]::Equals($property.Value, $Value)
+    }
+    if (-not $equal) {
+        $property.Value = $Value
+        $Changed.Value = $true
+    }
+}
+
+function Get-ConfigurationHost([string]$Value) {
+    $uri = $null
+    if ([Uri]::TryCreate($Value, [UriKind]::Absolute, [ref]$uri)) {
+        return $uri.Host
+    }
+    return '<missing>'
+}
+
+function Assert-RuntimeCloudConverged($Document, $PublicConfig) {
+    $cloudProperty = $Document.PSObject.Properties['Cloud']
+    if ($null -eq $cloudProperty -or $cloudProperty.Value -isnot [pscustomobject]) {
+        throw 'RUNTIME_CONFIG_CLOUD_INVALID: Cloud must be an object.'
+    }
+    $cloud = $cloudProperty.Value
+    foreach ($expected in @(
+        @{ Name = 'Enabled'; Value = $true },
+        @{ Name = 'SupabaseUrl'; Value = $PublicConfig.SupabaseUrl },
+        @{ Name = 'PublishableKey'; Value = $PublicConfig.PublishableKey },
+        @{ Name = 'OrganizationId'; Value = $PublicConfig.OrganizationId },
+        @{ Name = 'Environment'; Value = 'Production' },
+        @{ Name = 'AccessMode'; Value = 'UserSession' })) {
+        $property = $cloud.PSObject.Properties[$expected.Name]
+        if ($null -eq $property -or
+            -not [string]::Equals(
+                [string]$property.Value,
+                [string]$expected.Value,
+                [StringComparison]::Ordinal)) {
+            throw "RUNTIME_CONFIG_CLOUD_MISMATCH: Cloud.$($expected.Name)"
+        }
+    }
+    if ($null -ne $cloud.PSObject.Properties['AnonKey']) {
+        throw 'RUNTIME_CONFIG_CLOUD_MISMATCH: legacy Cloud.AnonKey must be removed.'
+    }
+}
+
 function Test-SourceBoundStoragePath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) {
         return $true
@@ -277,7 +339,9 @@ function Resolve-LegacyDiscoveryPorts {
 function Write-RuntimeSettingsAtomically(
     [string]$Path,
     $Document,
-    [bool]$ExistingFile) {
+    [bool]$ExistingFile,
+    [string]$RollbackPath,
+    $PublicConfig) {
     $directory = Split-Path -Parent $Path
     [IO.Directory]::CreateDirectory($directory) | Out-Null
     $temporaryPath = Join-Path $directory (
@@ -290,6 +354,10 @@ function Write-RuntimeSettingsAtomically(
             $temporaryPath,
             $json + [Environment]::NewLine,
             (New-Object Text.UTF8Encoding($false)))
+        $temporaryDocument = Get-Content -LiteralPath $temporaryPath -Raw |
+            ConvertFrom-Json
+        Assert-NoEmbeddedSecrets $temporaryDocument
+        Assert-RuntimeCloudConverged $temporaryDocument $PublicConfig
         if ($ExistingFile) {
             [IO.File]::Replace(
                 $temporaryPath,
@@ -300,6 +368,31 @@ function Write-RuntimeSettingsAtomically(
         else {
             [IO.File]::Move($temporaryPath, $Path)
         }
+
+        $writtenDocument = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+        Assert-NoEmbeddedSecrets $writtenDocument
+        Assert-RuntimeCloudConverged $writtenDocument $PublicConfig
+    }
+    catch {
+        if ($ExistingFile -and
+            -not [string]::IsNullOrWhiteSpace($RollbackPath) -and
+            (Test-Path -LiteralPath $RollbackPath -PathType Leaf)) {
+            $rollbackTemporaryPath = Join-Path $directory (
+                '.runtime-settings.' + [Guid]::NewGuid().ToString('N') + '.rollback')
+            try {
+                [IO.File]::Copy($RollbackPath, $rollbackTemporaryPath, $true)
+                [IO.File]::Replace($rollbackTemporaryPath, $Path, $null, $true)
+            }
+            finally {
+                if (Test-Path -LiteralPath $rollbackTemporaryPath -PathType Leaf) {
+                    Remove-Item -LiteralPath $rollbackTemporaryPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        elseif (-not $ExistingFile -and (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        }
+        throw
     }
     finally {
         if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
@@ -372,23 +465,35 @@ function Upgrade-RuntimeSettings {
     }
 
     $cloud = Ensure-ObjectProperty $document 'Cloud' ([ref]$changed)
-    foreach ($publicKeyName in @('PublishableKey', 'AnonKey')) {
-        $publicKeyProperty = $cloud.PSObject.Properties[$publicKeyName]
-        $publicKeyValid = $null -eq $publicKeyProperty -or
-            [string]::IsNullOrWhiteSpace([string]$publicKeyProperty.Value) -or
-            (Test-PublishableKey ([string]$publicKeyProperty.Value))
-        if ($null -ne $publicKeyProperty -and
-            -not [string]::IsNullOrWhiteSpace([string]$publicKeyProperty.Value) -and
-            -not $publicKeyValid) {
-            throw "RUNTIME_CONFIG_INVALID_PUBLIC_KEY: Cloud.$publicKeyName is not publishable."
-        }
+    $oldUrlProperty = $cloud.PSObject.Properties['SupabaseUrl']
+    $oldOrganizationProperty = $cloud.PSObject.Properties['OrganizationId']
+    $oldKeyProperty = $cloud.PSObject.Properties['PublishableKey']
+    $oldSupabaseUrl = if ($null -eq $oldUrlProperty) { '' } else { [string]$oldUrlProperty.Value }
+    $oldOrganizationId = if ($null -eq $oldOrganizationProperty) { '' } else { [string]$oldOrganizationProperty.Value }
+    $oldPublishableKey = if ($null -eq $oldKeyProperty) { '' } else { [string]$oldKeyProperty.Value }
+    $cloudIdentityChanged = -not [string]::Equals(
+            $oldSupabaseUrl.TrimEnd('/'),
+            $publicConfig.SupabaseUrl,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals(
+            $oldOrganizationId,
+            $publicConfig.OrganizationId,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals(
+            $oldPublishableKey,
+            $publicConfig.PublishableKey,
+            [StringComparison]::Ordinal)
+
+    Set-AuthoritativeProperty $cloud 'Enabled' $true ([ref]$changed)
+    Set-AuthoritativeProperty $cloud 'SupabaseUrl' $publicConfig.SupabaseUrl ([ref]$changed)
+    Set-AuthoritativeProperty $cloud 'PublishableKey' $publicConfig.PublishableKey ([ref]$changed)
+    Set-AuthoritativeProperty $cloud 'OrganizationId' $publicConfig.OrganizationId ([ref]$changed)
+    Set-AuthoritativeProperty $cloud 'Environment' 'Production' ([ref]$changed)
+    Set-AuthoritativeProperty $cloud 'AccessMode' 'UserSession' ([ref]$changed)
+    if ($null -ne $cloud.PSObject.Properties['AnonKey']) {
+        $cloud.PSObject.Properties.Remove('AnonKey')
+        $changed = $true
     }
-    Set-MissingProperty $cloud 'Enabled' $true ([ref]$changed)
-    Set-MissingProperty $cloud 'SupabaseUrl' $publicConfig.SupabaseUrl ([ref]$changed)
-    Set-MissingProperty $cloud 'PublishableKey' $publicConfig.PublishableKey ([ref]$changed)
-    Set-MissingProperty $cloud 'OrganizationId' $publicConfig.OrganizationId ([ref]$changed)
-    Set-MissingProperty $cloud 'Environment' 'Production' ([ref]$changed)
-    Set-MissingProperty $cloud 'AccessMode' 'UserSession' ([ref]$changed)
     Assert-NoEmbeddedSecrets $document
 
     if (-not $changed) {
@@ -405,7 +510,12 @@ function Upgrade-RuntimeSettings {
         Copy-Item -LiteralPath $RuntimeSettingsPath -Destination $backupPath
     }
 
-    Write-RuntimeSettingsAtomically $RuntimeSettingsPath $document $existingFile
+    Write-RuntimeSettingsAtomically `
+        $RuntimeSettingsPath `
+        $document `
+        $existingFile `
+        $backupPath `
+        $publicConfig
     $backupMessage = if ($null -eq $backupPath) {
         'clean-config-created'
     }
@@ -413,6 +523,14 @@ function Upgrade-RuntimeSettings {
         'backup=' + [IO.Path]::GetFileName($backupPath)
     }
     Write-MigrationLog 'RUNTIME_SETTINGS_UPGRADED' $backupMessage
+    if ($cloudIdentityChanged) {
+        Write-MigrationLog `
+            'CLOUD_CONFIG_CONVERGED' `
+            ("oldHost=$(Get-ConfigurationHost $oldSupabaseUrl); " +
+             "newHost=$(Get-ConfigurationHost $publicConfig.SupabaseUrl); " +
+             "oldOrganizationId=$oldOrganizationId; " +
+             "newOrganizationId=$($publicConfig.OrganizationId)")
+    }
 }
 
 function Get-ExactInstalledServerProcess([string]$ExactPath) {

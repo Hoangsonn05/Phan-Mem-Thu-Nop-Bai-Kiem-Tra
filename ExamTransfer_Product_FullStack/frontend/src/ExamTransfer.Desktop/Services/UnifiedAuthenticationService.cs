@@ -38,26 +38,29 @@ public sealed class UnifiedAuthenticationService(
         backend.SetParticipantToken(null);
         publicCloud.Logout();
 
-        var cloudIdentity = await publicCloud.AuthenticateAccountAsync(
-            account,
-            password,
-            deviceId,
-            cancellationToken);
-        var authoritative = cloudIdentity.Account;
-
-        // -----------------------------------------------------------------------------
-        // GUARD CLAUSE: Tự động khôi phục role cho Học sinh nếu xảy ra Data Drift trên Cloud
-        // -----------------------------------------------------------------------------
-        if (authoritative.Role == UserRole.Teacher &&
-            !string.IsNullOrWhiteSpace(authoritative.StudentCode))
+        SupabaseAuthenticatedAccount cloudIdentity;
+        try
         {
-            FrontendLogger.LogWarning(
-                $"[RoleGuard] Phát hiện Data Drift: Tài khoản {authoritative.Username} (Mã SV: {authoritative.StudentCode}) " +
-                "mang role 'Teacher' trên Cloud profile. Tiến hành override tạm thời về 'Student' để ngăn crash.");
-
-            authoritative = authoritative with { Role = UserRole.Student };
+            cloudIdentity = await publicCloud.AuthenticateAccountAsync(
+                account,
+                password,
+                deviceId,
+                cancellationToken);
         }
-        // -----------------------------------------------------------------------------
+        catch (Exception ex)
+        {
+            var step = ex is PublicCloudApiException cloud
+                && cloud.Code is "PUBLICCLOUD_NOT_CONFIGURED"
+                    or "PUBLICCLOUD_INVALID_URL"
+                    or "PUBLICCLOUD_INVALID_PUBLISHABLE_KEY"
+                    or "PUBLICCLOUD_INVALID_ORGANIZATION_ID"
+                    or "PUBLICCLOUD_ENV_OVERRIDE_INCOMPLETE"
+                ? "ConfigPreflight"
+                : "FrontendAuth";
+            LogAuthenticationFailure(step, publicCloud, ex);
+            throw;
+        }
+        var authoritative = cloudIdentity.Account;
 
         if (authoritative.Role == UserRole.Student)
         {
@@ -75,11 +78,17 @@ public sealed class UnifiedAuthenticationService(
             cancellationToken);
         if (lifecycle.Status is not ("SERVER_HEALTHY" or "SERVER_STARTED"))
         {
+            LogAuthenticationFailure(
+                "LocalServerStart",
+                publicCloud,
+                new InvalidOperationException(lifecycle.Status),
+                lifecycle.Status);
             await localServer.StopOwnedAsync(CancellationToken.None);
             throw new InvalidOperationException(
                 $"{lifecycle.Status}: {lifecycle.Message}");
         }
 
+        var localStage = "LocalServerAuth";
         try
         {
             var login = ApiGuard.Require(await backend.PostAsync<
@@ -101,6 +110,7 @@ public sealed class UnifiedAuthenticationService(
             var local = ApiGuard.Require(await backend.GetAsync<CurrentAccountDto>(
                 "api/v1/auth/me",
                 cancellationToken));
+            localStage = "LocalProfileValidation";
             EnsureSameAuthority(authoritative, local);
 
             // The Local Server performed its own Supabase authentication and now
@@ -111,13 +121,39 @@ public sealed class UnifiedAuthenticationService(
                 login.AccessToken,
                 AuthSessionAuthority.LocalServer);
         }
-        catch
+        catch (Exception ex)
         {
+            LogAuthenticationFailure(localStage, publicCloud, ex);
             backend.SetAccountToken(null);
             publicCloud.Logout();
             await localServer.StopOwnedAsync(CancellationToken.None);
             throw;
         }
+    }
+
+    private static void LogAuthenticationFailure(
+        string step,
+        SupabasePublicCloudClient publicCloud,
+        Exception exception,
+        string? explicitErrorCode = null)
+    {
+        var options = publicCloud.RuntimeOptions;
+        var status = exception is HttpRequestException http
+            ? http.StatusCode.HasValue
+                ? ((int)http.StatusCode.Value).ToString()
+                : "network"
+            : "n/a";
+        var code = explicitErrorCode ?? exception switch
+        {
+            PublicCloudApiException cloud => cloud.Code,
+            HttpRequestException => ErrorCodes.AuthProviderUnavailable,
+            _ => exception.GetType().Name
+        };
+        FrontendLogger.LogWarning(
+            $"step={step}; configSource={options.Source}; host={options.ProjectUri?.Host ?? "<missing>"}; " +
+            $"organizationId={options.OrganizationId?.ToString("D") ?? "<missing>"}; " +
+            $"status={status}; errorCode={code}",
+            "UnifiedAuthentication");
     }
 
     private static void EnsureSameAuthority(

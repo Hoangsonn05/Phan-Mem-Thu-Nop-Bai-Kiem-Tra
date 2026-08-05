@@ -9,7 +9,7 @@ Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
 $installerSource = Join-Path $root 'installer\ExamTransfer.iss'
-$buildReleaseSource = Join-Path $PSScriptRoot 'build-release.ps1'
+$buildReleaseSource = Join-Path $root 'build-release.ps1'
 $metadataHelper = Join-Path $PSScriptRoot 'installer-version-metadata.ps1'
 $artifactValidator = Join-Path $PSScriptRoot 'validate-release-artifacts.ps1'
 
@@ -82,7 +82,7 @@ $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) (
     'ExamTransfer-InstallerMetadata-' + [Guid]::NewGuid().ToString('N'))
 $releaseRoot = Join-Path $fixtureRoot 'Release'
 $outputRoot = Join-Path $fixtureRoot 'Output'
-$fixtureInstaller = Join-Path $outputRoot "ExamTransfer-Setup-$Version.exe"
+$fixtureInstaller = Join-Path $outputRoot "Khoa-DT-KTMT-Setup-$Version.exe"
 $fixtureHashFile = "$fixtureInstaller.sha256.txt"
 $legacySource = Join-Path $fixtureRoot 'LegacyMissingFileVersion.iss'
 $legacyInstaller = Join-Path $outputRoot 'Legacy-Missing-FileVersion.exe'
@@ -149,7 +149,7 @@ try {
             file           = [IO.Path]::GetFileName($fixtureInstaller)
             fileVersion    = ConvertTo-WindowsNumericVersion -SemanticVersion $Version
             productVersion = $Version
-            productName    = 'ExamTransfer'
+            productName    = 'Khoa-DT-KTMT'
         }
     }
     $fixtureManifest | ConvertTo-Json -Depth 4 | Set-Content `

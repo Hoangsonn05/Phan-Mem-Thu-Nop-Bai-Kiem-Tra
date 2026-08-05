@@ -122,6 +122,27 @@ public sealed class SupabaseIdentityLoginTests
     }
 
     [Fact]
+    public async Task TeacherProfileWithStudentCode_FailsClosed()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var handler = new SupabaseHandler(Profile(
+            UserRole.Teacher,
+            nonStudentCode: "23174800110"));
+        var harness = CreateHarness(database.Context, handler);
+
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            harness.Auth.LoginAsync(LoginRequest(), null, CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.AuthProfileRoleInconsistent, error.Code);
+        Assert.Contains(
+            "Hồ sơ tài khoản không nhất quán",
+            error.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(403, error.StatusCode);
+        Assert.Equal(0, await database.Context.UsersSet.CountAsync());
+    }
+
+    [Fact]
     public async Task StudentPasswordChange_ReauthenticatesUpdatesAuthAndCompletesProfileFlag()
     {
         await using var database = await TestDatabase.CreateAsync();
@@ -575,7 +596,8 @@ public sealed class SupabaseIdentityLoginTests
         bool usernameMissing = false,
         bool studentCodeMissing = false,
         bool dateOfBirthMissing = false,
-        string? studentUsername = null) =>
+        string? studentUsername = null,
+        string? nonStudentCode = null) =>
         Profile(
             role.ToString(),
             organizationId,
@@ -583,7 +605,8 @@ public sealed class SupabaseIdentityLoginTests
             usernameMissing,
             studentCodeMissing,
             dateOfBirthMissing,
-            studentUsername);
+            studentUsername,
+            nonStudentCode);
 
     private static string Profile(
         string role,
@@ -592,7 +615,8 @@ public sealed class SupabaseIdentityLoginTests
         bool usernameMissing = false,
         bool studentCodeMissing = false,
         bool dateOfBirthMissing = false,
-        string? studentUsername = null) =>
+        string? studentUsername = null,
+        string? nonStudentCode = null) =>
         JsonSerializer.Serialize(new[]
         {
             new Dictionary<string, object?>
@@ -609,7 +633,9 @@ public sealed class SupabaseIdentityLoginTests
                     : "ExamTransfer Admin",
                 ["student_code"] = studentCodeMissing
                     ? null
-                    : role == UserRole.Student.ToString() ? "23174800110" : null,
+                    : role == UserRole.Student.ToString()
+                        ? "23174800110"
+                        : nonStudentCode,
                 ["date_of_birth"] = dateOfBirthMissing
                     ? null
                     : role == UserRole.Student.ToString() ? "2005-05-09" : null,

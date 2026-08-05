@@ -444,7 +444,11 @@ public sealed class AccountAuthFlowTests
             "127.0.0.1",
             CancellationToken.None));
 
-        Assert.Equal(ErrorCodes.ProfileResponseInvalid, ex.Code);
+        Assert.Equal(ErrorCodes.AuthProfileRoleInconsistent, ex.Code);
+        Assert.Contains(
+            "Hồ sơ tài khoản không nhất quán",
+            ex.Message,
+            StringComparison.Ordinal);
         Assert.Equal(403, ex.StatusCode);
     }
 

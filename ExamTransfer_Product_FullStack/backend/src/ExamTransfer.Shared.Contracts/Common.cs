@@ -92,6 +92,7 @@ public static class ErrorCodes
     public const string Unauthorized = "UNAUTHORIZED";
     public const string Forbidden = "FORBIDDEN";
     public const string AuthenticatedRoleInvalid = "AUTHENTICATED_ROLE_INVALID";
+    public const string AuthProfileRoleInconsistent = "AUTH_PROFILE_ROLE_INCONSISTENT";
     public const string TokenExpired = "TOKEN_EXPIRED";
     public const string NotFound = "NOT_FOUND";
     public const string Conflict = "CONFLICT";

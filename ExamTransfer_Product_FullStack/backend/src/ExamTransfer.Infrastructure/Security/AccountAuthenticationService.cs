@@ -350,8 +350,10 @@ public sealed class AccountAuthenticationService(
         {
             if (!string.IsNullOrWhiteSpace(profile.StudentCode))
             {
-                throw InvalidProfileForRole(
-                    "Non-student profiles must not contain a student code.");
+                throw new ApiException(
+                    ErrorCodes.AuthProfileRoleInconsistent,
+                    "Hồ sơ tài khoản không nhất quán. Vui lòng liên hệ quản trị viên.",
+                    403);
             }
 
             if (string.IsNullOrWhiteSpace(external.Email))

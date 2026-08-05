@@ -8,13 +8,16 @@
   #define MyDefaultDirName "{autopf}\ExamTransfer"
 #endif
 #ifndef MyClientShortcutName
-  #define MyClientShortcutName "ExamTransfer"
+  #define MyClientShortcutName "Khoa-DT-KTMT"
 #endif
 #ifndef MyOutputDir
   #define MyOutputDir "..\artifacts\installer"
 #endif
 #ifndef MyReleaseRoot
   #define MyReleaseRoot "..\artifacts\release"
+#endif
+#ifndef MyAppIcon
+  #define MyAppIcon "assets\Khoa-DT-KTMT.ico"
 #endif
 #ifndef MyPrivilegesRequired
   #define MyPrivilegesRequired "admin"
@@ -31,8 +34,8 @@
 #ifndef MyLegacyDiscoveryPortSecondary
   #define MyLegacyDiscoveryPortSecondary "5051"
 #endif
-#define MyAppName "ExamTransfer"
-#define MyAppPublisher "ExamTransfer"
+#define MyAppName "Khoa-DT-KTMT"
+#define MyAppPublisher "Khoa-DT-KTMT"
 #define MyClientExe "ExamTransfer.Desktop.exe"
 #define MyServerExe "ExamTransfer.LocalServer.exe"
 
@@ -45,10 +48,11 @@ VersionInfoVersion={#MyAppVersion}.0
 VersionInfoProductVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={#MyDefaultDirName}
-DefaultGroupName=ExamTransfer
+DefaultGroupName=Khoa-DT-KTMT
 DisableProgramGroupPage=yes
 OutputDir={#MyOutputDir}
-OutputBaseFilename=ExamTransfer-Setup-{#MyAppVersion}
+OutputBaseFilename=Khoa-DT-KTMT-Setup-{#MyAppVersion}
+SetupIconFile={#MyAppIcon}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -95,7 +99,7 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ExamTransfer UDP 40550"""; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ExamTransfer UDP 40550"" dir=in action=allow protocol=UDP localport=40550 profile=private,domain remoteip=LocalSubnet program=""{app}\Server\{#MyServerExe}"""; Flags: runhidden
 #endif
-Filename: "{app}\Client\{#MyClientExe}"; Description: "Mở ExamTransfer"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: CanLaunchClient
+Filename: "{app}\Client\{#MyClientExe}"; Description: "Mở Khoa-DT-KTMT"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: CanLaunchClient
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Support\installer-localserver-guard.ps1"" -Mode StopOnly -InstalledServerPath ""{app}\Server\{#MyServerExe}"""; Flags: runhidden waituntilterminated; RunOnceId: "StopExactExamTransferServer"

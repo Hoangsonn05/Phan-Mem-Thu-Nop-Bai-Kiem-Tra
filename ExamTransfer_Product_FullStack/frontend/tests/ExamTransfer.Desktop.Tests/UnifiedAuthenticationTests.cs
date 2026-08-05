@@ -259,7 +259,7 @@ public sealed class UnifiedAuthenticationTests
     }
 
     [Fact]
-    public async Task TeacherProfileWithStudentCode_PreservesExistingGuardMapping()
+    public async Task TeacherProfileWithStudentCode_FailsClosedBeforeLocalServerAction()
     {
         var identity = Guid.NewGuid();
         var organization = Guid.NewGuid();
@@ -276,16 +276,20 @@ public sealed class UnifiedAuthenticationTests
             organization,
             AppContext.BaseDirectory);
 
-        var result = await service.LoginAsync(
-            "teacher@example.test",
-            "correct-password",
-            "device-1",
-            "teacher-pc",
-            "1.3.7",
-            default);
+        var error = await Assert.ThrowsAsync<PublicCloudApiException>(() =>
+            service.LoginAsync(
+                "teacher@example.test",
+                "correct-password",
+                "device-1",
+                "teacher-pc",
+                "1.3.7",
+                default));
 
-        Assert.Equal(UserRole.Student, result.Account.Role);
-        Assert.Equal(AuthSessionAuthority.Supabase, result.Authority);
+        Assert.Equal(ErrorCodes.AuthProfileRoleInconsistent, error.Code);
+        Assert.Contains(
+            "Hồ sơ tài khoản không nhất quán",
+            error.Message,
+            StringComparison.Ordinal);
         Assert.Equal(0, backendHandler.RequestCount);
         Assert.Equal(0, runtime.StartCount);
     }

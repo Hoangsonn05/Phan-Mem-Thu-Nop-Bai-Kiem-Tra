@@ -7,6 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>ExamTransfer.Desktop</AssemblyName>
     <RootNamespace>ExamTransfer.Desktop</RootNamespace>
+    <AssemblyTitle>Khoa-DT-KTMT</AssemblyTitle>
+    <Product>Khoa-DT-KTMT</Product>
     <Version>1.2.0</Version>
     <AssemblyVersion>1.2.0.0</AssemblyVersion>
     <FileVersion>1.2.0.0</FileVersion>

@@ -65,11 +65,31 @@ function Invoke-InvalidBuildPreflight(
     Write-Host "PASS public-config pre-ISCC rejection case=$Name"
 }
 
+function New-TestJwt([string]$Role) {
+    function ConvertTo-Base64Url([string]$Value) {
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
+        return $encoded.TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    }
+
+    $header = ConvertTo-Base64Url '{"alg":"none","typ":"JWT"}'
+    $payload = ConvertTo-Base64Url (([ordered]@{ role = $Role }) | ConvertTo-Json -Compress)
+    return "$header.$payload.signature"
+}
+
 $validUrl = 'https://packaging-gate.supabase.co'
 $validKey = 'sb_publishable_12345678901234567890'
 $validOrganizationId = '7bce49ea-6b33-4be0-ab90-3835f0f75a54'
+$serviceRoleJwt = New-TestJwt 'service_role'
+$anonJwt = New-TestJwt 'anon'
 
 $cases = @(
+    @{
+        Name = 'url-empty'
+        Url = ''
+        Key = $validKey
+        OrganizationId = $validOrganizationId
+        Code = 'PUBLICCLOUD_INVALID_URL'
+    },
     @{
         Name = 'organization-empty'
         Url = $validUrl
@@ -111,6 +131,27 @@ $cases = @(
         Key = ''
         OrganizationId = $validOrganizationId
         Code = 'PUBLICCLOUD_INVALID_PUBLISHABLE_KEY'
+    },
+    @{
+        Name = 'publishable-key-secret'
+        Url = $validUrl
+        Key = 'sb_secret_forbidden_packaging_value'
+        OrganizationId = $validOrganizationId
+        Code = 'PUBLICCLOUD_INVALID_PUBLISHABLE_KEY'
+    },
+    @{
+        Name = 'publishable-key-service-role'
+        Url = $validUrl
+        Key = $serviceRoleJwt
+        OrganizationId = $validOrganizationId
+        Code = 'PUBLICCLOUD_INVALID_PUBLISHABLE_KEY'
+    },
+    @{
+        Name = 'publishable-key-placeholder'
+        Url = $validUrl
+        Key = 'sb_publishable_placeholder_change_me'
+        OrganizationId = $validOrganizationId
+        Code = 'PUBLICCLOUD_INVALID_PUBLISHABLE_KEY'
     }
 )
 
@@ -137,6 +178,15 @@ try {
         -Expected $expected `
         -Actual $actual `
         -Stage 'unit-roundtrip'
+
+    $legacyAnon = New-PublicCloudConfig `
+        -SupabaseUrl $validUrl `
+        -PublishableKey $anonJwt `
+        -OrganizationId $validOrganizationId
+    Assert-PublicCloudConfigEqual `
+        -Expected $legacyAnon `
+        -Actual $legacyAnon `
+        -Stage 'legacy-anon-validation'
 }
 finally {
     $resolvedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
@@ -151,9 +201,9 @@ finally {
     }
 }
 
-$unexpectedInstaller = Join-Path $root 'artifacts\installer\ExamTransfer-Setup-0.0.0.exe'
+$unexpectedInstaller = Join-Path $root 'artifacts\installer\Khoa-DT-KTMT-Setup-0.0.0.exe'
 if (Test-Path -LiteralPath $unexpectedInstaller -PathType Leaf) {
     throw 'Invalid preflight reached ISCC and created an installer.'
 }
 
-Write-Host 'PASS public-config packaging preflight cases=6 valid-roundtrip=verified ISCC=not-reached' -ForegroundColor Green
+Write-Host "PASS public-config packaging preflight cases=$($cases.Count) publishable+anon=verified ISCC=not-reached" -ForegroundColor Green

@@ -148,6 +148,7 @@ try {
             OrganizationId = 'c2ed9ccd-b0bc-4bbf-af8e-ea4912e6f7b2'
             Environment = "Legacy-$version"
             AccessMode = 'TrustedServer'
+            UseResumableUploads = $false
         }
         Write-JsonFile $runtimeSettingsPath ([ordered]@{
             InstallVersion = $version
@@ -171,18 +172,13 @@ try {
         $runtime = Get-Content -LiteralPath $runtimeSettingsPath -Raw | ConvertFrom-Json
         Assert-Equal 40550 ([int]$runtime.Discovery.Port) "Teacher upgrade $version discovery port."
         Assert-Equal $canonicalStorageRoot ([string]$runtime.Storage.RootPath) "Teacher upgrade $version storage root."
-        foreach ($property in @(
-            'Enabled',
-            'SupabaseUrl',
-            'PublishableKey',
-            'OrganizationId',
-            'Environment',
-            'AccessMode')) {
-            Assert-Equal `
-                $legacyCloud[$property] `
-                $runtime.Cloud.$property `
-                "Teacher upgrade $version did not preserve Cloud.$property."
-        }
+        Assert-Equal $true ([bool]$runtime.Cloud.Enabled) "Teacher upgrade $version Cloud.Enabled."
+        Assert-Equal $publicSupabaseUrl ([string]$runtime.Cloud.SupabaseUrl) "Teacher upgrade $version Cloud.SupabaseUrl."
+        Assert-Equal $publicPublishableKey ([string]$runtime.Cloud.PublishableKey) "Teacher upgrade $version Cloud.PublishableKey."
+        Assert-Equal $publicOrganizationId ([string]$runtime.Cloud.OrganizationId) "Teacher upgrade $version Cloud.OrganizationId."
+        Assert-Equal 'Production' ([string]$runtime.Cloud.Environment) "Teacher upgrade $version Cloud.Environment."
+        Assert-Equal 'UserSession' ([string]$runtime.Cloud.AccessMode) "Teacher upgrade $version Cloud.AccessMode."
+        Assert-Equal $false ([bool]$runtime.Cloud.UseResumableUploads) "Teacher upgrade $version unrelated Cloud field."
         Assert-Equal "user-$version" ([string]$runtime.UserData.Marker) "Teacher upgrade $version user data."
         Assert-Equal "device-$version" ([string]$runtime.DeviceIdentity.Id) "Teacher upgrade $version device identity."
         $backups = @(
@@ -195,6 +191,13 @@ try {
                 [byte[]]$originalBytes,
                 [byte[]][IO.File]::ReadAllBytes($backups[0].FullName))
         ) "Teacher upgrade $version backup was not byte-exact."
+        $migrationLog = Get-Content -LiteralPath $migrationLogPath -Raw
+        Assert-True (
+            $migrationLog.IndexOf('CLOUD_CONFIG_CONVERGED', [StringComparison]::Ordinal) -ge 0
+        ) "Teacher upgrade $version did not log cloud convergence."
+        Assert-True (
+            $migrationLog.IndexOf($publicPublishableKey, [StringComparison]::Ordinal) -lt 0
+        ) "Teacher upgrade $version logged the raw publishable key."
 
         $migratedHash = (Get-FileHash -LiteralPath $runtimeSettingsPath -Algorithm SHA256).Hash
         $result = Invoke-RuntimeUpgrade `
@@ -238,6 +241,9 @@ try {
     $studentRuntime = Get-Content -LiteralPath $studentRuntimePath -Raw | ConvertFrom-Json
     Assert-Equal 40550 ([int]$studentRuntime.Discovery.Port) 'Student legacy port.'
     Assert-Equal 'E:\ExamTransferStudentData' ([string]$studentRuntime.Storage.RootPath) 'Custom student storage must be preserved.'
+    Assert-Equal $publicSupabaseUrl ([string]$studentRuntime.Cloud.SupabaseUrl) 'Student legacy SupabaseUrl.'
+    Assert-Equal $publicPublishableKey ([string]$studentRuntime.Cloud.PublishableKey) 'Student legacy PublishableKey.'
+    Assert-Equal $publicOrganizationId ([string]$studentRuntime.Cloud.OrganizationId) 'Student legacy OrganizationId.'
     Assert-Equal 'student-user-data' ([string]$studentRuntime.UserData.Marker) 'Student user data.'
     Assert-Equal 'student-device' ([string]$studentRuntime.DeviceIdentity.Id) 'Student device identity.'
 
@@ -320,13 +326,15 @@ try {
     }
 
     $buildReleaseSource = Get-Content -LiteralPath (
-        Join-Path $PSScriptRoot 'build-release.ps1') -Raw
+        Join-Path (Split-Path -Parent $PSScriptRoot) 'build-release.ps1') -Raw
     foreach ($requiredReleaseContract in @(
         'EXAMTRANSFER_ORGANIZATION_ID',
         'New-PublicCloudConfig',
         'Read-PublicCloudConfig',
         'post-ISCC-release-payload',
-        'test-installer-public-config-clean-install.ps1')) {
+        'test-installer-public-config-clean-install.ps1',
+        'installer\assets\Khoa-DT-KTMT.ico',
+        'Khoa-DT-KTMT-Setup-$Version.exe')) {
         Assert-True (
             $buildReleaseSource.IndexOf(
                 $requiredReleaseContract,
@@ -346,13 +354,11 @@ try {
                 [StringComparison]::Ordinal) -ge 0
         ) "Public-config validation contract missing: $requiredValidationContract"
     }
-    $rootBuildSource = Get-Content -LiteralPath (
-        Join-Path (Split-Path -Parent $PSScriptRoot) 'build-release.ps1') -Raw
     Assert-True (
-        $rootBuildSource.IndexOf(
+        $buildReleaseSource.IndexOf(
             'scripts\build-release.ps1',
-            [StringComparison]::Ordinal) -ge 0
-    ) 'Root release entry point does not delegate to the canonical build script.'
+            [StringComparison]::Ordinal) -lt 0
+    ) 'Root release entry point still delegates to a second build implementation.'
 
     $arguments = @('-t', '127.0.0.1')
     $installedProcess = Start-Process `
@@ -390,7 +396,7 @@ try {
 
     Write-Host 'PASS code=INSTALLER_EXACT_PATH_PROCESS_GUARD unrelated_same_name=preserved user_data=preserved' -ForegroundColor Green
     Write-Host 'PASS code=RUNTIME_SETTINGS_CLEAN_INSTALL role=unified port=40550 storage=programdata cloud=release-payload fixture-config=not-used' -ForegroundColor Green
-    Write-Host 'PASS code=RUNTIME_SETTINGS_UPGRADE versions=1.3.0,1.3.1,1.3.2 backup=exact cloud=preserved user_data=preserved device=preserved' -ForegroundColor Green
+    Write-Host 'PASS code=RUNTIME_SETTINGS_UPGRADE versions=1.3.0,1.3.1,1.3.2 backup=exact cloud=release-converged user_data=preserved device=preserved' -ForegroundColor Green
     Write-Host 'PASS code=RUNTIME_SETTINGS_IDEMPOTENT student_legacy=normalized custom_storage=preserved secrets=fail-closed' -ForegroundColor Green
     Write-Host 'PASS code=INSTALLER_STATIC_CONTRACT unified=client+server role_source=authenticated_profile autostart=disabled firewall=TCP5048+UDP40550 legacy_udp=removed' -ForegroundColor Green
 }

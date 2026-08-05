@@ -79,8 +79,9 @@ $runtimeRoot = Join-Path $fixtureRoot 'Data'
 $storageRoot = Join-Path $runtimeRoot 'Storage'
 $outputRoot = Join-Path $fixtureRoot 'Installer'
 $installLog = Join-Path $fixtureRoot 'install.log'
+$upgradeLog = Join-Path $fixtureRoot 'upgrade.log'
 $uninstallLog = Join-Path $fixtureRoot 'uninstall.log'
-$testInstaller = Join-Path $outputRoot "ExamTransfer-Setup-$Version.exe"
+$testInstaller = Join-Path $outputRoot "Khoa-DT-KTMT-Setup-$Version.exe"
 $uninstaller = Join-Path $installRoot 'unins000.exe'
 
 try {
@@ -90,7 +91,7 @@ try {
         "/DMyAppVersion=$Version",
         "/DMyAppId=$testAppId",
         "/DMyDefaultDirName=$installRoot",
-        '/DMyClientShortcutName=ExamTransfer Public Config Acceptance',
+        '/DMyClientShortcutName=Khoa-DT-KTMT Public Config Acceptance',
         "/DMyOutputDir=$outputRoot",
         "/DMyReleaseRoot=$resolvedReleaseRoot",
         '/DMyPrivilegesRequired=lowest',
@@ -175,6 +176,75 @@ try {
             throw "Clean-install runtime config mismatch: $($mapping.RuntimeName)"
         }
     }
+    if ((-not $runtimeSettings.Cloud.Enabled) -or
+        ([string]$runtimeSettings.Cloud.Environment -cne 'Production') -or
+        ([string]$runtimeSettings.Cloud.AccessMode -cne 'UserSession')) {
+        throw 'Clean-install runtime Cloud mode fields are invalid.'
+    }
+
+    $legacyRuntime = [ordered]@{
+        Discovery = [ordered]@{ Enabled = $true; Port = 40550 }
+        Storage = [ordered]@{
+            RootPath = $storageRoot
+            MinFreeBytes = 987654321
+        }
+        Cloud = [ordered]@{
+            Enabled = $false
+            SupabaseUrl = 'https://project-old.supabase.co'
+            PublishableKey = 'sb_publishable_old_upgrade_fixture_1234567890'
+            OrganizationId = [Guid]::NewGuid().ToString('D')
+            Environment = 'Legacy'
+            AccessMode = 'TrustedServer'
+            UseResumableUploads = $false
+        }
+        Database = [ordered]@{ Path = 'database\preserve.db' }
+        DeviceIdentity = [ordered]@{ Id = 'upgrade-device-preserved' }
+        UserPreferences = [ordered]@{ Theme = 'dark' }
+    }
+    [IO.File]::WriteAllText(
+        $runtimeSettingsPath,
+        ($legacyRuntime | ConvertTo-Json -Depth 20) + [Environment]::NewLine,
+        (New-Object Text.UTF8Encoding($false)))
+    $legacyRuntimeBytes = [IO.File]::ReadAllBytes($runtimeSettingsPath)
+
+    Invoke-InstallerProcess `
+        -Path $testInstaller `
+        -Arguments @(
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/SP-',
+            "/LOG=$upgradeLog") `
+        -Operation 'Upgrade install'
+
+    $upgradedRuntime = Get-Content -LiteralPath $runtimeSettingsPath -Raw | ConvertFrom-Json
+    foreach ($mapping in @(
+        @{ Name = 'supabaseUrl'; RuntimeName = 'SupabaseUrl' },
+        @{ Name = 'publishableKey'; RuntimeName = 'PublishableKey' },
+        @{ Name = 'organizationId'; RuntimeName = 'OrganizationId' })) {
+        if (-not [string]::Equals(
+                [string]$expectedConfig.($mapping.Name),
+                [string]$upgradedRuntime.Cloud.($mapping.RuntimeName),
+                [StringComparison]::Ordinal)) {
+            throw "Upgrade runtime config mismatch: $($mapping.RuntimeName)"
+        }
+    }
+    if (([string]$upgradedRuntime.Database.Path -cne 'database\preserve.db') -or
+        ([string]$upgradedRuntime.DeviceIdentity.Id -cne 'upgrade-device-preserved') -or
+        ([string]$upgradedRuntime.UserPreferences.Theme -cne 'dark') -or
+        ([long]$upgradedRuntime.Storage.MinFreeBytes -ne 987654321) -or
+        [bool]$upgradedRuntime.Cloud.UseResumableUploads) {
+        throw 'Upgrade did not preserve non-authoritative runtime settings.'
+    }
+    $upgradeBackups = @(Get-ChildItem `
+        -LiteralPath (Split-Path -Parent $runtimeSettingsPath) `
+        -Filter 'runtime-settings.backup-*.json')
+    if ($upgradeBackups.Count -ne 1 -or
+        -not [Linq.Enumerable]::SequenceEqual(
+            [byte[]]$legacyRuntimeBytes,
+            [byte[]][IO.File]::ReadAllBytes($upgradeBackups[0].FullName))) {
+        throw 'Upgrade backup is missing or not byte-exact.'
+    }
 
     if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
         throw 'Clean-install uninstaller was not created.'
@@ -191,7 +261,7 @@ try {
     Write-Host (
         'PASS installer public-config clean-install ' +
         'release-payload=byte-identical manifest=byte-identical ' +
-        'runtime-settings=three-fields-verified ' +
+        'runtime-settings=clean+upgrade-converged backup=byte-exact ' +
         'fixture-config=not-used') -ForegroundColor Green
 }
 finally {

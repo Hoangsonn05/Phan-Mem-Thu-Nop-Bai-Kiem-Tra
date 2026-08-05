@@ -16,16 +16,18 @@ public sealed class SixFindingsV133Tests
     private const string PublishableKey = "sb_publishable_12345678901234567890";
 
     [Fact]
-    public void InstalledPublicConfig_IsSharedValidatedAndEnvironmentCanOverride()
+    public void InstalledPublicConfig_WinsUnlessExplicitCompleteEnvironmentOverrideIsEnabled()
     {
         var directory = Path.Combine(Path.GetTempPath(), "examtransfer-config-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
         {
+            var installedOrganization = Guid.NewGuid();
+            var overrideOrganization = Guid.NewGuid();
             var path = Path.Combine(directory, PublicCloudRuntimeOptionsProvider.ConfigFileName);
             File.WriteAllText(
                 path,
-                $$"""{"supabaseUrl":"https://installed.supabase.co","publishableKey":"{{PublishableKey}}"}""");
+                $$"""{"supabaseUrl":"https://installed.supabase.co","publishableKey":"{{PublishableKey}}","organizationId":"{{installedOrganization:D}}"}""");
             var environment = new Dictionary<string, string?>();
             var provider = new PublicCloudRuntimeOptionsProvider(
                 path,
@@ -35,13 +37,37 @@ public sealed class SixFindingsV133Tests
             Assert.True(installed.Configured);
             Assert.Equal("InstalledFile", installed.Source);
             Assert.Equal("installed.supabase.co", installed.ProjectUri!.Host);
+            Assert.Equal(installedOrganization, installed.OrganizationId);
 
             environment["EXAMTRANSFER_SUPABASE_URL"] = "https://override.supabase.co";
+            var partialIgnoredWithoutFlag = provider.Get();
+            Assert.Equal("InstalledFile", partialIgnoredWithoutFlag.Source);
+            Assert.Equal("installed.supabase.co", partialIgnoredWithoutFlag.ProjectUri!.Host);
+
+            environment["EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY"] = PublishableKey;
+            environment["EXAMTRANSFER_ORGANIZATION_ID"] = overrideOrganization.ToString("D");
+            var ignoredWithoutFlag = provider.Get();
+            Assert.Equal("InstalledFile", ignoredWithoutFlag.Source);
+            Assert.Equal("installed.supabase.co", ignoredWithoutFlag.ProjectUri!.Host);
+
+            environment["EXAMTRANSFER_ALLOW_PUBLICCLOUD_ENV_OVERRIDE"] = "1";
+            environment.Remove("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY");
+            var incomplete = provider.Get();
+            Assert.False(incomplete.Configured);
+            Assert.Equal("PUBLICCLOUD_ENV_OVERRIDE_INCOMPLETE", incomplete.ErrorCode);
+            Assert.Equal("ExplicitEnvironment", incomplete.Source);
+
             environment["EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY"] = PublishableKey;
             var overridden = provider.Get();
             Assert.True(overridden.Configured);
-            Assert.Equal("Environment", overridden.Source);
+            Assert.Equal("ExplicitEnvironment", overridden.Source);
             Assert.Equal("override.supabase.co", overridden.ProjectUri!.Host);
+            Assert.Equal(overrideOrganization, overridden.OrganizationId);
+
+            environment["EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY"] = "sb_secret_forbidden";
+            var rejectedSecret = provider.Get();
+            Assert.False(rejectedSecret.Configured);
+            Assert.Equal("PUBLICCLOUD_INVALID_PUBLISHABLE_KEY", rejectedSecret.ErrorCode);
         }
         finally
         {

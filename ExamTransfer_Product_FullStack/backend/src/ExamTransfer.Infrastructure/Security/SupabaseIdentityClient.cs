@@ -13,10 +13,16 @@ namespace ExamTransfer.Infrastructure.Security;
 public sealed class SupabaseIdentityClient(
     HttpClient http,
     IOptions<ExamTransferOptions> options,
-    ILogger<SupabaseIdentityClient> logger) : IExternalIdentityProvider, IExternalAccountSecurityService
+    ILogger<SupabaseIdentityClient> logger,
+    Func<TimeSpan, CancellationToken, Task>? retryDelay = null,
+    Func<int>? retryJitterMilliseconds = null) : IExternalIdentityProvider, IExternalAccountSecurityService
 {
     private readonly CloudOptions cloud = options.Value.Cloud;
     private readonly AuthOptions auth = options.Value.Auth;
+    private readonly Func<TimeSpan, CancellationToken, Task> delay =
+        retryDelay ?? Task.Delay;
+    private readonly Func<int> jitterMilliseconds =
+        retryJitterMilliseconds ?? (() => Random.Shared.Next(25, 101));
 
     public async Task<ExternalIdentityResult> AuthenticateAsync(AccountLoginRequest request, CancellationToken cancellationToken)
     {
@@ -31,23 +37,21 @@ public sealed class SupabaseIdentityClient(
         }
 
         var signInEmail = ResolveSignInEmail(request.Account);
-        using var message = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"{supabaseUrl}/auth/v1/token?grant_type=password")
-        {
-            Content = JsonContent.Create(new
-            {
-                email = signInEmail,
-                password = request.Password
-            })
-        };
-        message.Headers.TryAddWithoutValidation("apikey", publishableKey);
-        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", publishableKey);
-
-        using var response = await SendAsync(
-            message,
+        logger.LogInformation(
+            "Supabase login step ConfigPreflight Host={Host} OrganizationId={OrganizationId}.",
+            Uri.TryCreate(supabaseUrl, UriKind.Absolute, out var configuredUri)
+                ? configuredUri.Host
+                : "<invalid>",
+            cloud.OrganizationId);
+        using var response = await SendAuthenticationRequestWithRetryAsync(
+            () => CreatePasswordGrantMessage(
+                supabaseUrl,
+                publishableKey,
+                signInEmail,
+                request.Password),
             ErrorCodes.AuthProviderUnavailable,
             "Không thể kết nối Supabase Auth.",
+            "LocalServerAuth",
             cancellationToken);
 
         if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized)
@@ -151,22 +155,15 @@ public sealed class SupabaseIdentityClient(
         }
 
         var signInEmail = ResolveSignInEmail(request.Account);
-        using var signInMessage = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"{supabaseUrl}/auth/v1/token?grant_type=password")
-        {
-            Content = JsonContent.Create(new
-            {
-                email = signInEmail,
-                password = request.CurrentPassword
-            })
-        };
-        AddSupabaseHeaders(signInMessage, publishableKey, publishableKey);
-
-        using var signInResponse = await SendAsync(
-            signInMessage,
+        using var signInResponse = await SendAuthenticationRequestWithRetryAsync(
+            () => CreatePasswordGrantMessage(
+                supabaseUrl,
+                publishableKey,
+                signInEmail,
+                request.CurrentPassword),
             ErrorCodes.AuthProviderUnavailable,
             "Không thể kết nối Supabase Auth để xác nhận mật khẩu hiện tại.",
+            "LocalServerAuth",
             cancellationToken);
 
         if (signInResponse.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized)
@@ -356,6 +353,37 @@ public sealed class SupabaseIdentityClient(
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
     }
 
+    private static HttpRequestMessage CreatePasswordGrantMessage(
+        string supabaseUrl,
+        string publishableKey,
+        string email,
+        string password)
+    {
+        var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{supabaseUrl}/auth/v1/token?grant_type=password")
+        {
+            Content = JsonContent.Create(new { email, password })
+        };
+        AddSupabaseHeaders(message, publishableKey, publishableKey);
+        return message;
+    }
+
+    private HttpRequestMessage CreateProfileRequest(
+        string supabaseUrl,
+        string publishableKey,
+        string accessToken,
+        string encodedProviderUserId)
+    {
+        var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{supabaseUrl}/rest/v1/profiles?select=id,organization_id,username,display_name,student_code,date_of_birth,must_change_password,role,is_active&id=eq.{encodedProviderUserId}&limit=2");
+        AddSupabaseHeaders(message, publishableKey, accessToken);
+        if (!string.IsNullOrWhiteSpace(cloud.Schema))
+            message.Headers.TryAddWithoutValidation("Accept-Profile", cloud.Schema);
+        return message;
+    }
+
     private async Task<ExternalApplicationProfile> GetProfileAsync(
         string supabaseUrl,
         string publishableKey,
@@ -364,18 +392,15 @@ public sealed class SupabaseIdentityClient(
         CancellationToken cancellationToken)
     {
         var encodedId = Uri.EscapeDataString(providerUserId);
-        using var message = new HttpRequestMessage(
-            HttpMethod.Get,
-            $"{supabaseUrl}/rest/v1/profiles?select=id,organization_id,username,display_name,student_code,date_of_birth,must_change_password,role,is_active&id=eq.{encodedId}&limit=2");
-        message.Headers.TryAddWithoutValidation("apikey", publishableKey);
-        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        if (!string.IsNullOrWhiteSpace(cloud.Schema))
-            message.Headers.TryAddWithoutValidation("Accept-Profile", cloud.Schema);
-
-        using var response = await SendAsync(
-            message,
+        using var response = await SendAuthenticationRequestWithRetryAsync(
+            () => CreateProfileRequest(
+                supabaseUrl,
+                publishableKey,
+                accessToken,
+                encodedId),
             ErrorCodes.ProfileLookupFailed,
             "Không thể tải hồ sơ ứng dụng từ Supabase.",
+            "LocalProfileValidation",
             cancellationToken);
 
         if (response.StatusCode == HttpStatusCode.Unauthorized)
@@ -474,6 +499,115 @@ public sealed class SupabaseIdentityClient(
             throw new ApiException(errorCode, errorMessage, 503);
         }
     }
+
+    private async Task<HttpResponseMessage> SendAuthenticationRequestWithRetryAsync(
+        Func<HttpRequestMessage> requestFactory,
+        string errorCode,
+        string errorMessage,
+        string step,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var message = requestFactory();
+            try
+            {
+                var response = await http.SendAsync(
+                    message,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
+                if (!IsTransientStatus(response.StatusCode))
+                    return response;
+
+                if (attempt == maxAttempts)
+                {
+                    response.Dispose();
+                    throw new ApiException(errorCode, errorMessage, 503);
+                }
+
+                var retryDelay = GetRetryDelay(response, attempt);
+                LogRetry(step, attempt, response.StatusCode);
+                response.Dispose();
+                await delay(retryDelay, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (TaskCanceledException) when (attempt < maxAttempts)
+            {
+                LogRetry(step, attempt, null);
+                await delay(GetRetryDelay(null, attempt), cancellationToken);
+            }
+            catch (HttpRequestException) when (attempt < maxAttempts)
+            {
+                LogRetry(step, attempt, null);
+                await delay(GetRetryDelay(null, attempt), cancellationToken);
+            }
+            catch (TaskCanceledException)
+            {
+                throw new ApiException(errorCode, errorMessage, 503);
+            }
+            catch (HttpRequestException)
+            {
+                throw new ApiException(errorCode, errorMessage, 503);
+            }
+        }
+
+        throw new ApiException(errorCode, errorMessage, 503);
+    }
+
+    private TimeSpan GetRetryDelay(HttpResponseMessage? response, int failedAttempt)
+    {
+        var retryAfter = response?.Headers.RetryAfter;
+        TimeSpan value;
+        if (retryAfter?.Delta is { } delta)
+        {
+            value = delta;
+        }
+        else if (retryAfter?.Date is { } date)
+        {
+            value = date - DateTimeOffset.UtcNow;
+        }
+        else
+        {
+            var baseMilliseconds = failedAttempt == 1 ? 250 : 750;
+            value = TimeSpan.FromMilliseconds(
+                baseMilliseconds + Math.Clamp(jitterMilliseconds(), 0, 100));
+        }
+
+        if (value < TimeSpan.Zero)
+            return TimeSpan.Zero;
+        return value > TimeSpan.FromSeconds(5)
+            ? TimeSpan.FromSeconds(5)
+            : value;
+    }
+
+    private void LogRetry(
+        string step,
+        int attempt,
+        HttpStatusCode? statusCode)
+    {
+        var host = Uri.TryCreate(cloud.SupabaseUrl, UriKind.Absolute, out var uri)
+            ? uri.Host
+            : "<missing>";
+        logger.LogWarning(
+            "Supabase auth retry Step={Step} Host={Host} OrganizationId={OrganizationId} HttpStatus={HttpStatus} Attempt={Attempt}.",
+            step,
+            host,
+            cloud.OrganizationId,
+            statusCode.HasValue ? (int)statusCode.Value : null,
+            attempt);
+    }
+
+    private static bool IsTransientStatus(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable
+            or HttpStatusCode.GatewayTimeout;
 
     private string ResolveSignInEmail(string account)
     {

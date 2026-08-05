@@ -802,8 +802,7 @@ public sealed class LanRoomJoinAndLifecycleTests
         var guard = File.ReadAllText(FindFile(
             "scripts",
             "installer-localserver-guard.ps1"));
-        var releaseEntry = File.ReadAllText(FindFile("build-release.ps1"));
-        var release = File.ReadAllText(FindFile("scripts", "build-release.ps1"));
+        var release = File.ReadAllText(FindFile("build-release.ps1"));
 
         Assert.Contains("ExecutablePath", guard, StringComparison.Ordinal);
         Assert.Contains("[StringComparison]::OrdinalIgnoreCase", guard, StringComparison.Ordinal);
@@ -812,7 +811,6 @@ public sealed class LanRoomJoinAndLifecycleTests
         Assert.Contains("PORT_CONFLICT_UDP_40550", guard, StringComparison.Ordinal);
         Assert.Contains("release-manifest.json", guard, StringComparison.Ordinal);
         Assert.Contains("Get-FileHash", guard, StringComparison.Ordinal);
-        Assert.Contains("scripts\\build-release.ps1", releaseEntry, StringComparison.Ordinal);
         Assert.Contains("ExamTransferBuildId", release, StringComparison.Ordinal);
         Assert.Contains("release-manifest.json", release, StringComparison.Ordinal);
         Assert.Contains("discoveryUdpPort  = 40550", release, StringComparison.Ordinal);
