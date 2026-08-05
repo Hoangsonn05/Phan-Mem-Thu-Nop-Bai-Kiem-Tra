@@ -562,6 +562,8 @@
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="ToolTip" Value="{Binding UnavailableMessage}" />
+        <Setter Property="AutomationProperties.HelpText" Value="{Binding UnavailableMessage}" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ListBoxItem">
@@ -603,6 +605,10 @@
                                     Value="{DynamicResource SidebarActiveIndicatorBrush}" />
                             <Setter TargetName="ItemRoot" Property="BorderThickness" Value="1" />
                         </Trigger>
+                        <DataTrigger Binding="{Binding IsAvailable}" Value="False">
+                            <Setter Property="Opacity" Value="0.46" />
+                            <Setter Property="Cursor" Value="Arrow" />
+                        </DataTrigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>

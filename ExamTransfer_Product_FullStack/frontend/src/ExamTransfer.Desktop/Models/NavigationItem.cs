@@ -6,7 +6,9 @@ public sealed record NavigationItem(
     string Group,
     string Description,
     string Glyph,
-    string? Badge = null);
+    string? Badge = null,
+    bool IsAvailable = true,
+    string? UnavailableMessage = null);
 
 public enum AppMode
 {

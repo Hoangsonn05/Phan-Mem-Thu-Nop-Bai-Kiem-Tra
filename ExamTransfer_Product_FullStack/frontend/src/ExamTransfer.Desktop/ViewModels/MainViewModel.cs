@@ -10,6 +10,8 @@ namespace ExamTransfer.Desktop.ViewModels;
 
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
+    internal const string UnavailableFeatureMessage = "Tính năng đang phát triển";
+
     private readonly IBackendClient api;
     private readonly AppAuthSessionState authState;
     private readonly StudentRealtimeNotificationRouter studentRealtimeRouter;
@@ -104,8 +106,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            if (Set(ref selected, value) && value is not null)
-                NavigateSafely(value);
+            if (!TryResolveSelection(selected, value, out var accepted))
+            {
+                AppServices.Notifications.Publish(CreateUnavailableNotification(value!));
+                Raise(nameof(Selected));
+                return;
+            }
+
+            if (Set(ref selected, accepted) && accepted is not null)
+                NavigateSafely(accepted);
         }
     }
 
@@ -596,6 +605,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (isNavigating) return;
 
+        if (!item.IsAvailable)
+        {
+            AppServices.Notifications.Publish(CreateUnavailableNotification(item));
+            return;
+        }
+
         if (item.Key is "S-05" or "S-06"
             && !CanEnterExamDelivery(item.Key))
         {
@@ -633,6 +648,31 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         RaisePageProperties();
     }
+
+    internal static bool TryResolveSelection(
+        NavigationItem? current,
+        NavigationItem? requested,
+        out NavigationItem? accepted)
+    {
+        if (requested is { IsAvailable: false })
+        {
+            accepted = current;
+            return false;
+        }
+
+        accepted = requested;
+        return true;
+    }
+
+    internal static NotificationItem CreateUnavailableNotification(NavigationItem item) =>
+        new(
+            $"navigation-unavailable:{item.Key}:{Guid.NewGuid():N}",
+            UnavailableFeatureMessage,
+            UnavailableFeatureMessage,
+            NotificationTone.Information,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(5),
+            AutoDismiss: true);
 
     private static bool CanEnterExamDelivery(string routeKey) => routeKey switch
     {
@@ -706,18 +746,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return dispatcher.InvokeAsync(action).Task;
     }
 
-    private static IReadOnlyList<NavigationItem> TeacherItems() =>
+    internal static IReadOnlyList<NavigationItem> TeacherItems() =>
         new NavigationItem[]
         {
             new("T-01", "Tổng quan", "Tổng quan", "Thống kê, cảnh báo và phiên đang vận hành", "\uE80F"),
-            new("T-02", "Lớp học", "Quản lý", "Lớp, học sinh, import CSV/Excel", "\uE716"),
+            new("T-02", "Lớp học", "Quản lý", "Lớp, học sinh, import CSV/Excel", "\uE716",
+                Badge: "Khóa", IsAvailable: false, UnavailableMessage: UnavailableFeatureMessage),
             new("T-05", "Bài kiểm tra", "Quản lý", "Đề thi, file đề, phiên bản và quy định", "\uE8A5"),
             new("T-08", "Phòng thi", "Vận hành", "Tạo, cấu hình và mở phòng thi", "\uE7BE"),
             new("T-10", "Phòng chờ", "Vận hành", "Duyệt học sinh và kiểm tra sẵn sàng", "\uE77B"),
             new("T-11", "Giám sát trực tiếp", "Vận hành", "Theo dõi realtime toàn bộ học sinh", "\uE9D2"),
             new("T-12", "Thu bài", "Kết quả", "Bài nộp, attempt, biên nhận và nộp lại", "\uE896"),
             new("T-14", "Xuất dữ liệu", "Kết quả", "ZIP, Excel/CSV, manifest và audit", "\uEDE1"),
-            new("T-15", "Chấm bài", "Nâng cao", "Điểm, rubric, nhận xét và trả kết quả", "\uE70B"),
+            new("T-15", "Chấm bài", "Nâng cao", "Điểm, rubric, nhận xét và trả kết quả", "\uE70B",
+                Badge: "Khóa", IsAvailable: false, UnavailableMessage: UnavailableFeatureMessage),
             new("T-17", "Kiểm soát thi", "Nâng cao", "Policy, agent, vi phạm và xử lý", "\uE72E"),
             new("T-18", "Lịch sử & Audit", "Hệ thống", "Lịch sử phiên và nhật ký bất biến", "\uE81C"),
             new("T-20", "Sao lưu", "Hệ thống", "Backup, checksum và khôi phục", "\uE753"),
