@@ -309,9 +309,10 @@ internal sealed class RecordingBackendClient(
     public int DashboardRequests { get; private set; }
     public DashboardSummaryDto? DashboardResponse { get; init; }
     public QuizAttemptDto? QuizAttemptResponse { get; init; }
+    public QuizImportResultDto? QuizImportResultResponse { get; set; }
     public ClassDetailDto? ClassDetailResponse { get; init; }
     public ExamSummaryDto? ExamSummaryResponse { get; init; }
-    public ExamDetailDto? ExamDetailResponse { get; init; }
+    public ExamDetailDto? ExamDetailResponse { get; set; }
     public ExamManifestDto? ExamManifestResponse { get; init; }
     public SessionDetailDto? SessionDetailResponse { get; set; }
     public ParticipantDto? ParticipantResponse { get; set; }
@@ -463,6 +464,9 @@ internal sealed class RecordingBackendClient(
         if (QuizAttemptResponse is not null && typeof(TResponse) == typeof(QuizAttemptDto))
             return Task.FromResult<ApiResponse<TResponse>?>(
                 ApiResponse<TResponse>.Ok((TResponse)(object)QuizAttemptResponse, "test"));
+        if (QuizImportResultResponse is not null && typeof(TResponse) == typeof(QuizImportResultDto))
+            return Task.FromResult<ApiResponse<TResponse>?>(
+                ApiResponse<TResponse>.Ok((TResponse)(object)QuizImportResultResponse, "test"));
         if (request is BulkArchiveRequest bulk && typeof(TResponse) == typeof(BulkArchiveResultDto))
         {
             var result = new BulkArchiveResultDto(

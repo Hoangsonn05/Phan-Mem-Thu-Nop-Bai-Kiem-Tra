@@ -407,8 +407,15 @@ public sealed class ExamManagementViewModel : ProductPageBase
         get => selectedExam;
         set
         {
+            var previousId = selectedExam?.Id;
             if (!Set(ref selectedExam, value))
                 return;
+            if (previousId != value?.Id)
+            {
+                currentHasCommittedQuizSource = false;
+                currentQuizQuestionCount = 0;
+                QuizImport.Clear();
+            }
             Raise(nameof(PublishHint));
             Raise(nameof(IsPolicyEditable));
             Raise(nameof(HasSelectedExam));
@@ -610,9 +617,14 @@ public sealed class ExamManagementViewModel : ProductPageBase
         DeliveryType = detail.DeliveryType;
         QuizResultPolicy = detail.QuizResultPolicy;
         SupervisionMode = detail.SupervisionMode;
+        QuizImport.SetCommitted(
+            detail.QuizSource,
+            detail.Version,
+            detail.QuizQuestionCount,
+            detail.QuizMaxScore,
+            detail.QuizQuestions);
         currentHasCommittedQuizSource = detail.QuizSource is not null;
         currentQuizQuestionCount = detail.QuizQuestionCount;
-        QuizImport.SetCommitted(detail.QuizSource, detail.QuizQuestionCount, detail.QuizMaxScore);
         currentAutoZip = detail.FileRule.AutoZip;
         currentRequireAtLeastOneFile = detail.FileRule.RequireAtLeastOneFile;
         currentLegacyClassId = detail.ClassId;
@@ -829,15 +841,42 @@ public sealed class ExamManagementViewModel : ProductPageBase
             $"api/v1/exams/{SelectedExam.Id}/quiz-import/commit",
             new(preview.PreviewToken, preview.WillReplaceExisting, currentExamRowVersion),
             ct));
+        QuizImport.SetCommitted(
+            committed.Source,
+            committed.Version,
+            committed.QuestionCount,
+            committed.MaxScore,
+            committed.Questions);
         currentHasCommittedQuizSource = committed.Source is not null;
         currentQuizQuestionCount = committed.QuestionCount;
         currentExamRowVersion = committed.ExamRowVersion;
-        QuizImport.SetCommitted(committed.Source, committed.QuestionCount, committed.MaxScore);
+        ReplaceSelectedExamSummaryAfterQuizCommit(committed);
         Raise(nameof(CanPublish));
         Raise(nameof(PublishHint));
         RaiseCommands();
-        await RefreshExamsCoreAsync(SelectedExam.Id, ct);
     });
+
+    private void ReplaceSelectedExamSummaryAfterQuizCommit(QuizImportResultDto committed)
+    {
+        var selected = SelectedExam;
+        if (selected is null)
+            return;
+        var index = Exams.IndexOf(selected);
+        if (index < 0)
+            return;
+
+        var replacement = new SelectableExamRow(selected.Source with
+        {
+            RowVersion = committed.ExamRowVersion,
+            HasCommittedQuizSource = committed.Source is not null,
+            QuizQuestionCount = committed.QuestionCount
+        });
+        selected.SelectionChanged -= ExamArchiveSelectionChanged;
+        replacement.SelectionChanged += ExamArchiveSelectionChanged;
+        Exams[index] = replacement;
+        SelectedExam = replacement;
+        OnExamArchiveSelectionChanged();
+    }
 
     private void EnterCreateMode(bool resetForm)
     {

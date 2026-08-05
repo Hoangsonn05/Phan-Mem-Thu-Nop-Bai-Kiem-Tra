@@ -63,6 +63,9 @@ public sealed class CoreWorkflowPersistenceTests
             teacherId,
             new(preview.PreviewToken, false, exam.RowVersion),
             CancellationToken.None);
+        Assert.Equal(2, committed.Questions.Count);
+        Assert.All(committed.Questions, question => Assert.NotEmpty(question.Choices));
+        Assert.All(committed.Questions, question => Assert.Contains(question.Choices, choice => choice.IsCorrect));
 
         database.Context.ChangeTracker.Clear();
         var reloaded = await services.Exams.GetAsync(exam.Id, CancellationToken.None);
@@ -70,6 +73,9 @@ public sealed class CoreWorkflowPersistenceTests
         Assert.Equal(10.00m, reloaded.QuizMaxScore);
         Assert.Equal("roundtrip.docx", reloaded.QuizSource?.FileName);
         Assert.Equal(committed.ExamRowVersion, reloaded.RowVersion);
+        Assert.Equal(2, reloaded.QuizQuestions.Count);
+        Assert.Equal(committed.Questions.Select(x => x.Id), reloaded.QuizQuestions.Select(x => x.Id));
+        Assert.All(reloaded.QuizQuestions, question => Assert.Contains(question.Choices, choice => choice.IsCorrect));
 
         var metadataUpdated = await services.Exams.UpdateAsync(
             exam.Id,
@@ -156,6 +162,88 @@ public sealed class CoreWorkflowPersistenceTests
         Assert.DoesNotContain(attempt.Questions, x => x.Text == staleQuestion.Text);
         Assert.All(attempt.Questions, question => Assert.NotEmpty(question.Choices));
         Assert.DoesNotContain("correct", JsonSerializer.Serialize(attempt), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ExamDetail_ReturnsOrderedCommittedAuthoringGraphAndNoStudentAnswerKey()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var rule = new FileRuleDto([".docx"], 1024, 2048, 1, false, false);
+        var exam = await services.Exams.CreateAsync(
+            new(
+                null,
+                "Authoritative quiz detail",
+                "Math",
+                null,
+                30,
+                rule,
+                ExamDeliveryType.MultipleChoice,
+                QuizResultPolicy.Hidden,
+                SupervisionMode.Standard),
+            CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        var empty = await services.Exams.GetAsync(exam.Id, CancellationToken.None);
+        Assert.Null(empty.QuizSource);
+        Assert.Empty(empty.QuizQuestions);
+        Assert.Equal(0, empty.QuizQuestionCount);
+
+        var source = new QuizImportSource
+        {
+            ExamId = exam.Id,
+            ExamVersion = exam.Version,
+            OriginalName = "authoritative.docx",
+            MimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            SizeBytes = 1024,
+            Sha256 = "authoritative-hash",
+            RelativePath = "authoritative.docx",
+            Status = "Committed",
+            CreatedBy = Guid.NewGuid(),
+            ImportedAtUtc = DateTimeOffset.UtcNow
+        };
+        var second = new QuizQuestion
+        {
+            ExamId = exam.Id,
+            Version = exam.Version,
+            Order = 2,
+            Text = "Câu hỏi Unicode số hai",
+            Points = 6.00m,
+            Multiple = true
+        };
+        second.Choices.Add(new QuizChoice { Order = 2, Text = "Lựa chọn sau", IsCorrect = false });
+        second.Choices.Add(new QuizChoice { Order = 1, Text = "Lựa chọn đúng", IsCorrect = true });
+        var first = new QuizQuestion
+        {
+            ExamId = exam.Id,
+            Version = exam.Version,
+            Order = 1,
+            Text = "Câu hỏi Unicode số một",
+            Points = 4.00m,
+            Multiple = false
+        };
+        first.Choices.Add(new QuizChoice { Order = 2, Text = "Sai", IsCorrect = false });
+        first.Choices.Add(new QuizChoice { Order = 1, Text = "Đúng", IsCorrect = true });
+        database.Context.AddRange(source, second, first);
+        await database.Context.SaveChangesAsync();
+
+        database.Context.ChangeTracker.Clear();
+        var detail = await services.Exams.GetAsync(exam.Id, CancellationToken.None);
+
+        Assert.Equal(2, detail.QuizQuestions.Count);
+        Assert.Equal([1, 2], detail.QuizQuestions.Select(x => x.Order));
+        Assert.Equal([4.00m, 6.00m], detail.QuizQuestions.Select(x => x.Points));
+        Assert.Equal(2, detail.QuizQuestionCount);
+        Assert.Equal(10.00m, detail.QuizMaxScore);
+        Assert.Equal("authoritative.docx", detail.QuizSource?.FileName);
+        Assert.Equal([1, 2], detail.QuizQuestions[0].Choices.Select(x => x.Order));
+        Assert.True(detail.QuizQuestions[0].Choices[0].IsCorrect);
+        Assert.Equal("Câu hỏi Unicode số hai", detail.QuizQuestions[1].Text);
+
+        Assert.DoesNotContain(typeof(QuizQuestionDto).GetProperties(), property =>
+            property.Name.Contains("Correct", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(typeof(QuizChoiceDto).GetProperties(), property =>
+            property.Name.Contains("Correct", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

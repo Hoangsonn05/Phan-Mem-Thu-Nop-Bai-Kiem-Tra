@@ -236,13 +236,19 @@ public sealed class QuizService(
                              Path.GetFullPath(committedPath),
                              StringComparison.OrdinalIgnoreCase)))
                 TryDelete(oldLocalPath, "file nguồn trắc nghiệm cũ");
-            return new(
+            return new QuizImportResultDto(
                 persisted.ExamId,
                 persisted.Version,
                 persisted.Questions.Count,
                 persisted.Questions.Sum(x => x.Points),
                 persisted.Source,
-                persisted.ExamRowVersion);
+                persisted.ExamRowVersion)
+            {
+                Questions = persisted.Questions
+                    .OrderBy(x => x.Order)
+                    .Select(ToAuthoringQuestionDto)
+                    .ToList()
+            };
         }
         catch
         {
@@ -586,12 +592,28 @@ public sealed class QuizService(
         }
     }
 
-    private static IReadOnlyList<QuizQuestionDto> PreviewQuestions(QuizImportDocument document) =>
+    private static QuizAuthoringQuestionDto ToAuthoringQuestionDto(QuizQuestion question) =>
+        new(
+            question.Id,
+            question.Text,
+            question.Order,
+            question.Points,
+            question.Multiple,
+            question.Choices
+                .OrderBy(x => x.Order)
+                .Select(x => new QuizAuthoringChoiceDto(x.Id, x.Text, x.Order, x.IsCorrect))
+                .ToList());
+
+    private static IReadOnlyList<QuizAuthoringQuestionDto> PreviewQuestions(QuizImportDocument document) =>
         document.Questions.Select((question, questionIndex) =>
         {
             var choices = question.Choices.Select((text, choiceIndex) =>
-                new QuizChoiceDto(Guid.NewGuid(), text, choiceIndex + 1)).ToList();
-            return new QuizQuestionDto(Guid.NewGuid(), question.Text, questionIndex + 1,
+                new QuizAuthoringChoiceDto(
+                    Guid.NewGuid(),
+                    text,
+                    choiceIndex + 1,
+                    question.CorrectChoiceIndexes.Contains(choiceIndex))).ToList();
+            return new QuizAuthoringQuestionDto(Guid.NewGuid(), question.Text, questionIndex + 1,
                 question.Points, question.Multiple, choices);
         }).ToList();
 

@@ -116,6 +116,23 @@ public sealed class ExamManagementViewModelTests
     [Fact]
     public void QuizImport_CommittedStateReplacesPreviewWithAuthoritativeSummary()
     {
+        var previewQuestions = new[]
+        {
+            new QuizAuthoringQuestionDto(
+                Guid.NewGuid(),
+                "Preview question 1",
+                1,
+                4.00m,
+                false,
+                [new QuizAuthoringChoiceDto(Guid.NewGuid(), "Choice A", 1, true)]),
+            new QuizAuthoringQuestionDto(
+                Guid.NewGuid(),
+                "Preview question 2",
+                2,
+                6.00m,
+                false,
+                [new QuizAuthoringChoiceDto(Guid.NewGuid(), "Choice B", 1, true)])
+        };
         var state = new QuizImportViewState
         {
             SelectedFileName = "C:\\temporary\\preview.docx",
@@ -124,9 +141,9 @@ public sealed class ExamManagementViewModelTests
                 "preview.docx",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "preview-hash",
-                50,
+                2,
                 10.00m,
-                [],
+                previewQuestions,
                 [],
                 [],
                 DateTimeOffset.UtcNow.AddMinutes(20),
@@ -141,17 +158,42 @@ public sealed class ExamManagementViewModelTests
             3,
             "Committed",
             DateTimeOffset.UtcNow);
+        var committedQuestions = new[]
+        {
+            new QuizAuthoringQuestionDto(
+                Guid.NewGuid(),
+                "Committed question 1",
+                1,
+                4.00m,
+                false,
+                [
+                    new QuizAuthoringChoiceDto(Guid.NewGuid(), "Correct", 1, true),
+                    new QuizAuthoringChoiceDto(Guid.NewGuid(), "Wrong", 2, false)
+                ]),
+            new QuizAuthoringQuestionDto(
+                Guid.NewGuid(),
+                "Committed question 2",
+                2,
+                6.00m,
+                false,
+                [new QuizAuthoringChoiceDto(Guid.NewGuid(), "Answer", 1, true)])
+        };
 
-        state.SetCommitted(source, 50, 10.00m);
+        state.SetCommitted(source, 3, 2, 10.00m, committedQuestions);
 
         Assert.False(state.HasPreview);
         Assert.Equal(string.Empty, state.SelectedFileName);
         Assert.True(state.HasCommittedSource);
         Assert.Equal(source, state.CommittedSource);
-        Assert.Equal(50, state.CommittedQuestionCount);
+        Assert.Equal(2, state.CommittedQuestionCount);
         Assert.Equal(10.00m, state.CommittedMaxScore);
+        Assert.Equal(2, state.Questions.Count);
+        Assert.Equal("Committed question 1", state.Questions[0].Text);
+        Assert.True(state.Questions[0].Choices[0].IsCorrect);
+        Assert.Empty(state.PreviewQuestions);
+        Assert.Equal(2, state.CommittedQuestions.Count);
         Assert.Contains("committed.docx", state.Summary, StringComparison.Ordinal);
-        Assert.Contains("50", state.Summary, StringComparison.Ordinal);
+        Assert.Contains("2", state.Summary, StringComparison.Ordinal);
         Assert.DoesNotContain("Chưa có bản xem trước", state.Summary, StringComparison.Ordinal);
     }
 
@@ -182,7 +224,24 @@ public sealed class ExamManagementViewModelTests
             QuizResultPolicy.Hidden,
             SupervisionMode.Standard,
             true,
-            50);
+            2);
+        var committedQuestions = new[]
+        {
+            new QuizAuthoringQuestionDto(
+                Guid.NewGuid(),
+                "Persisted question 1",
+                1,
+                4.00m,
+                false,
+                [new QuizAuthoringChoiceDto(Guid.NewGuid(), "Đúng", 1, true)]),
+            new QuizAuthoringQuestionDto(
+                Guid.NewGuid(),
+                "Persisted question 2",
+                2,
+                6.00m,
+                false,
+                [new QuizAuthoringChoiceDto(Guid.NewGuid(), "Sai", 1, false)])
+        };
         var detail = new ExamDetailDto(
             examId,
             null,
@@ -199,8 +258,11 @@ public sealed class ExamManagementViewModelTests
             summary.QuizResultPolicy,
             summary.SupervisionMode,
             source,
-            50,
-            10.00m);
+            2,
+            10.00m)
+        {
+            QuizQuestions = committedQuestions
+        };
         var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
         {
             ExamResponses = [summary],
@@ -213,13 +275,16 @@ public sealed class ExamManagementViewModelTests
 
         Assert.True(viewModel.QuizImport.HasCommittedSource);
         Assert.Contains("persisted.docx", viewModel.QuizImport.Summary, StringComparison.Ordinal);
+        Assert.Equal(2, viewModel.QuizImport.Questions.Count);
+        Assert.Equal("Persisted question 1", viewModel.QuizImport.Questions[0].Text);
         Assert.True(viewModel.CanPublish);
 
         viewModel.RefreshCommand.Execute(null);
         Assert.True(SpinWait.SpinUntil(() => !viewModel.IsBusy, TimeSpan.FromSeconds(2)));
         Assert.True(viewModel.QuizImport.HasCommittedSource);
-        Assert.Equal(50, viewModel.QuizImport.CommittedQuestionCount);
+        Assert.Equal(2, viewModel.QuizImport.CommittedQuestionCount);
         Assert.Equal(10.00m, viewModel.QuizImport.CommittedMaxScore);
+        Assert.Equal(2, viewModel.QuizImport.Questions.Count);
 
         viewModel.Title = "Quiz metadata updated";
         viewModel.SaveCommand.Execute(null);
@@ -230,7 +295,122 @@ public sealed class ExamManagementViewModelTests
         Assert.Equal(ExamDeliveryType.MultipleChoice, request.DeliveryType);
         Assert.Equal("quiz-row-version", request.RowVersion);
         Assert.True(viewModel.QuizImport.HasCommittedSource);
-        Assert.Equal(50, viewModel.QuizImport.CommittedQuestionCount);
+        Assert.Equal(2, viewModel.QuizImport.CommittedQuestionCount);
+    }
+
+    [Fact]
+    public async Task QuizImport_CommitFailureKeepsPreviewQuestions()
+    {
+        var summary = MakeExamSummary(
+            Guid.NewGuid(),
+            "Commit failure",
+            deliveryType: ExamDeliveryType.MultipleChoice);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [summary],
+            ExamDetailResponse = QuizDetail(summary, null, [])
+        };
+        using var viewModel = new ExamManagementViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+        viewModel.SelectedExam = viewModel.Exams.Single();
+        await viewModel.LoadSelectedExamAsync();
+        viewModel.QuizImport.Preview = Preview([AuthoringQuestion("Unsaved preview", 1, 10.00m)]);
+
+        viewModel.CommitQuizCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => api.PostPaths.Contains($"api/v1/exams/{summary.Id}/quiz-import/commit") && !viewModel.IsBusy,
+            TimeSpan.FromSeconds(2)));
+
+        Assert.True(viewModel.QuizImport.HasPreview);
+        Assert.False(viewModel.QuizImport.HasCommittedSource);
+        Assert.Single(viewModel.QuizImport.Questions);
+        Assert.Equal("Unsaved preview", viewModel.QuizImport.Questions[0].Text);
+        Assert.Equal("danger", viewModel.StatusTone);
+    }
+
+    [Fact]
+    public async Task QuizImport_CommitSuccessUsesAuthoritativeGraphBeforeRefresh()
+    {
+        var questions = new[]
+        {
+            AuthoringQuestion("Committed first", 1, 4.00m),
+            AuthoringQuestion("Committed second", 2, 6.00m)
+        };
+        var source = QuizSource("committed.docx", 1);
+        var summary = MakeExamSummary(
+            Guid.NewGuid(),
+            "Commit success",
+            deliveryType: ExamDeliveryType.MultipleChoice,
+            hasCommittedQuizSource: true,
+            quizQuestionCount: 2);
+        var detail = QuizDetail(summary, source, questions);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [summary],
+            ExamDetailResponse = detail,
+            QuizImportResultResponse = new QuizImportResultDto(
+                summary.Id,
+                summary.Version,
+                2,
+                10.00m,
+                source,
+                summary.RowVersion)
+            {
+                Questions = questions
+            }
+        };
+        using var viewModel = new ExamManagementViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+        viewModel.SelectedExam = viewModel.Exams.Single();
+        await viewModel.LoadSelectedExamAsync();
+        viewModel.QuizImport.Preview = Preview(
+            [AuthoringQuestion("Temporary first", 1, 4.00m), AuthoringQuestion("Temporary second", 2, 6.00m)]);
+
+        viewModel.CommitQuizCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => api.PostPaths.Contains($"api/v1/exams/{summary.Id}/quiz-import/commit") && !viewModel.IsBusy,
+            TimeSpan.FromSeconds(2)));
+
+        Assert.False(viewModel.QuizImport.HasPreview);
+        Assert.Equal(questions.Select(x => x.Id), viewModel.QuizImport.Questions.Select(x => x.Id));
+        Assert.Equal("Committed first", viewModel.QuizImport.Questions[0].Text);
+        Assert.True(viewModel.QuizImport.Questions[0].Choices[0].IsCorrect);
+        Assert.Equal(2, viewModel.SelectedExam?.QuizQuestionCount);
+    }
+
+    [Fact]
+    public async Task QuizImport_SelectingAnotherExamClearsOldGraphBeforeApplyingNewDetail()
+    {
+        var first = MakeExamSummary(
+            Guid.NewGuid(),
+            "Quiz A",
+            ExamDeliveryType.MultipleChoice,
+            hasCommittedQuizSource: true,
+            quizQuestionCount: 1);
+        var second = MakeExamSummary(
+            Guid.NewGuid(),
+            "Quiz B",
+            ExamDeliveryType.MultipleChoice,
+            hasCommittedQuizSource: true,
+            quizQuestionCount: 1);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [first, second],
+            ExamDetailResponse = QuizDetail(first, QuizSource("a.docx", 1), [AuthoringQuestion("Question A", 1, 10.00m)])
+        };
+        using var viewModel = new ExamManagementViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+        viewModel.SelectedExam = viewModel.Exams.Single(x => x.Id == first.Id);
+        await viewModel.LoadSelectedExamAsync();
+        Assert.Equal("Question A", Assert.Single(viewModel.QuizImport.Questions).Text);
+
+        api.ExamDetailResponse = QuizDetail(second, QuizSource("b.docx", 1), [AuthoringQuestion("Question B", 1, 10.00m)]);
+        viewModel.SelectedExam = viewModel.Exams.Single(x => x.Id == second.Id);
+        Assert.Empty(viewModel.QuizImport.Questions);
+        await viewModel.LoadSelectedExamAsync();
+
+        Assert.Equal("Question B", Assert.Single(viewModel.QuizImport.Questions).Text);
+        Assert.DoesNotContain(viewModel.QuizImport.Questions, question => question.Text == "Question A");
     }
 
     [Fact]
@@ -448,6 +628,69 @@ public sealed class ExamManagementViewModelTests
         HasCommittedQuizSource: hasCommittedQuizSource,
         QuizQuestionCount: quizQuestionCount);
 
+    private static QuizImportPreviewDto Preview(IReadOnlyList<QuizAuthoringQuestionDto> questions) =>
+        new(
+            "preview-token",
+            "preview.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "preview-hash",
+            questions.Count,
+            questions.Sum(x => x.Points),
+            questions,
+            [],
+            [],
+            DateTimeOffset.UtcNow.AddMinutes(20),
+            false);
+
+    private static QuizImportSourceDto QuizSource(string fileName, int examVersion) =>
+        new(
+            Guid.NewGuid(),
+            fileName,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            1024,
+            "source-hash-" + fileName,
+            examVersion,
+            "Committed",
+            DateTimeOffset.UtcNow);
+
+    private static QuizAuthoringQuestionDto AuthoringQuestion(string text, int order, decimal points) =>
+        new(
+            Guid.NewGuid(),
+            text,
+            order,
+            points,
+            false,
+            [
+                new QuizAuthoringChoiceDto(Guid.NewGuid(), "Correct", 1, true),
+                new QuizAuthoringChoiceDto(Guid.NewGuid(), "Wrong", 2, false)
+            ]);
+
+    private static ExamDetailDto QuizDetail(
+        ExamSummaryDto summary,
+        QuizImportSourceDto? source,
+        IReadOnlyList<QuizAuthoringQuestionDto> questions) =>
+        new(
+            summary.Id,
+            summary.ClassId,
+            summary.Title,
+            summary.Subject,
+            null,
+            summary.DurationMinutes,
+            summary.DeliveryType,
+            summary.Status,
+            summary.Version,
+            new FileRuleDto([".docx"], 1024, 2048, 1, false, false),
+            [],
+            summary.RowVersion,
+            summary.QuizResultPolicy,
+            summary.SupervisionMode,
+            source,
+            questions.Count,
+            questions.Sum(x => x.Points))
+        {
+            QuizQuestions = questions
+        };
+
     private static string FindExamManagementView()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
@@ -465,5 +708,25 @@ public sealed class ExamManagementViewModelTests
             current = current.Parent;
         }
         throw new FileNotFoundException("Không tìm thấy ExamManagementView.xaml.");
+    }
+
+    [Fact]
+    public void QuizImport_MetadataMismatchKeepsPreviewAndRejectsFalseCommittedState()
+    {
+        var previewQuestion = AuthoringQuestion("Preview remains", 1, 10.00m);
+        var state = new QuizImportViewState
+        {
+            Preview = Preview([previewQuestion])
+        };
+        var source = QuizSource("committed.docx", 1);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            state.SetCommitted(source, 1, 2, 10.00m, [previewQuestion]));
+
+        Assert.Contains("2", error.Message, StringComparison.Ordinal);
+        Assert.True(state.HasPreview);
+        Assert.False(state.HasCommittedSource);
+        Assert.Single(state.Questions);
+        Assert.Equal("Preview remains", state.Questions[0].Text);
     }
 }

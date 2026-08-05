@@ -83,7 +83,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         var exam = await db.ExamsSet.AsNoTracking()
             .Include(x => x.Files)
             .Include(x => x.QuizImportSources)
-            .Include(x => x.QuizQuestions)
+            .Include(x => x.QuizQuestions).ThenInclude(x => x.Choices)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
         return ToDetail(exam);
@@ -119,7 +119,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         {
             Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
             var policy = ValidateExamPolicy(request.DeliveryType, request.QuizResultPolicy, request.SupervisionMode);
-            var exam = await db.ExamsSet.Include(x => x.Files).Include(x => x.QuizQuestions).Include(x => x.QuizImportSources).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
+            var exam = await db.ExamsSet.Include(x => x.Files).Include(x => x.QuizQuestions).ThenInclude(x => x.Choices).Include(x => x.QuizImportSources).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
             EnsureRowVersion(exam.RowVersion, request.RowVersion);
             if (exam.Status == ExamStatus.Archived) throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể sửa bài kiểm tra đã lưu trữ.", 409);
@@ -806,12 +806,32 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             .Select(x => new QuizImportSourceDto(x.Id, x.OriginalName, x.MimeType, x.SizeBytes,
                 x.Sha256, x.ExamVersion, x.Status, x.ImportedAtUtc))
             .FirstOrDefault();
+        var questions = source is null
+            ? []
+            : exam.QuizQuestions
+                .Where(x => x.Version == exam.Version)
+                .OrderBy(x => x.Order)
+                .Select(ToAuthoringQuestionDto)
+                .ToList();
         return exam.ToDetail(
             exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).Select(ToFileDto).ToList(),
             source,
             exam.QuizQuestions.Count(x => x.Version == exam.Version),
-            exam.QuizQuestions.Where(x => x.Version == exam.Version).Sum(x => x.Points));
+            exam.QuizQuestions.Where(x => x.Version == exam.Version).Sum(x => x.Points),
+            questions);
     }
+
+    private static QuizAuthoringQuestionDto ToAuthoringQuestionDto(QuizQuestion question) =>
+        new(
+            question.Id,
+            question.Text,
+            question.Order,
+            question.Points,
+            question.Multiple,
+            question.Choices
+                .OrderBy(x => x.Order)
+                .Select(x => new QuizAuthoringChoiceDto(x.Id, x.Text, x.Order, x.IsCorrect))
+                .ToList());
 
     private static bool HasValidCurrentQuizGraph(Exam exam)
     {

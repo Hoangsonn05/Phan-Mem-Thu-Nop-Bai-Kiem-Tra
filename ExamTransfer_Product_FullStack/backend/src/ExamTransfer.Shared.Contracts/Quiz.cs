@@ -7,7 +7,10 @@ public sealed record QuizImportResultDto(
     int QuestionCount,
     decimal MaxScore,
     QuizImportSourceDto? Source = null,
-    string ExamRowVersion = "");
+    string ExamRowVersion = "")
+{
+    public IReadOnlyList<QuizAuthoringQuestionDto> Questions { get; init; } = [];
+}
 public sealed record QuizImportPreviewRequest(string FileName, string Base64Content);
 public sealed record QuizImportCommitRequest(string PreviewToken, bool ConfirmReplace, string ExamRowVersion);
 public sealed record QuizImportIssueDto(int? QuestionNumber, int? LineNumber, string Code, string Message);
@@ -18,7 +21,7 @@ public sealed record QuizImportPreviewDto(
     string Sha256,
     int QuestionCount,
     decimal MaxScore,
-    IReadOnlyList<QuizQuestionDto> Questions,
+    IReadOnlyList<QuizAuthoringQuestionDto> Questions,
     IReadOnlyList<QuizImportIssueDto> Warnings,
     IReadOnlyList<QuizImportIssueDto> Errors,
     DateTimeOffset ExpiresAtUtc,
@@ -32,6 +35,8 @@ public sealed record QuizImportSourceDto(
     int ExamVersion,
     string Status,
     DateTimeOffset ImportedAtUtc);
+public sealed record QuizAuthoringChoiceDto(Guid Id, string Text, int Order, bool IsCorrect);
+public sealed record QuizAuthoringQuestionDto(Guid Id, string Text, int Order, decimal Points, bool Multiple, IReadOnlyList<QuizAuthoringChoiceDto> Choices);
 public sealed record QuizChoiceDto(Guid Id, string Text, int Order);
 public sealed record QuizQuestionDto(Guid Id, string Text, int Order, decimal Points, bool Multiple, IReadOnlyList<QuizChoiceDto> Choices);
 public sealed record QuizAttemptDto(Guid Id, Guid SessionId, Guid ParticipantId, QuizAttemptStatus Status, int ExamVersion, DateTimeOffset StartedAtUtc, DateTimeOffset DeadlineUtc, DateTimeOffset? FinalizedAtUtc, decimal? Score, decimal MaxScore, IReadOnlyList<QuizQuestionDto> Questions, IReadOnlyList<QuizAnswerDto> Answers, bool ScoreVisible = false, QuizResultPolicy ResultPolicy = QuizResultPolicy.Hidden);
