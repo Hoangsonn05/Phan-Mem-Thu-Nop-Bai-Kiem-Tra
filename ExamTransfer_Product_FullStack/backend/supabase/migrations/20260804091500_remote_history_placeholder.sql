@@ -1,0 +1,7 @@
+﻿-- Historical migration placeholder.
+--
+-- Migration 20260804091500 was already applied to the linked Supabase
+-- project by an earlier source version.
+--
+-- Its original SQL is intentionally not replayed here.
+-- This file keeps local and remote migration timestamps aligned.
