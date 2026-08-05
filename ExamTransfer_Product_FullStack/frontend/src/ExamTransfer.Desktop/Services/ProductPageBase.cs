@@ -112,7 +112,15 @@ public abstract class ProductPageBase : ObservableObject, IAsyncInitializable, I
 
     protected void ReportFailure(Exception exception)
     {
-        if (exception is ExamTransfer.Desktop.ViewModels.BackendApiException backend)
+        if (exception is ExamTransfer.Desktop.Infrastructure.PublicCloudApiException cloud)
+        {
+            var traceId = FrontendLogger.Log(cloud, GetType().Name);
+            var http = cloud.StatusCode.HasValue
+                ? $" / HTTP {(int)cloud.StatusCode.Value}"
+                : string.Empty;
+            Status = $"Không thể hoàn tất thao tác. (Mã lỗi: {cloud.Code}{http}; Mã tra cứu: {traceId})";
+        }
+        else if (exception is ExamTransfer.Desktop.ViewModels.BackendApiException backend)
         {
             var traceId = FrontendLogger.Log(backend, GetType().Name, backend.BackendTraceId);
             var http = backend.HttpStatusCode.HasValue ? $" / HTTP {backend.HttpStatusCode}" : string.Empty;

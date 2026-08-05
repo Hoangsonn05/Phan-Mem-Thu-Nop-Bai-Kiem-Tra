@@ -670,15 +670,23 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             File.Delete(partial);
             offset = 0;
         }
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new PublicCloudApiException(
+                "SIGNED_URL_DOWNLOAD_FAILED",
+                $"PublicCloud signed URL download failed ({(int)response.StatusCode}).",
+                response.StatusCode);
+        }
         await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken))
         await using (var output = new FileStream(partial, offset == 0 ? FileMode.Create : FileMode.Append,
                          FileAccess.Write, FileShare.None, 128 * 1024, true))
             await input.CopyToAsync(output, cancellationToken);
         if (new FileInfo(partial).Length != file.SizeBytes)
             throw new InvalidDataException("Downloaded exam size does not match metadata.");
-        await using var verify = File.OpenRead(partial);
-        var hash = Convert.ToHexString(await SHA256.HashDataAsync(verify, cancellationToken)).ToLowerInvariant();
+        string hash;
+        await using (var verify = File.OpenRead(partial))
+            hash = Convert.ToHexString(
+                await SHA256.HashDataAsync(verify, cancellationToken)).ToLowerInvariant();
         if (!hash.Equals(file.Sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Downloaded exam SHA-256 does not match metadata.");
         File.Move(partial, destinationPath, true);
@@ -1170,14 +1178,15 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         try
         {
             using var document = JsonDocument.Parse(detail);
-            foreach (var name in new[] { "code", "message" })
+            foreach (var name in new[] { "error", "code", "message" })
             {
                 if (document.RootElement.TryGetProperty(name, out var value)
-                    && value.ValueKind == JsonValueKind.String
-                    && !string.IsNullOrWhiteSpace(value.GetString()))
-                    return value.GetString()!.Length <= 80
-                        ? value.GetString()!
-                        : $"PUBLICCLOUD_HTTP_{(int)statusCode}";
+                    && value.ValueKind == JsonValueKind.String)
+                {
+                    var candidate = value.GetString();
+                    if (IsShortErrorCode(candidate))
+                        return candidate!;
+                }
             }
         }
         catch (JsonException)
@@ -1185,6 +1194,16 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         }
         return $"PUBLICCLOUD_HTTP_{(int)statusCode}";
     }
+
+    private static bool IsShortErrorCode(string? value) =>
+        !string.IsNullOrWhiteSpace(value)
+        && value.Length <= 80
+        && value.All(character =>
+            character is >= 'A' and <= 'Z'
+                or >= '0' and <= '9'
+                or '_'
+                or '-'
+                or '.');
 
     private sealed record OpenPublicJoinRpcResult(
         Guid SessionId,
