@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$Version,
@@ -14,7 +14,7 @@ $frontendProject = Join-Path $root 'frontend\src\ExamTransfer.Desktop\ExamTransf
 $backendSolution = Join-Path $root 'backend\ExamTransfer.sln'
 $backendProject = Join-Path $root 'backend\src\ExamTransfer.LocalServer\ExamTransfer.LocalServer.csproj'
 $frontendVerify = Join-Path $root 'frontend\scripts\verify-frontend.ps1'
-$installerScript = Join-Path $root 'installer\ExamTransfer-with-app-icon.iss'
+$installerScript = Join-Path $root 'installer\ExamTransfer.iss'
 $releaseRoot = Join-Path $root 'artifacts\release'
 $clientOutput = Join-Path $releaseRoot 'Client'
 $serverOutput = Join-Path $releaseRoot 'Server'
@@ -29,7 +29,7 @@ $installerCleanInstallTest = Join-Path $root 'scripts\test-installer-public-conf
 $installerMetadataHelper = Join-Path $root 'scripts\installer-version-metadata.ps1'
 $installerMetadataTests = Join-Path $root 'scripts\test-installer-version-metadata.ps1'
 $releaseArtifactValidator = Join-Path $root 'scripts\validate-release-artifacts.ps1'
-$appIcon = Join-Path $root 'installer\asset\ExamTransfer.ico'
+$appIcon = Join-Path $root 'installer\assets\ExamTransfer.ico'
 
 function Require-File([string]$Path) {
     if (-not (Test-Path $Path -PathType Leaf)) {
@@ -65,7 +65,10 @@ Require-File $installerMetadataHelper
 Require-File $installerMetadataTests
 Require-File $releaseArtifactValidator
 Require-File $appIcon
-if (-not [string]::Equals([IO.Path]::GetExtension($appIcon), '.ico', [StringComparison]::OrdinalIgnoreCase)) {
+if (-not [string]::Equals(
+        [IO.Path]::GetExtension($appIcon),
+        '.ico',
+        [StringComparison]::OrdinalIgnoreCase)) {
     throw "Application icon must be an .ico file: $appIcon"
 }
 . $publicConfigPackaging
@@ -268,7 +271,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "\n[7/8] Build installer..." -ForegroundColor Yellow
 $iscc = Find-InnoCompiler
-& $iscc "/DMyAppVersion=$Version" $installerScript
+& $iscc "/DMyAppVersion=$Version" "/DMyAppIcon=$appIcon" $installerScript
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 
 Require-File $installer

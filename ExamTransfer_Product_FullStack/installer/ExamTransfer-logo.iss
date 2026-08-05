@@ -1,4 +1,4 @@
-#ifndef MyAppVersion
+﻿#ifndef MyAppVersion
   #define MyAppVersion "1.2.0"
 #endif
 #ifndef MyAppId
@@ -17,7 +17,7 @@
   #define MyReleaseRoot "..\artifacts\release"
 #endif
 #ifndef MyAppIcon
-  #define MyAppIcon "asset\ExamTransfer.ico"
+  #define MyAppIcon "assets\ExamTransfer.ico"
 #endif
 #ifndef MyPrivilegesRequired
   #define MyPrivilegesRequired "admin"
