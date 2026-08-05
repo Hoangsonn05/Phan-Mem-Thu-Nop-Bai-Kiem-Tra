@@ -97,7 +97,7 @@
                             <DataGridTextColumn Header="TIÊU ĐỀ" Binding="{Binding Title}" Width="*" />
                             <DataGridTextColumn Header="MÔN" Binding="{Binding Subject}" Width="110" />
                             <DataGridTextColumn Header="PHÚT" Binding="{Binding DurationMinutes}" Width="65" />
-                            <DataGridTextColumn Header="FILE" Binding="{Binding FileCount}" Width="55" />
+                            <DataGridTextColumn Header="NỘI DUNG" Binding="{Binding ContentSummaryText}" Width="55" />
                             <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="100" />
                         </DataGrid.Columns>
                     </DataGrid>

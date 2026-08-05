@@ -1,3 +1,4 @@
+using System.IO;
 using ExamTransfer.Desktop.ViewModels;
 using ExamTransfer.Shared.Contracts;
 using Xunit;
@@ -6,6 +7,112 @@ namespace ExamTransfer.Desktop.Tests;
 
 public sealed class ExamManagementViewModelTests
 {
+    [Fact]
+    public void SelectableExamRow_FileSubmission_SummarizesFileCount()
+    {
+        var row = new SelectableExamRow(MakeExamSummary(
+            Guid.NewGuid(),
+            "File exam",
+            fileCount: 2));
+
+        Assert.Equal(ExamDeliveryType.FileSubmission, row.DeliveryType);
+        Assert.Equal(2, row.FileCount);
+        Assert.Equal("2 file", row.ContentSummaryText);
+    }
+
+    [Fact]
+    public void SelectableExamRow_CommittedMultipleChoice_SummarizesQuestionCountInsteadOfFiles()
+    {
+        var row = new SelectableExamRow(MakeExamSummary(
+            Guid.NewGuid(),
+            "Quiz exam",
+            deliveryType: ExamDeliveryType.MultipleChoice,
+            fileCount: 0,
+            hasCommittedQuizSource: true,
+            quizQuestionCount: 50));
+
+        Assert.Equal(ExamDeliveryType.MultipleChoice, row.DeliveryType);
+        Assert.Equal(0, row.FileCount);
+        Assert.True(row.HasCommittedQuizSource);
+        Assert.Equal(50, row.QuizQuestionCount);
+        Assert.Equal("50 câu", row.ContentSummaryText);
+    }
+
+    [Fact]
+    public void SelectableExamRow_EmptyMultipleChoice_SummarizesZeroQuestions()
+    {
+        var row = new SelectableExamRow(MakeExamSummary(
+            Guid.NewGuid(),
+            "Empty quiz",
+            deliveryType: ExamDeliveryType.MultipleChoice,
+            hasCommittedQuizSource: false,
+            quizQuestionCount: 0));
+
+        Assert.False(row.HasCommittedQuizSource);
+        Assert.Equal(0, row.QuizQuestionCount);
+        Assert.Equal("0 câu", row.ContentSummaryText);
+    }
+
+    [Fact]
+    public async Task RefreshExams_PreservesQuizContentSummary()
+    {
+        var summary = MakeExamSummary(
+            Guid.NewGuid(),
+            "Refresh quiz",
+            deliveryType: ExamDeliveryType.MultipleChoice,
+            hasCommittedQuizSource: true,
+            quizQuestionCount: 50);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [summary]
+        };
+        using var viewModel = new ExamManagementViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+        Assert.Equal("50 câu", Assert.Single(viewModel.Exams).ContentSummaryText);
+
+        viewModel.RefreshCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(() => !viewModel.IsBusy, TimeSpan.FromSeconds(2)));
+
+        Assert.Equal("50 câu", Assert.Single(viewModel.Exams).ContentSummaryText);
+    }
+
+    [Fact]
+    public void SelectableExamRow_PreservesIdentityArchiveAndSelectionBehavior()
+    {
+        var id = Guid.NewGuid();
+        var row = new SelectableExamRow(MakeExamSummary(id, "Selection exam"));
+        var selectionChanges = 0;
+        row.SelectionChanged += (_, _) => selectionChanges++;
+
+        row.IsChecked = true;
+
+        Assert.Equal(id, row.Id);
+        Assert.Equal("Selection exam", row.Title);
+        Assert.Equal(ExamStatus.Draft, row.Status);
+        Assert.True(row.CanArchive);
+        Assert.True(row.IsChecked);
+        Assert.Equal(1, selectionChanges);
+
+        var archived = new SelectableExamRow(MakeExamSummary(
+            Guid.NewGuid(),
+            "Archived exam",
+            status: ExamStatus.Archived));
+        archived.IsChecked = true;
+        Assert.False(archived.CanArchive);
+        Assert.False(archived.IsChecked);
+    }
+
+    [Fact]
+    public void ExamManagementView_UsesContentSummaryColumn()
+    {
+        var source = File.ReadAllText(FindExamManagementView());
+
+        Assert.Contains("Header=\"NỘI DUNG\"", source, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding ContentSummaryText}\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Header=\"FILE\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Binding=\"{Binding FileCount}\"", source, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void QuizImport_CommittedStateReplacesPreviewWithAuthoritativeSummary()
     {
@@ -320,15 +427,43 @@ public sealed class ExamManagementViewModelTests
         Assert.False(viewModel.BulkArchiveCommand.CanExecute(null));
     }
 
-    private static ExamSummaryDto MakeExamSummary(Guid id, string title) => new(
+    private static ExamSummaryDto MakeExamSummary(
+        Guid id,
+        string title,
+        ExamDeliveryType deliveryType = ExamDeliveryType.FileSubmission,
+        ExamStatus status = ExamStatus.Draft,
+        int fileCount = 0,
+        bool hasCommittedQuizSource = false,
+        int quizQuestionCount = 0) => new(
         id,
         null,
         title,
         "Math",
         45,
-        ExamDeliveryType.FileSubmission,
-        ExamStatus.Draft,
+        deliveryType,
+        status,
         1,
-        0,
-        "rv-" + id);
+        fileCount,
+        "rv-" + id,
+        HasCommittedQuizSource: hasCommittedQuizSource,
+        QuizQuestionCount: quizQuestionCount);
+
+    private static string FindExamManagementView()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            var candidate = Path.Combine(
+                current.FullName,
+                "frontend",
+                "src",
+                "ExamTransfer.Desktop",
+                "Views",
+                "ExamManagementView.xaml");
+            if (File.Exists(candidate))
+                return candidate;
+            current = current.Parent;
+        }
+        throw new FileNotFoundException("Không tìm thấy ExamManagementView.xaml.");
+    }
 }

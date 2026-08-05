@@ -48,6 +48,14 @@ public sealed class SelectableExamRow(ExamSummaryDto source)
     public ExamDeliveryType DeliveryType => Source.DeliveryType;
     public ExamStatus Status => Source.Status;
     public int FileCount => Source.FileCount;
+    public bool HasCommittedQuizSource => Source.HasCommittedQuizSource;
+    public int QuizQuestionCount => Source.QuizQuestionCount;
+    public string ContentSummaryText => DeliveryType switch
+    {
+        ExamDeliveryType.FileSubmission => $"{FileCount} file",
+        ExamDeliveryType.MultipleChoice => $"{QuizQuestionCount} câu",
+        _ => "—"
+    };
     public override bool CanArchive => Source.Status is not (ExamStatus.Archived or ExamStatus.Cancelled);
 }
 
