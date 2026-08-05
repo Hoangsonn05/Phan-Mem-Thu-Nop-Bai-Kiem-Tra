@@ -1503,6 +1503,21 @@ public sealed class SessionManagementViewModel : ProductPageBase
         RaiseCommands();
     }
 
+    protected override void ReportFailure(Exception exception)
+    {
+        if (exception is BackendApiException
+            {
+                ApiCode: ErrorCodes.PublicCloudQuizProjectionNotReady
+            })
+        {
+            Status = "Nội dung trắc nghiệm chưa đồng bộ xong. Hãy thử đồng bộ PublicCloud lại trước khi bắt đầu.";
+            StatusTone = "danger";
+            return;
+        }
+
+        base.ReportFailure(exception);
+    }
+
     protected override void RaiseCommands()
     {
         foreach (var command in new[] { RefreshCommand, CreateCommand, BulkArchiveCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand, RetryProjectionCommand, RecoverRoomCodeCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();

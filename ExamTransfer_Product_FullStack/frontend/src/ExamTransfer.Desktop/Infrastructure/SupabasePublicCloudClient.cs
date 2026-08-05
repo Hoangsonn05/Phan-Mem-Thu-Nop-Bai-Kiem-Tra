@@ -177,6 +177,7 @@ public sealed record SupabaseAuthenticatedAccount(
 
 public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
 {
+    internal const int MinimumSupportedCloudSchemaVersion = 29;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions NotificationJson = CreateNotificationJson();
     private readonly HttpClient http;
@@ -717,7 +718,7 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             "get_examtransfer_cloud_capabilities",
             new { },
             cancellationToken);
-        if (capabilities.SchemaVersion < 26
+        if (capabilities.SchemaVersion < MinimumSupportedCloudSchemaVersion
             || capabilities.CriticalRpcs is null
             || !capabilities.CriticalRpcs.Contains(
                 "get_public_student_notification_events",

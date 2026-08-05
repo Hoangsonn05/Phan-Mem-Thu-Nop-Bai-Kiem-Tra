@@ -271,6 +271,25 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
                 if (activeUploads && endRequest?.Force != true) throw new ApiException(ErrorCodes.Conflict, "Đang có bài nộp upload; cần force=true và lý do để kết thúc.", 409);
                 if (endRequest?.Force == true && string.IsNullOrWhiteSpace(endRequest.Reason)) throw new ApiException(ErrorCodes.ValidationFailed, "Kết thúc cưỡng bức phải có lý do.");
             }
+            if (target == SessionStatus.InProgress
+                && session.Status is (SessionStatus.Waiting or SessionStatus.Distributing)
+                && session.AccessMode == SessionAccessMode.PublicCloud
+                && session.DeliveryTypeSnapshot == ExamDeliveryType.MultipleChoice)
+            {
+                var readiness = await _cloudProjection.GetProjectionReadinessAsync(
+                    session.Id,
+                    cancellationToken);
+                if (!readiness.Ready)
+                    throw new ApiException(
+                        ErrorCodes.PublicCloudQuizProjectionNotReady,
+                        "Nội dung trắc nghiệm chưa đồng bộ xong. Hãy thử đồng bộ PublicCloud lại trước khi bắt đầu.",
+                        409,
+                        details: new
+                        {
+                            readiness.Code,
+                            readiness.Status
+                        });
+            }
             var before = session.Status;
             session.TransitionTo(target);
             await db.SaveChangesAsync(cancellationToken);

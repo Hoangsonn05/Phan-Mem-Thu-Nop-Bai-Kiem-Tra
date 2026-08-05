@@ -315,6 +315,7 @@ internal sealed class RecordingBackendClient(
     public ExamDetailDto? ExamDetailResponse { get; set; }
     public ExamManifestDto? ExamManifestResponse { get; init; }
     public SessionDetailDto? SessionDetailResponse { get; set; }
+    public ApiError? PostErrorResponse { get; set; }
     public ParticipantDto? ParticipantResponse { get; set; }
     public IReadOnlyList<ClassSummaryDto>? ClassResponses { get; init; }
     public IReadOnlyList<ExamSummaryDto>? ExamResponses { get; init; }
@@ -455,6 +456,9 @@ internal sealed class RecordingBackendClient(
     {
         PostPaths.Add(path);
         PostRequests.Add(request);
+        if (PostErrorResponse is not null)
+            return Task.FromResult<ApiResponse<TResponse>?>(
+                ApiResponse<TResponse>.Fail(PostErrorResponse, "backend-trace"));
         if (SessionDetailResponse is not null && typeof(TResponse) == typeof(SessionDetailDto))
             return Task.FromResult<ApiResponse<TResponse>?>(
                 ApiResponse<TResponse>.Ok((TResponse)(object)SessionDetailResponse, "test"));

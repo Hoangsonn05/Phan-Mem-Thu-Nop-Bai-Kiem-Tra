@@ -317,6 +317,64 @@ public sealed class SessionFirstOpenFrontendTests
     }
 
     [Fact]
+    public async Task PublicCloudQuizStartNotReady_ShowsFocusedRetryMessage()
+    {
+        var exam = new ExamSummaryDto(
+            Guid.NewGuid(),
+            null,
+            "Bài trắc nghiệm",
+            "Tin",
+            30,
+            ExamDeliveryType.MultipleChoice,
+            ExamStatus.Published,
+            1,
+            2,
+            "exam-rv");
+        var session = new SessionSummaryDto(
+            Guid.NewGuid(),
+            exam.Id,
+            exam.Title,
+            "QUIZSTART",
+            SessionStatus.Waiting,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null,
+            new(0, 0, 0, 0, 0, 0, 0),
+            1,
+            "session-rv",
+            SessionAccessMode.PublicCloud,
+            AdmissionMode: SessionAdmissionMode.OpenRequest);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [exam],
+            SessionResponses = [session],
+            PostErrorResponse = new(
+                ErrorCodes.PublicCloudQuizProjectionNotReady,
+                "backend detail must not replace the focused message")
+        };
+        api.ProjectionResponses.Enqueue(new(
+            session.Id,
+            true,
+            false,
+            SyncStatus.Pending,
+            "PUBLICCLOUD_QUIZ_PROJECTION_PENDING",
+            "Đang đồng bộ nội dung trắc nghiệm lên PublicCloud.",
+            0));
+        using var viewModel = new SessionManagementViewModel(api);
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        viewModel.StartCommand.Execute(null);
+
+        Assert.True(SpinWait.SpinUntil(
+            () => viewModel.Status.Contains(
+                "Nội dung trắc nghiệm chưa đồng bộ xong",
+                StringComparison.Ordinal),
+            TimeSpan.FromSeconds(2)));
+        Assert.Equal("danger", viewModel.StatusTone);
+    }
+
+    [Fact]
     public async Task ExamQuickCreate_DefaultsToNoClassAssignment()
     {
         var rule = new FileRuleDto([".pdf"], 1024, 2048, 1, false, true);

@@ -1,13 +1,13 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
-select plan(20);
+select plan(19);
 
--- 1. Schema version after the fix migration is 28.
+-- 1. Schema version includes the PublicCloud quiz runtime gate.
 select is(
   (select schema_version from public.examtransfer_cloud_meta where id = 1),
-  28,
-  'schema version is 28 after ET-PC-SUBMISSION-DOWNLOAD-R1 fix');
+  29,
+  'schema version is 29 after the PublicCloud quiz runtime gate');
 
 -- 2. The active function carries the correct 'Completed' assignment.
 select ok(
@@ -72,7 +72,7 @@ values
   ('b0000028-0000-0000-0000-000000000001', 'b0100028-0000-0000-0000-000000000001',
    'PC28 Teacher', 'Teacher', 'pc28-teacher', null, true, null),
   ('b0000028-0000-0000-0000-000000000002', 'b0100028-0000-0000-0000-000000000001',
-   'PC28 Student', 'Student', 'pc28-student', 'PC28-S1', true, '2008-01-01')
+   'PC28 Student', 'Student', 'PC28-S1', 'PC28-S1', true, '2008-01-01')
 on conflict (id) do nothing;
 
 -- Seed: class, exam, session.
@@ -116,6 +116,33 @@ values ('b0600028-0000-0000-0000-000000000001', 'b0100028-0000-0000-0000-0000000
         'b0400028-0000-0000-0000-000000000001', 'b0500028-0000-0000-0000-000000000001',
         1, 'Uploading', now() + interval '1 hour', false, true,
         'pc28-idempotency-1', 'PublicCloud', now(), now());
+
+-- Each PublicCloud attempt owns exactly one archive. Additional rows used by
+-- the failure/backfill assertions therefore use separate submissions.
+insert into public.submissions(
+  id, organization_id, session_id, participant_id, attempt_number, status, deadline_at,
+  is_late, is_official, idempotency_key, source_mode, created_at, updated_at)
+values
+  ('b0600028-0000-0000-0000-000000000002', 'b0100028-0000-0000-0000-000000000001',
+   'b0400028-0000-0000-0000-000000000001', 'b0500028-0000-0000-0000-000000000001',
+   2, 'Uploading', now() + interval '1 hour', false, false,
+   'pc28-idempotency-2', 'PublicCloud', now(), now()),
+  ('b0600028-0000-0000-0000-000000000003', 'b0100028-0000-0000-0000-000000000001',
+   'b0400028-0000-0000-0000-000000000001', 'b0500028-0000-0000-0000-000000000001',
+   3, 'Uploading', now() + interval '1 hour', false, false,
+   'pc28-idempotency-3', 'PublicCloud', now(), now()),
+  ('b0600028-0000-0000-0000-000000000004', 'b0100028-0000-0000-0000-000000000001',
+   'b0400028-0000-0000-0000-000000000001', 'b0500028-0000-0000-0000-000000000001',
+   4, 'Uploading', now() + interval '1 hour', false, false,
+   'pc28-idempotency-4', 'PublicCloud', now(), now()),
+  ('b0600028-0000-0000-0000-000000000005', 'b0100028-0000-0000-0000-000000000001',
+   'b0400028-0000-0000-0000-000000000001', 'b0500028-0000-0000-0000-000000000001',
+   5, 'Uploading', now() + interval '1 hour', false, false,
+   'pc28-idempotency-5', 'PublicCloud', now(), now()),
+  ('b0600028-0000-0000-0000-000000000006', 'b0100028-0000-0000-0000-000000000001',
+   'b0400028-0000-0000-0000-000000000001', 'b0500028-0000-0000-0000-000000000001',
+   6, 'Uploading', now() + interval '1 hour', false, false,
+   'pc28-idempotency-6', 'PublicCloud', now(), now());
 
 -- Seed: submission_file with a known SHA-256 and cloud_object_path.
 -- SHA-256 of the string "pc28-archive-content": we use a fixed valid hex string.
@@ -187,12 +214,12 @@ insert into public.submission_files(
 values (
   'b0700028-0000-0000-0000-000000000002',
   'b0100028-0000-0000-0000-000000000001',
-  'b0600028-0000-0000-0000-000000000001',
+  'b0600028-0000-0000-0000-000000000002',
   'submission2.zip',
   512,
   'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
   'application/zip',
-  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000001/b0700028-0000-0000-0000-000000000002.zip',
+  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000002/b0700028-0000-0000-0000-000000000002.zip',
   'Queued',
   'Pending',
   false,
@@ -201,14 +228,14 @@ values (
 
 -- Reset submission to Uploading so it can be found by the function.
 update public.submissions set status = 'Uploading'
-where id = 'b0600028-0000-0000-0000-000000000001';
+where id = 'b0600028-0000-0000-0000-000000000002';
 
 set local role service_role;
 select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 
 select throws_ok($$
   select public.verify_public_submission_archive(
-    'b0600028-0000-0000-0000-000000000001'::uuid,
+    'b0600028-0000-0000-0000-000000000002'::uuid,
     'b0700028-0000-0000-0000-000000000002'::uuid,
     '0000000000000000000000000000000000000000000000000000000000000000',
     512::bigint,
@@ -238,11 +265,11 @@ insert into public.submission_files(
 values (
   'b0800028-0000-0000-0000-000000000001',
   'b0100028-0000-0000-0000-000000000001',
-  'b0600028-0000-0000-0000-000000000001',
+  'b0600028-0000-0000-0000-000000000003',
   'old-verified.zip', 2048,
   'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
   'application/zip',
-  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000001/b0800028-0000-0000-0000-000000000001.zip',
+  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000003/b0800028-0000-0000-0000-000000000001.zip',
   'Verified', 'Synced', true, 'PublicCloud', 5, now(), now());
 
 -- Row B: PublicCloud + Verified + archive_signature_verified=false → must NOT change (not yet verified).
@@ -253,11 +280,11 @@ insert into public.submission_files(
 values (
   'b0800028-0000-0000-0000-000000000002',
   'b0100028-0000-0000-0000-000000000001',
-  'b0600028-0000-0000-0000-000000000001',
+  'b0600028-0000-0000-0000-000000000004',
   'unverified-verified.zip', 2048,
   'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
   'application/zip',
-  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000001/b0800028-0000-0000-0000-000000000002.zip',
+  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000004/b0800028-0000-0000-0000-000000000002.zip',
   'Verified', 'Synced', false, 'PublicCloud', 5, now(), now());
 
 -- Row C: PublicCloud + Queued (not Verified) → must NOT change.
@@ -268,11 +295,11 @@ insert into public.submission_files(
 values (
   'b0800028-0000-0000-0000-000000000003',
   'b0100028-0000-0000-0000-000000000001',
-  'b0600028-0000-0000-0000-000000000001',
+  'b0600028-0000-0000-0000-000000000005',
   'queued.zip', 2048,
   'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
   'application/zip',
-  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000001/b0800028-0000-0000-0000-000000000003.zip',
+  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000005/b0800028-0000-0000-0000-000000000003.zip',
   'Queued', 'Pending', false, 'PublicCloud', 5, now(), now());
 
 -- Row D: Already Completed → must NOT be re-stamped with a new cloud_version.
@@ -283,11 +310,11 @@ insert into public.submission_files(
 values (
   'b0800028-0000-0000-0000-000000000004',
   'b0100028-0000-0000-0000-000000000001',
-  'b0600028-0000-0000-0000-000000000001',
+  'b0600028-0000-0000-0000-000000000006',
   'already-completed.zip', 2048,
   'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
   'application/zip',
-  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000001/b0800028-0000-0000-0000-000000000004.zip',
+  'b0100028-0000-0000-0000-000000000001/public-submissions/b0000028-0000-0000-0000-000000000002/b0600028-0000-0000-0000-000000000006/b0800028-0000-0000-0000-000000000004.zip',
   'Completed', 'Synced', true, 'PublicCloud', 5, now(), now());
 
 -- Capture the cloud_version of Row D before the backfill.

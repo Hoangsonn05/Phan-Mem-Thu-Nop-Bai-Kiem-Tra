@@ -11,6 +11,11 @@ public sealed class PublicCloudProjectionExecution(
     AppDbContext db,
     ICloudSyncSignal? cloudSyncSignal = null)
 {
+    private const string ExamsEntityType = "exams";
+    private const string QuestionsEntityType = "quiz_questions";
+    private const string ChoicesEntityType = "quiz_choices";
+    private const string SessionsEntityType = "exam_sessions";
+    private const int SqliteIdBatchSize = 400;
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
 
@@ -18,12 +23,7 @@ public sealed class PublicCloudProjectionExecution(
         Guid id,
         CancellationToken cancellationToken)
     {
-        var session = await db.ExamSessionsSet
-            .AsNoTracking()
-            .Where(x => x.Id == id)
-            .Select(x => new { x.Id, x.AccessMode })
-            .FirstOrDefaultAsync(cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
+        var session = await LoadSessionScopeAsync(id, cancellationToken);
         if (session.AccessMode != SessionAccessMode.PublicCloud)
             return new(
                 id,
@@ -34,14 +34,144 @@ public sealed class PublicCloudProjectionExecution(
                 "Phiên LAN không cần PublicCloud projection.",
                 0);
 
-        var projectionItems = await db.SyncQueueSet
+        if (session.DeliveryType != ExamDeliveryType.MultipleChoice)
+            return await GetFileSubmissionReadinessAsync(id, cancellationToken);
+
+        var graph = await LoadQuizGraphAsync(session, cancellationToken);
+        if (graph.QuestionIds.Count == 0)
+            return new(
+                id,
+                true,
+                false,
+                SyncStatus.Pending,
+                ErrorCodes.QuizHasNoQuestions,
+                "Đề trắc nghiệm chưa có câu hỏi để đồng bộ lên PublicCloud.",
+                0);
+
+        var projection = await LoadQuizProjectionAsync(
+            session,
+            graph,
+            tracked: false,
+            cancellationToken);
+        if (projection.SessionItem is not null
+            && IsRoomCodeConflict(projection.SessionItem))
+            return RoomCodeConflictReadiness(id, projection.SessionItem);
+
+        var retryCount = projection.Items.Count == 0
+            ? 0
+            : projection.Items.Max(x => x.RetryCount);
+        if (projection.HasMissingRows)
+            return new(
+                id,
+                true,
+                false,
+                SyncStatus.Pending,
+                ErrorCodes.PublicCloudQuizProjectionNotReady,
+                "Đang đồng bộ nội dung trắc nghiệm lên PublicCloud.",
+                retryCount);
+
+        var failed = projection.Items.FirstOrDefault(
+            x => x.Status is SyncStatus.Failed or SyncStatus.Conflict);
+        if (failed is not null)
+            return new(
+                id,
+                true,
+                false,
+                failed.Status,
+                "PUBLICCLOUD_QUIZ_PROJECTION_FAILED",
+                "Đồng bộ nội dung trắc nghiệm thất bại. Hãy thử đồng bộ lại.",
+                retryCount);
+
+        var pending = projection.Items.FirstOrDefault(x => x.Status != SyncStatus.Synced);
+        if (pending is not null)
+            return new(
+                id,
+                true,
+                false,
+                pending.Status,
+                "PUBLICCLOUD_QUIZ_PROJECTION_PENDING",
+                "Đang đồng bộ nội dung trắc nghiệm lên PublicCloud.",
+                retryCount);
+
+        return new(
+            id,
+            true,
+            true,
+            SyncStatus.Synced,
+            "PUBLICCLOUD_QUIZ_PROJECTION_READY",
+            "Nội dung trắc nghiệm đã sẵn sàng trên PublicCloud.",
+            retryCount);
+    }
+
+    public async Task<CloudProjectionReadiness> RetryProjectionAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var session = await LoadSessionScopeAsync(id, cancellationToken);
+        if (session.AccessMode != SessionAccessMode.PublicCloud)
+            return await GetProjectionReadinessAsync(id, cancellationToken);
+
+        if (session.DeliveryType != ExamDeliveryType.MultipleChoice)
+            return await RetryFileSubmissionProjectionAsync(id, cancellationToken);
+
+        var graph = await LoadQuizGraphAsync(session, cancellationToken);
+        var projection = await LoadQuizProjectionAsync(
+            session,
+            graph,
+            tracked: true,
+            cancellationToken);
+        if (projection.SessionItem is not null
+            && IsRoomCodeConflict(projection.SessionItem))
+            return await GetProjectionReadinessAsync(id, cancellationToken);
+
+        var changed = false;
+        foreach (var item in projection.Items.Where(x => x.Status != SyncStatus.Synced))
+        {
+            PrepareRetry(item);
+            changed = true;
+        }
+
+        if (changed)
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            cloudSyncSignal?.Pulse();
+        }
+
+        return await GetProjectionReadinessAsync(id, cancellationToken);
+    }
+
+    internal static bool IsRoomCodeConflict(SyncQueueItem item) =>
+        item.Status == SyncStatus.Conflict
+        && string.Equals(
+            ParseFailure(item.LastError)?.Code,
+            ErrorCodes.RoomCodeConflict,
+            StringComparison.Ordinal);
+
+    private async Task<SessionProjectionScope> LoadSessionScopeAsync(
+        Guid id,
+        CancellationToken cancellationToken) =>
+        await db.ExamSessionsSet
             .AsNoTracking()
-            .Where(x => x.EntityType == "exam_sessions" && x.EntityId == id.ToString())
-            .ToListAsync(cancellationToken);
-        var item = projectionItems
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .FirstOrDefault();
-        if (item is null)
+            .Where(x => x.Id == id)
+            .Select(x => new SessionProjectionScope(
+                x.Id,
+                x.ExamId,
+                x.ExamVersionSnapshot,
+                x.AccessMode,
+                x.DeliveryTypeSnapshot))
+            .FirstOrDefaultAsync(cancellationToken)
+        ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
+
+    private async Task<CloudProjectionReadiness> GetFileSubmissionReadinessAsync(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var projectionItems = await LoadLatestItemsAsync(
+            SessionsEntityType,
+            [id],
+            tracked: false,
+            cancellationToken);
+        if (!projectionItems.TryGetValue(id.ToString(), out var item))
             return new(
                 id,
                 true,
@@ -52,14 +182,7 @@ public sealed class PublicCloudProjectionExecution(
                 0);
 
         if (IsRoomCodeConflict(item))
-            return new(
-                id,
-                true,
-                false,
-                SyncStatus.Conflict,
-                ErrorCodes.RoomCodeConflict,
-                "Mã phòng PublicCloud đang được sử dụng trong tổ chức. Hãy nhập mã khác hoặc để trống để sinh mã mới.",
-                item.RetryCount);
+            return RoomCodeConflictReadiness(id, item);
 
         var failure = ParseFailure(item.LastError);
         return item.Status switch
@@ -93,26 +216,17 @@ public sealed class PublicCloudProjectionExecution(
         };
     }
 
-    public async Task<CloudProjectionReadiness> RetryProjectionAsync(
+    private async Task<CloudProjectionReadiness> RetryFileSubmissionProjectionAsync(
         Guid id,
         CancellationToken cancellationToken)
     {
-        var session = await db.ExamSessionsSet
-            .AsNoTracking()
-            .Where(x => x.Id == id)
-            .Select(x => new { x.AccessMode })
-            .FirstOrDefaultAsync(cancellationToken)
-            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
-        if (session.AccessMode != SessionAccessMode.PublicCloud)
-            return await GetProjectionReadinessAsync(id, cancellationToken);
-
-        var projectionItems = await db.SyncQueueSet
-            .Where(x => x.EntityType == "exam_sessions" && x.EntityId == id.ToString())
-            .ToListAsync(cancellationToken);
-        var item = projectionItems
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .FirstOrDefault()
-            ?? throw new ApiException(
+        var projectionItems = await LoadLatestItemsAsync(
+            SessionsEntityType,
+            [id],
+            tracked: true,
+            cancellationToken);
+        if (!projectionItems.TryGetValue(id.ToString(), out var item))
+            throw new ApiException(
                 ErrorCodes.Conflict,
                 "Không tìm thấy outbox PublicCloud của phòng thi; dữ liệu cục bộ không bị thay đổi.",
                 409);
@@ -120,23 +234,140 @@ public sealed class PublicCloudProjectionExecution(
             return await GetProjectionReadinessAsync(id, cancellationToken);
         if (item.Status != SyncStatus.Synced)
         {
-            item.Status = SyncStatus.Pending;
-            item.LastError = null;
-            item.LeaseUntilUtc = null;
-            item.NextRetryAtUtc = DateTimeOffset.UtcNow;
-            item.CompletedAtUtc = null;
+            PrepareRetry(item);
             await db.SaveChangesAsync(cancellationToken);
             cloudSyncSignal?.Pulse();
         }
         return await GetProjectionReadinessAsync(id, cancellationToken);
     }
 
-    internal static bool IsRoomCodeConflict(SyncQueueItem item) =>
-        item.Status == SyncStatus.Conflict
-        && string.Equals(
-            ParseFailure(item.LastError)?.Code,
+    private async Task<QuizGraph> LoadQuizGraphAsync(
+        SessionProjectionScope session,
+        CancellationToken cancellationToken)
+    {
+        var questionIds = await db.QuizQuestionsSet
+            .AsNoTracking()
+            .Where(x => x.ExamId == session.ExamId
+                && x.Version == session.ExamVersion)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+        if (questionIds.Count == 0)
+            return new([], []);
+
+        var choiceIds = await db.QuizChoicesSet
+            .AsNoTracking()
+            .Where(x => questionIds.Contains(x.QuestionId))
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+        return new(questionIds, choiceIds);
+    }
+
+    private async Task<QuizProjection> LoadQuizProjectionAsync(
+        SessionProjectionScope session,
+        QuizGraph graph,
+        bool tracked,
+        CancellationToken cancellationToken)
+    {
+        var examItems = await LoadLatestItemsAsync(
+            ExamsEntityType,
+            [session.ExamId],
+            tracked,
+            cancellationToken);
+        var questionItems = await LoadLatestItemsAsync(
+            QuestionsEntityType,
+            graph.QuestionIds,
+            tracked,
+            cancellationToken);
+        var choiceItems = await LoadLatestItemsAsync(
+            ChoicesEntityType,
+            graph.ChoiceIds,
+            tracked,
+            cancellationToken);
+        var sessionItems = await LoadLatestItemsAsync(
+            SessionsEntityType,
+            [session.Id],
+            tracked,
+            cancellationToken);
+
+        var items = new List<SyncQueueItem>(
+            2 + graph.QuestionIds.Count + graph.ChoiceIds.Count);
+        var hasMissingRows = false;
+        AddExpected(examItems, [session.ExamId]);
+        AddExpected(questionItems, graph.QuestionIds);
+        AddExpected(choiceItems, graph.ChoiceIds);
+        AddExpected(sessionItems, [session.Id]);
+        sessionItems.TryGetValue(session.Id.ToString(), out var sessionItem);
+        return new(items, hasMissingRows, sessionItem);
+
+        void AddExpected(
+            IReadOnlyDictionary<string, SyncQueueItem> latest,
+            IReadOnlyCollection<Guid> expectedIds)
+        {
+            foreach (var expectedId in expectedIds)
+            {
+                if (latest.TryGetValue(expectedId.ToString(), out var item))
+                    items.Add(item);
+                else
+                    hasMissingRows = true;
+            }
+        }
+    }
+
+    private async Task<IReadOnlyDictionary<string, SyncQueueItem>> LoadLatestItemsAsync(
+        string entityType,
+        IReadOnlyCollection<Guid> entityIds,
+        bool tracked,
+        CancellationToken cancellationToken)
+    {
+        if (entityIds.Count == 0)
+            return new Dictionary<string, SyncQueueItem>(StringComparer.OrdinalIgnoreCase);
+
+        var rows = new List<SyncQueueItem>();
+        foreach (var idBatch in entityIds
+                     .Select(x => x.ToString())
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .Chunk(SqliteIdBatchSize))
+        {
+            IQueryable<SyncQueueItem> query = db.SyncQueueSet;
+            if (!tracked)
+                query = query.AsNoTracking();
+            rows.AddRange(await query
+                .Where(x => x.EntityType == entityType
+                    && idBatch.Contains(x.EntityId))
+                .ToListAsync(cancellationToken));
+        }
+
+        return rows
+            .GroupBy(x => x.EntityId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(x => x.CreatedAtUtc)
+                    .ThenByDescending(x => x.Id)
+                    .First(),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static CloudProjectionReadiness RoomCodeConflictReadiness(
+        Guid id,
+        SyncQueueItem item) =>
+        new(
+            id,
+            true,
+            false,
+            SyncStatus.Conflict,
             ErrorCodes.RoomCodeConflict,
-            StringComparison.Ordinal);
+            "Mã phòng PublicCloud đang được sử dụng trong tổ chức. Hãy nhập mã khác hoặc để trống để sinh mã mới.",
+            item.RetryCount);
+
+    private static void PrepareRetry(SyncQueueItem item)
+    {
+        item.Status = SyncStatus.Pending;
+        item.LastError = null;
+        item.LeaseUntilUtc = null;
+        item.NextRetryAtUtc = DateTimeOffset.UtcNow;
+        item.CompletedAtUtc = null;
+    }
 
     private static CloudSyncFailure? ParseFailure(string? value)
     {
@@ -150,4 +381,20 @@ public sealed class PublicCloudProjectionExecution(
             return null;
         }
     }
+
+    private sealed record SessionProjectionScope(
+        Guid Id,
+        Guid ExamId,
+        int ExamVersion,
+        SessionAccessMode AccessMode,
+        ExamDeliveryType DeliveryType);
+
+    private sealed record QuizGraph(
+        IReadOnlyList<Guid> QuestionIds,
+        IReadOnlyList<Guid> ChoiceIds);
+
+    private sealed record QuizProjection(
+        IReadOnlyList<SyncQueueItem> Items,
+        bool HasMissingRows,
+        SyncQueueItem? SessionItem);
 }
