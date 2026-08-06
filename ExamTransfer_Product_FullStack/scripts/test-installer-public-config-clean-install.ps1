@@ -52,8 +52,8 @@ function Invoke-InstallerProcess(
         -FilePath $Path `
         -ArgumentList $Arguments `
         -WindowStyle Hidden `
-        -Wait `
         -PassThru
+    $process | Wait-Process
     try {
         if ($process.ExitCode -ne 0) {
             throw "$Operation failed with exit code $($process.ExitCode)."
@@ -288,6 +288,6 @@ finally {
         (Split-Path -Leaf $resolvedFixture).StartsWith(
             'ExamTransfer-PublicConfigInstall-',
             [StringComparison]::Ordinal)) {
-        Remove-Item -LiteralPath $resolvedFixture -Recurse -Force -ErrorAction SilentlyContinue
+        # Remove-Item -LiteralPath $resolvedFixture -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

@@ -590,8 +590,9 @@ function Assert-PortsAvailable {
         Select-Object -ExpandProperty OwningProcess -Unique)
     if ($tcpOwners.Count -gt 0) {
         foreach ($ownerId in $tcpOwners) {
-            [Console]::Error.WriteLine(
-                "PORT_CONFLICT_TCP_5048 PID=$ownerId PATH=$(Get-ProcessPathSafe ([int]$ownerId))")
+            $msg = "PORT_CONFLICT_TCP_5048 PID=$ownerId PATH=$(Get-ProcessPathSafe ([int]$ownerId))"
+            [Console]::Error.WriteLine($msg)
+            Write-GuardLog 'PORT_CONFLICT' $msg
         }
         exit 41
     }
@@ -600,8 +601,9 @@ function Assert-PortsAvailable {
         Select-Object -ExpandProperty OwningProcess -Unique)
     if ($udpOwners.Count -gt 0) {
         foreach ($ownerId in $udpOwners) {
-            [Console]::Error.WriteLine(
-                "PORT_CONFLICT_UDP_40550 PID=$ownerId PATH=$(Get-ProcessPathSafe ([int]$ownerId))")
+            $msg = "PORT_CONFLICT_UDP_40550 PID=$ownerId PATH=$(Get-ProcessPathSafe ([int]$ownerId))"
+            [Console]::Error.WriteLine($msg)
+            Write-GuardLog 'PORT_CONFLICT' $msg
         }
         exit 42
     }
@@ -798,6 +800,10 @@ try {
 catch {
     $message = $_.Exception.Message
     [Console]::Error.WriteLine("INSTALLER_GUARD_FAILED: $message")
+    if ($null -ne $Global:GuardLogPath) {
+        Write-GuardLog 'INSTALLER_GUARD_FAILED' $message
+    }
+    exit 43
     if ($Mode -eq 'UpgradeRuntimeSettings') {
         try {
             Write-MigrationLog 'RUNTIME_SETTINGS_FAILED' $message
