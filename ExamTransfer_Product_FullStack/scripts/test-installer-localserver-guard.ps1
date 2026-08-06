@@ -335,7 +335,7 @@ try {
         'post-ISCC-release-payload',
         'test-installer-public-config-clean-install.ps1',
         'installer\assets\Khoa-DT-KTMT.ico',
-        'Khoa-DT-KTMT-Setup-$Version.exe')) {
+        'Khoa-DT-KTMT-Setup-$Version-$shortCommit.exe')) {
         Assert-True (
             $buildReleaseSource.IndexOf(
                 $requiredReleaseContract,
