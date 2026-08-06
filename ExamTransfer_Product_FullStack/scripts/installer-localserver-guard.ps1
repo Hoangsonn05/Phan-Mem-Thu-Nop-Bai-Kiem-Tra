@@ -800,10 +800,6 @@ try {
 catch {
     $message = $_.Exception.Message
     [Console]::Error.WriteLine("INSTALLER_GUARD_FAILED: $message")
-    if ($null -ne $Global:GuardLogPath) {
-        Write-GuardLog 'INSTALLER_GUARD_FAILED' $message
-    }
-    exit 43
     if ($Mode -eq 'UpgradeRuntimeSettings') {
         try {
             Write-MigrationLog 'RUNTIME_SETTINGS_FAILED' $message
@@ -813,7 +809,9 @@ catch {
         exit 44
     }
     try {
-        Write-GuardLog 'INSTALLER_GUARD_FAILED' $message
+        if ($null -ne $Global:GuardLogPath) {
+            Write-GuardLog 'INSTALLER_GUARD_FAILED' $message
+        }
     }
     catch {
     }
