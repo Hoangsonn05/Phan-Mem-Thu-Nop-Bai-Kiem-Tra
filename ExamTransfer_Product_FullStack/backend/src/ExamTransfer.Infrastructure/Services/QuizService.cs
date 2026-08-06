@@ -418,9 +418,7 @@ public sealed class QuizService(
         QuizAttempt attempt,
         IReadOnlyList<QuizQuestionDto>? parsedQuestions = null)
     {
-        var scoreVisible = attempt.Status == QuizAttemptStatus.Finalized
-            && attempt.GradingStatus == GradingStatus.Returned
-            && attempt.ReturnedAtUtc.HasValue;
+        var scoreVisible = QuizStudentResultVisibility.IsScoreVisible(attempt);
         return new(
             attempt.Id, attempt.SessionId, attempt.ParticipantId, attempt.Status, attempt.ExamVersion,
             attempt.StartedAtUtc, attempt.DeadlineUtc, attempt.FinalizedAtUtc,

@@ -218,6 +218,9 @@ public sealed class StudentNotificationAndResultContractTests
         Assert.Equal(source.MaxScore, roundTrip.MaxScore);
         Assert.Equal(source.GeneralComment, roundTrip.GeneralComment);
         Assert.Equal(source.ReturnedAtUtc, roundTrip.ReturnedAtUtc);
+        Assert.Equal(source.StartedAtUtc, roundTrip.StartedAtUtc);
+        Assert.Equal(source.FinalizedAtUtc, roundTrip.FinalizedAtUtc);
+        Assert.Equal(source.DurationSeconds, roundTrip.DurationSeconds);
         Assert.Equal(source.Attachments.ToArray(), roundTrip.Attachments.ToArray());
         Assert.DoesNotContain("download", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("path", json, StringComparison.OrdinalIgnoreCase);
@@ -304,6 +307,27 @@ public sealed class StudentNotificationAndResultContractTests
         var value = ValidEssayResult() with { ReturnedAtUtc = null };
 
         Assert.Throws<ArgumentException>(() => StudentResultValidator.EnsureValid(value));
+    }
+
+    [Fact]
+    public void Result_QuizTimingRequiresUtcNonNegativeConsistentServerTimestamps()
+    {
+        var nonUtc = ValidQuizResult() with
+        {
+            StartedAtUtc = OccurredAtUtc.ToOffset(TimeSpan.FromHours(7))
+        };
+        Assert.Throws<ArgumentException>(() => StudentResultValidator.EnsureValid(nonUtc));
+
+        var negative = ValidQuizResult() with
+        {
+            StartedAtUtc = OccurredAtUtc,
+            FinalizedAtUtc = OccurredAtUtc.AddSeconds(-1),
+            DurationSeconds = -1
+        };
+        Assert.Throws<ArgumentException>(() => StudentResultValidator.EnsureValid(negative));
+
+        var inconsistent = ValidQuizResult() with { DurationSeconds = 59 };
+        Assert.Throws<ArgumentException>(() => StudentResultValidator.EnsureValid(inconsistent));
     }
 
     [Fact]
@@ -455,6 +479,9 @@ public sealed class StudentNotificationAndResultContractTests
         MaxScore = 10m,
         GeneralComment = "Hoàn thành tốt.",
         ReturnedAtUtc = OccurredAtUtc,
+        StartedAtUtc = OccurredAtUtc.AddMinutes(-1),
+        FinalizedAtUtc = OccurredAtUtc,
+        DurationSeconds = 60,
         Attachments = [],
         QuizSummary = ValidSummary()
     };

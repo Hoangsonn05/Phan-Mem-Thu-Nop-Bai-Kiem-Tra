@@ -31,7 +31,10 @@ public sealed record StudentReturnedResult(
     DateTimeOffset? ReturnedAtUtc,
     SessionAccessMode SourceMode,
     IReadOnlyList<QuizQuestionReviewDto> Questions,
-    IReadOnlyList<StudentResultAttachment> Attachments);
+    IReadOnlyList<StudentResultAttachment> Attachments,
+    DateTimeOffset? StartedAtUtc = null,
+    DateTimeOffset? FinalizedAtUtc = null,
+    long? DurationSeconds = null);
 
 public sealed class StudentResultPresentationModel
 {
@@ -48,6 +51,9 @@ public sealed class StudentResultPresentationModel
         MaxScore = source.MaxScore;
         CommentText = string.IsNullOrWhiteSpace(source.Comment) ? "Không có nhận xét." : source.Comment;
         ReturnedAtUtc = source.ReturnedAtUtc;
+        StartedAtUtc = source.StartedAtUtc;
+        FinalizedAtUtc = source.FinalizedAtUtc;
+        DurationSeconds = source.DurationSeconds;
         SourceMode = source.SourceMode;
         Questions = source.Questions
             .OrderBy(question => question.Order)
@@ -69,6 +75,9 @@ public sealed class StudentResultPresentationModel
     public decimal MaxScore { get; }
     public string CommentText { get; }
     public DateTimeOffset? ReturnedAtUtc { get; }
+    public DateTimeOffset? StartedAtUtc { get; }
+    public DateTimeOffset? FinalizedAtUtc { get; }
+    public long? DurationSeconds { get; }
     public SessionAccessMode SourceMode { get; }
     public IReadOnlyList<StudentResultQuestionPresentationModel> Questions { get; }
     public IReadOnlyList<StudentResultAttachment> Attachments { get; }
@@ -80,6 +89,13 @@ public sealed class StudentResultPresentationModel
         : $"—/{MaxScore.ToString("0.##", CultureInfo.CurrentCulture)}";
     public string ReturnedAtText => ReturnedAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.CurrentCulture)
         ?? "Không có dữ liệu";
+    public string StartedAtText => StartedAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.CurrentCulture)
+        ?? "Không có dữ liệu";
+    public string FinalizedAtText => FinalizedAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.CurrentCulture)
+        ?? "Không có dữ liệu";
+    public string DurationText => DurationSeconds.HasValue
+        ? TimeSpan.FromSeconds(DurationSeconds.Value).ToString(@"hh\:mm\:ss", CultureInfo.CurrentCulture)
+        : "Không có dữ liệu";
     public string SourceText => SourceMode == SessionAccessMode.PublicCloud ? "PublicCloud" : "OnlyLAN";
     public bool IsQuiz => Kind == StudentResultKind.Quiz;
     public bool HasQuestions => Questions.Count > 0;

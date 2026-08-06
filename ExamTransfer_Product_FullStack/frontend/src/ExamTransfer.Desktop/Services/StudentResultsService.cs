@@ -83,7 +83,10 @@ public sealed class StudentResultsService(
                 sourceMode == SessionAccessMode.LanOnly && result.SubmissionId.HasValue
                     ? $"api/v1/student/submissions/{result.SubmissionId.Value}/grade/attachments/{attachment.AttachmentId}/content"
                     : string.Empty,
-                resultId)).ToArray());
+                resultId)).ToArray(),
+            result.StartedAtUtc,
+            result.FinalizedAtUtc,
+            result.DurationSeconds);
     }
 }
 

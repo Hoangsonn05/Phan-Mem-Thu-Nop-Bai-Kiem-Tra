@@ -199,6 +199,9 @@ public sealed record StudentResultDto
     public decimal? MaxScore { get; init; }
     public string? GeneralComment { get; init; }
     public DateTimeOffset? ReturnedAtUtc { get; init; }
+    public DateTimeOffset? StartedAtUtc { get; init; }
+    public DateTimeOffset? FinalizedAtUtc { get; init; }
+    public long? DurationSeconds { get; init; }
     public IReadOnlyList<StudentResultAttachmentDto> Attachments { get; init; } = [];
     public StudentQuizResultSummaryDto? QuizSummary { get; init; }
 }
@@ -251,6 +254,10 @@ public static class StudentResultValidator
         {
             errors.Add($"{nameof(value.ReturnedAtUtc)} must be UTC when present.");
         }
+        ValidateUtc(value.StartedAtUtc, nameof(value.StartedAtUtc), errors);
+        ValidateUtc(value.FinalizedAtUtc, nameof(value.FinalizedAtUtc), errors);
+        if (value.DurationSeconds < 0)
+            errors.Add($"{nameof(value.DurationSeconds)} must be greater than or equal to zero when present.");
         if (value.GeneralComment is not null && string.IsNullOrWhiteSpace(value.GeneralComment))
             errors.Add($"{nameof(value.GeneralComment)} cannot be empty or whitespace when present.");
 
@@ -272,12 +279,34 @@ public static class StudentResultValidator
                     errors.Add($"{nameof(value.AttemptId)} must be null for EssayFile results.");
                 if (value.QuizSummary is not null)
                     errors.Add($"{nameof(value.QuizSummary)} must be null for EssayFile results.");
+                if (value.StartedAtUtc.HasValue || value.FinalizedAtUtc.HasValue || value.DurationSeconds.HasValue)
+                    errors.Add("Quiz timing fields must be null for EssayFile results.");
                 break;
 
             case StudentResultType.Quiz:
                 RequireNonEmpty(value.AttemptId, nameof(value.AttemptId), errors);
                 if (value.SubmissionId.HasValue)
                     errors.Add($"{nameof(value.SubmissionId)} must be null for Quiz results.");
+                var hasAnyTiming = value.StartedAtUtc.HasValue
+                    || value.FinalizedAtUtc.HasValue
+                    || value.DurationSeconds.HasValue;
+                if (hasAnyTiming
+                    && (!value.StartedAtUtc.HasValue
+                        || !value.FinalizedAtUtc.HasValue
+                        || !value.DurationSeconds.HasValue))
+                {
+                    errors.Add("Quiz timing fields must be supplied together.");
+                }
+                if (value.StartedAtUtc.HasValue
+                    && value.FinalizedAtUtc.HasValue
+                    && value.DurationSeconds.HasValue)
+                {
+                    var duration = value.FinalizedAtUtc.Value - value.StartedAtUtc.Value;
+                    if (duration < TimeSpan.Zero)
+                        errors.Add($"{nameof(value.FinalizedAtUtc)} cannot be earlier than {nameof(value.StartedAtUtc)}.");
+                    else if (value.DurationSeconds != (long)duration.TotalSeconds)
+                        errors.Add($"{nameof(value.DurationSeconds)} must match the server timestamps.");
+                }
                 break;
         }
 
@@ -286,6 +315,15 @@ public static class StudentResultValidator
             ValidateQuizSummary(value.QuizSummary, errors);
 
         return errors;
+    }
+
+    private static void ValidateUtc(
+        DateTimeOffset? value,
+        string name,
+        ICollection<string> errors)
+    {
+        if (value.HasValue && (value.Value == default || value.Value.Offset != TimeSpan.Zero))
+            errors.Add($"{name} must be UTC when present.");
     }
 
     public static void EnsureValid(StudentResultDto value)

@@ -88,7 +88,7 @@ public sealed class StudentResultsViewModel : ProductPageBase
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasNoResults => !IsLoading && !HasError && Results.Count == 0;
     public bool HasResults => !IsLoading && !HasError && Results.Count > 0;
-    public string EmptyStateText => "Chưa có kết quả nào được giáo viên trả.";
+    public string EmptyStateText => "Chưa có kết quả nào được công bố.";
     public ICommand RefreshCommand { get; }
     public ICommand RetryCommand { get; }
     public ICommand DownloadAttachmentCommand { get; }

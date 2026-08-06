@@ -16,7 +16,7 @@
             <Grid>
                 <StackPanel>
                     <TextBlock Text="Kết quả đã trả" Style="{StaticResource PageTitleText}" />
-                    <TextBlock Text="Chỉ hiển thị kết quả chính thức đã được giáo viên trả cho tài khoản hiện tại."
+                    <TextBlock Text="Chỉ hiển thị kết quả chính thức đã được công bố cho tài khoản hiện tại."
                                Style="{StaticResource BodyText}" Margin="0,4,0,0" />
                 </StackPanel>
                 <Button Content="Làm mới" Command="{Binding RefreshCommand}"
@@ -95,8 +95,28 @@
                                         <TextBlock Text="{Binding SelectedResult.ScoreText}" FontSize="24" FontWeight="Bold" />
                                     </StackPanel>
                                     <StackPanel Grid.Column="1">
-                                        <TextBlock Text="TRẢ LÚC" Style="{StaticResource LabelText}" />
+                                        <TextBlock Text="CÔNG BỐ LÚC" Style="{StaticResource LabelText}" />
                                         <TextBlock Text="{Binding SelectedResult.ReturnedAtText}" FontWeight="SemiBold" />
+                                    </StackPanel>
+                                </Grid>
+                                <Grid Margin="0,14,0,0"
+                                      Visibility="{Binding SelectedResult.IsQuiz, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition />
+                                        <ColumnDefinition />
+                                        <ColumnDefinition />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="BẮT ĐẦU LÚC" Style="{StaticResource LabelText}" />
+                                        <TextBlock Text="{Binding SelectedResult.StartedAtText}" FontWeight="SemiBold" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="NỘP LÚC" Style="{StaticResource LabelText}" />
+                                        <TextBlock Text="{Binding SelectedResult.FinalizedAtText}" FontWeight="SemiBold" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="THỜI GIAN LÀM BÀI" Style="{StaticResource LabelText}" />
+                                        <TextBlock Text="{Binding SelectedResult.DurationText}" FontWeight="SemiBold" />
                                     </StackPanel>
                                 </Grid>
                                 <TextBlock Text="NHẬN XÉT" Style="{StaticResource LabelText}" Margin="0,14,0,5" />

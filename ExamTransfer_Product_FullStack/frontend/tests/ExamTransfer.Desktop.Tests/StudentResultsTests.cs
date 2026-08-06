@@ -29,7 +29,7 @@ public sealed class StudentResultsTests
 
         Assert.Empty(viewModel.Results);
         Assert.True(viewModel.HasNoResults);
-        Assert.Equal("Chưa có kết quả nào được giáo viên trả.", viewModel.EmptyStateText);
+        Assert.Equal("Chưa có kết quả nào được công bố.", viewModel.EmptyStateText);
         Assert.False(viewModel.HasError);
     }
 
@@ -44,6 +44,9 @@ public sealed class StudentResultsTests
         Assert.Equal("Bài trắc nghiệm", result.TypeText);
         Assert.Equal("8/10", result.ScoreText);
         Assert.Equal("Tốt", result.CommentText);
+        Assert.NotEqual("Không có dữ liệu", result.StartedAtText);
+        Assert.NotEqual("Không có dữ liệu", result.FinalizedAtText);
+        Assert.Equal("00:05:00", result.DurationText);
         Assert.Collection(result.Questions,
             row => Assert.Equal("Đúng", row.OutcomeText),
             row => Assert.Equal("Sai", row.OutcomeText),
@@ -195,6 +198,51 @@ public sealed class StudentResultsTests
     }
 
     [Fact]
+    public async Task OnlyLanQuizTimingMapsFromServerContract()
+    {
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var startedAt = new DateTimeOffset(2026, 8, 6, 1, 0, 0, TimeSpan.Zero);
+        var finalizedAt = startedAt.AddMinutes(12).AddSeconds(34);
+        var backend = new UnifiedResultsBackendClient(new StudentResultPageDto
+        {
+            Items =
+            [
+                new StudentResultDto
+                {
+                    ResultType = StudentResultType.Quiz,
+                    ExamId = Guid.NewGuid(),
+                    ExamTitle = "Quiz",
+                    SessionId = sessionId,
+                    AttemptId = Guid.NewGuid(),
+                    AttemptNumber = 3,
+                    Status = StudentResultStatus.Returned,
+                    Score = 9m,
+                    MaxScore = 10m,
+                    ReturnedAtUtc = finalizedAt,
+                    StartedAtUtc = startedAt,
+                    FinalizedAtUtc = finalizedAt,
+                    DurationSeconds = 754,
+                    Attachments = []
+                }
+            ]
+        });
+        var session = new StudentSessionState
+        {
+            SessionId = sessionId,
+            ParticipantId = participantId,
+            AccessMode = SessionAccessMode.LanOnly
+        };
+        var service = new StudentResultsService(backend, new SupabasePublicCloudClient(), session);
+
+        var result = Assert.Single(await service.GetReturnedResultsAsync(CancellationToken.None));
+
+        Assert.Equal(startedAt, result.StartedAtUtc);
+        Assert.Equal(finalizedAt, result.FinalizedAtUtc);
+        Assert.Equal(754, result.DurationSeconds);
+    }
+
+    [Fact]
     public async Task PublicCloudClientUsesActorScopedResultsRpcAndA05PageContract()
     {
         var attemptId = Guid.NewGuid();
@@ -333,7 +381,10 @@ public sealed class StudentResultsTests
                 new(Guid.NewGuid(), "Đúng", 1, 1m, 1m, choices),
                 new(Guid.NewGuid(), "Sai", 2, 1m, 0m, wrong),
                 new(Guid.NewGuid(), "Trống", 3, 1m, 0m, blank)
-            ], []);
+            ], [],
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            DateTimeOffset.UtcNow,
+            300);
     }
 
     private static StudentReturnedResult ReturnedEssay(string title = "Tự luận")

@@ -141,7 +141,20 @@ public sealed class StudentResultService(AppDbContext db) : IStudentResultServic
                   AND grade."Status" = @returned
                   AND grade."ReturnedAtUtc" IS NOT NULL
                 UNION ALL
-                SELECT 2 AS "ResultType", attempt."Id" AS "ResultId", attempt."ReturnedAtUtc" AS "ReturnedAtUtc"
+                SELECT 2 AS "ResultType", attempt."Id" AS "ResultId",
+                    CASE
+                        WHEN attempt."GradingStatus" = @returned
+                         AND attempt."ReturnedAtUtc" IS NOT NULL
+                            THEN attempt."ReturnedAtUtc"
+                        WHEN attempt."ResultPolicySnapshot" = @showAfterSubmission
+                         AND attempt."GradingStatus" = @graded
+                         AND attempt."ReturnedAtUtc" IS NULL
+                         AND attempt."FinalizedAtUtc" IS NOT NULL
+                         AND attempt."Score" IS NOT NULL
+                         AND attempt."AutoScore" IS NOT NULL
+                         AND attempt."Score" = attempt."AutoScore"
+                            THEN attempt."FinalizedAtUtc"
+                    END AS "ReturnedAtUtc"
                 FROM "quiz_attempts" attempt
                 JOIN "session_participants" participant
                   ON participant."Id" = attempt."ParticipantId"
@@ -159,8 +172,17 @@ public sealed class StudentResultService(AppDbContext db) : IStudentResultServic
                   AND exam."DeliveryType" = @multipleChoice
                   AND attempt."SourceMode" <> 'PublicCloud' COLLATE NOCASE
                   AND attempt."Status" = @finalized
-                  AND attempt."GradingStatus" = @returned
-                  AND attempt."ReturnedAtUtc" IS NOT NULL
+                  AND (
+                        (attempt."GradingStatus" = @returned
+                         AND attempt."ReturnedAtUtc" IS NOT NULL)
+                     OR (attempt."ResultPolicySnapshot" = @showAfterSubmission
+                         AND attempt."GradingStatus" = @graded
+                         AND attempt."ReturnedAtUtc" IS NULL
+                         AND attempt."FinalizedAtUtc" IS NOT NULL
+                         AND attempt."Score" IS NOT NULL
+                         AND attempt."AutoScore" IS NOT NULL
+                         AND attempt."Score" = attempt."AutoScore")
+                  )
             ) result
             WHERE @cursorReturnedAtUtc IS NULL
                OR "ReturnedAtUtc" < @cursorReturnedAtUtc
@@ -188,7 +210,9 @@ public sealed class StudentResultService(AppDbContext db) : IStudentResultServic
             AddParameter(command, "@submitted", (int)SubmissionStatus.Submitted);
             AddParameter(command, "@lateSubmitted", (int)SubmissionStatus.LateSubmitted);
             AddParameter(command, "@finalized", (int)QuizAttemptStatus.Finalized);
+            AddParameter(command, "@graded", (int)GradingStatus.Graded);
             AddParameter(command, "@returned", (int)GradingStatus.Returned);
+            AddParameter(command, "@showAfterSubmission", (int)QuizResultPolicy.ShowAfterSubmission);
             AddParameter(command, "@cursorReturnedAtUtc", cursor?.ReturnedAtUtc);
             AddParameter(command, "@cursorResultType", cursor is null ? null : (int)cursor.ResultType);
             AddParameter(command, "@cursorResultId", cursor?.ResultId);
@@ -272,10 +296,10 @@ public sealed class StudentResultService(AppDbContext db) : IStudentResultServic
         User actor,
         CancellationToken cancellationToken)
     {
+        var visibleAtUtc = QuizStudentResultVisibility.ResultVisibleAtUtc(attempt);
         if (attempt.Status != QuizAttemptStatus.Finalized
-            || attempt.GradingStatus != GradingStatus.Returned
-            || !attempt.ReturnedAtUtc.HasValue
-            || attempt.Score is null
+            || !visibleAtUtc.HasValue
+            || !QuizStudentResultVisibility.IsScoreVisible(attempt)
             || attempt.AttemptNumber <= 0
             || attempt.Participant.UserId != actor.Id
             || attempt.Participant.Status != ParticipantStatus.Approved
@@ -291,8 +315,13 @@ public sealed class StudentResultService(AppDbContext db) : IStudentResultServic
         }
 
         var summary = await QuizGradeAuthoritativeScoring.CalculateAsync(db, attempt, cancellationToken);
-        if (attempt.Score != summary.Score || attempt.MaxScore != summary.MaxScore)
+        if (attempt.Score != summary.Score
+            || attempt.AutoScore != summary.Score
+            || attempt.MaxScore != summary.MaxScore)
             throw Integrity("Persisted Quiz score does not match the authoritative answer graph.");
+
+        var finalizedAtUtc = attempt.FinalizedAtUtc!.Value.ToUniversalTime();
+        var startedAtUtc = attempt.StartedAtUtc.ToUniversalTime();
 
         return new StudentResultDto
         {
@@ -306,8 +335,13 @@ public sealed class StudentResultService(AppDbContext db) : IStudentResultServic
             Status = StudentResultStatus.Returned,
             Score = attempt.Score,
             MaxScore = attempt.MaxScore,
-            GeneralComment = attempt.GeneralComment,
-            ReturnedAtUtc = attempt.ReturnedAtUtc.Value.ToUniversalTime(),
+            GeneralComment = QuizStudentResultVisibility.AreCorrectAnswersVisible(attempt)
+                ? attempt.GeneralComment
+                : null,
+            ReturnedAtUtc = visibleAtUtc.Value,
+            StartedAtUtc = startedAtUtc,
+            FinalizedAtUtc = finalizedAtUtc,
+            DurationSeconds = (long)(finalizedAtUtc - startedAtUtc).TotalSeconds,
             Attachments = [],
             QuizSummary = new StudentQuizResultSummaryDto
             {

@@ -183,6 +183,13 @@ public sealed class QuizGradingServiceTests
         Assert.NotNull(returned.ReturnedAtUtc);
         Assert.Equal(returned.RowVersion, returnedRetry.RowVersion);
         Assert.Equal(returned.Score, returnedRetry.Score);
+        var returnedReview = await fixture.Service.GetStudentReviewAsync(
+            fixture.Attempt.Id,
+            fixture.Participant.Id,
+            default);
+        Assert.True(returnedReview.ScoreVisible);
+        Assert.True(returnedReview.CorrectAnswersVisible);
+        Assert.All(returnedReview.Questions.SelectMany(x => x.Choices), x => Assert.NotNull(x.Correct));
         Assert.Single(await fixture.Db.SyncQueueSet.Where(
             x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType).ToListAsync());
         var returnReceipt = await fixture.Db.QuizGradeMutationReceiptsSet.SingleAsync(x => x.Id == returnId);
@@ -207,6 +214,13 @@ public sealed class QuizGradingServiceTests
         Assert.Equal(returned.Score, reopened.Score);
         Assert.Equal(returned.GeneralComment, reopened.GeneralComment);
         Assert.Equal(reopened.RowVersion, reopenedRetry.RowVersion);
+        var reopenedReview = await fixture.Service.GetStudentReviewAsync(
+            fixture.Attempt.Id,
+            fixture.Participant.Id,
+            default);
+        Assert.False(reopenedReview.ScoreVisible);
+        Assert.False(reopenedReview.CorrectAnswersVisible);
+        Assert.All(reopenedReview.Questions.SelectMany(x => x.Choices), x => Assert.Null(x.Correct));
         Assert.Equal(2, await fixture.Db.SyncQueueSet.CountAsync(
             x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType));
         await AssertStatusAsync(409, () => fixture.Service.ReopenAsync(
@@ -242,19 +256,27 @@ public sealed class QuizGradingServiceTests
     }
 
     [Fact]
-    public async Task StudentVisibility_RequiresReturnedEvenForShowAfterSubmissionPolicy()
+    public async Task ShowAfterSubmissionPublishesScoreWithoutRevealingCorrectAnswers()
     {
         await using var fixture = await Fixture.CreateAsync();
         fixture.Attempt.ResultPolicySnapshot = QuizResultPolicy.ShowAfterSubmission;
+        fixture.Attempt.Score = 2.50m;
+        fixture.Attempt.AutoScore = 2.50m;
         await fixture.Db.SaveChangesAsync();
 
-        var hidden = await fixture.Service.GetStudentReviewAsync(
+        var review = await fixture.Service.GetStudentReviewAsync(
             fixture.Attempt.Id,
             fixture.Participant.Id,
             default);
-        Assert.False(hidden.ScoreVisible);
-        Assert.Null(hidden.Score);
-        Assert.All(hidden.Questions.SelectMany(x => x.Choices), x => Assert.Null(x.Correct));
+        Assert.True(review.ScoreVisible);
+        Assert.Equal(fixture.Attempt.Score, review.Score);
+        Assert.False(review.CorrectAnswersVisible);
+        Assert.Null(review.GeneralComment);
+        Assert.All(review.Questions.SelectMany(x => x.Choices), x => Assert.Null(x.Correct));
+        var json = JsonSerializer.Serialize(review);
+        Assert.DoesNotContain("\"isCorrect\"", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\"correct\":true", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\"correct\":false", json, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task AssertStatusAsync(int status, Func<Task> action)

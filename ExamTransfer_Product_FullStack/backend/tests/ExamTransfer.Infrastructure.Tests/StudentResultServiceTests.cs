@@ -86,6 +86,9 @@ public sealed class StudentResultServiceTests
         Assert.Equal(attempt.Id, result.AttemptId);
         Assert.Null(result.SubmissionId);
         Assert.Equal(3, result.AttemptNumber);
+        Assert.Equal(attempt.StartedAtUtc, result.StartedAtUtc);
+        Assert.Equal(attempt.FinalizedAtUtc, result.FinalizedAtUtc);
+        Assert.Equal(300, result.DurationSeconds);
         Assert.Empty(result.Attachments);
         var summary = Assert.IsType<StudentQuizResultSummaryDto>(result.QuizSummary);
         Assert.Equal(2, summary.TotalQuestions);
@@ -100,6 +103,70 @@ public sealed class StudentResultServiceTests
         Assert.DoesNotContain("\"choiceIds\"", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("\"answerKey\"", json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("\"correctOption\"", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ShowAfterSubmissionGradedAttemptAppearsWithoutManualReturn()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var finalizedAt = ReturnedAt.AddMinutes(-5);
+        var attempt = await fixture.AddQuizAsync(
+            returnedAt: null,
+            attemptNumber: 2,
+            gradingStatus: GradingStatus.Graded,
+            resultPolicy: QuizResultPolicy.ShowAfterSubmission,
+            finalizedAt: finalizedAt);
+
+        var result = Assert.Single((await fixture.FirstPageAsync()).Items);
+        Assert.Equal(attempt.Id, result.AttemptId);
+        Assert.Equal(StudentResultStatus.Returned, result.Status);
+        Assert.Equal(finalizedAt, result.ReturnedAtUtc);
+        Assert.Equal(5m, result.Score);
+        Assert.Equal(10m, result.MaxScore);
+        Assert.Equal(attempt.StartedAtUtc, result.StartedAtUtc);
+        Assert.Equal(finalizedAt, result.FinalizedAtUtc);
+        Assert.Equal(300, result.DurationSeconds);
+    }
+
+    [Fact]
+    public async Task HiddenAndInconsistentAutoPublishAttemptsFailClosed()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddQuizAsync(
+            returnedAt: null,
+            attemptNumber: 1,
+            gradingStatus: GradingStatus.Graded,
+            resultPolicy: QuizResultPolicy.Hidden,
+            finalizedAt: ReturnedAt);
+        var inconsistent = await fixture.AddQuizAsync(
+            returnedAt: null,
+            attemptNumber: 2,
+            gradingStatus: GradingStatus.Graded,
+            resultPolicy: QuizResultPolicy.ShowAfterSubmission,
+            finalizedAt: ReturnedAt.AddMinutes(1));
+        inconsistent.AutoScore = 4m;
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.Empty((await fixture.FirstPageAsync()).Items);
+    }
+
+    [Fact]
+    public async Task HiddenManualReturnAppearsAndReopenRemovesItAgain()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var attempt = await fixture.AddQuizAsync(ReturnedAt, attemptNumber: 1);
+        Assert.Single((await fixture.FirstPageAsync()).Items);
+
+        attempt.GradingStatus = GradingStatus.Graded;
+        attempt.ReturnedAtUtc = null;
+        await fixture.Db.SaveChangesAsync();
+        Assert.Empty((await fixture.FirstPageAsync()).Items);
+
+        attempt.GradingStatus = GradingStatus.Returned;
+        attempt.ReturnedAtUtc = ReturnedAt.AddMinutes(10);
+        await fixture.Db.SaveChangesAsync();
+        var returnedAgain = Assert.Single((await fixture.FirstPageAsync()).Items);
+        Assert.Equal(ReturnedAt.AddMinutes(10), returnedAgain.ReturnedAtUtc);
     }
 
     [Fact]
@@ -251,7 +318,12 @@ public sealed class StudentResultServiceTests
             return new(submission, grade);
         }
 
-        public async Task<QuizAttempt> AddQuizAsync(DateTimeOffset returnedAt, int attemptNumber)
+        public async Task<QuizAttempt> AddQuizAsync(
+            DateTimeOffset? returnedAt,
+            int attemptNumber,
+            GradingStatus gradingStatus = GradingStatus.Returned,
+            QuizResultPolicy resultPolicy = QuizResultPolicy.Hidden,
+            DateTimeOffset? finalizedAt = null)
         {
             var exam = new Exam
             {
@@ -288,11 +360,14 @@ public sealed class StudentResultServiceTests
                 AttemptNumber = attemptNumber,
                 ExamVersion = 1,
                 Status = QuizAttemptStatus.Finalized,
-                GradingStatus = GradingStatus.Returned,
+                StartedAtUtc = (finalizedAt ?? returnedAt ?? ReturnedAt).AddMinutes(-5),
+                FinalizedAtUtc = finalizedAt ?? returnedAt ?? ReturnedAt,
+                GradingStatus = gradingStatus,
                 Score = 5m,
                 AutoScore = 5m,
                 MaxScore = 10m,
                 ReturnedAtUtc = returnedAt,
+                ResultPolicySnapshot = resultPolicy,
                 SnapshotJson = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions(JsonSerializerDefaults.Web))
             };
             attempt.Answers.Add(new QuizAnswer

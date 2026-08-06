@@ -122,8 +122,8 @@ public sealed class OnlyLanWorkflowCharacterizationTests
             new FinalizeQuizAttemptRequest("lan-e2e-finalize-1", DateTimeOffset.UtcNow),
             CancellationToken.None);
         Assert.Equal(QuizAttemptStatus.Finalized, finalized.Status);
-        Assert.False(finalized.ScoreVisible);
-        Assert.Null(finalized.Score);
+        Assert.True(finalized.ScoreVisible);
+        Assert.Equal(10.00m, finalized.Score);
         Assert.Equal(finalized.Score, repeated.Score);
         Assert.Equal(finalized.Id, repeated.Id);
         Assert.Single(await fixture.Quiz.ListAttemptsForSessionAsync(

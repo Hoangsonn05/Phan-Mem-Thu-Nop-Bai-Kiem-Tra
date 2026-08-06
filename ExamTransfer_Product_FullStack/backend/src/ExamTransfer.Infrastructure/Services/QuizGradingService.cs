@@ -480,17 +480,31 @@ public sealed class QuizGradingService(
                 cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài làm trắc nghiệm.", 404);
         EnsureFinalized(attempt);
-        var returned = attempt.GradingStatus == GradingStatus.Returned
-            && attempt.ReturnedAtUtc.HasValue;
-        var scoreVisible = returned;
+        var scoreVisible = QuizStudentResultVisibility.IsScoreVisible(attempt);
+        var correctAnswersVisible = QuizStudentResultVisibility.AreCorrectAnswersVisible(attempt);
+        if (scoreVisible)
+        {
+            var authoritative = await QuizGradeAuthoritativeScoring.CalculateAsync(
+                db,
+                attempt,
+                cancellationToken);
+            if (attempt.Score != authoritative.Score
+                || attempt.AutoScore != authoritative.Score
+                || attempt.MaxScore != authoritative.MaxScore)
+            {
+                throw new ApiException(
+                    ErrorCodes.ValidationFailed,
+                    "Kết quả Quiz không khớp dữ liệu answer authoritative.");
+            }
+        }
         return new(
             attempt.Id,
             scoreVisible ? attempt.Score : null,
             attempt.MaxScore,
             scoreVisible,
-            returned,
-            returned ? attempt.GeneralComment : null,
-            await BuildQuestionsAsync(attempt, revealCorrect: returned, cancellationToken));
+            correctAnswersVisible,
+            correctAnswersVisible ? attempt.GeneralComment : null,
+            await BuildQuestionsAsync(attempt, revealCorrect: correctAnswersVisible, cancellationToken));
     }
 
     private async Task<QuizAttempt> RequireGradeableAttemptAsync(
