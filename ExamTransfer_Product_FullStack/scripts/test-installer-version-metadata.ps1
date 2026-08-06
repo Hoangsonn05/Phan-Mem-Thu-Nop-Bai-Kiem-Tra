@@ -82,7 +82,7 @@ $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) (
     'ExamTransfer-InstallerMetadata-' + [Guid]::NewGuid().ToString('N'))
 $releaseRoot = Join-Path $fixtureRoot 'Release'
 $outputRoot = Join-Path $fixtureRoot 'Output'
-$fixtureInstaller = Join-Path $outputRoot "Khoa-DT-KTMT-Setup-$Version.exe"
+$fixtureInstaller = Join-Path $outputRoot "Khoa-DT-KTMT-Setup-$Version-$($fixtureHead.Substring(0, 8)).exe"
 $fixtureHashFile = "$fixtureInstaller.sha256.txt"
 $legacySource = Join-Path $fixtureRoot 'LegacyMissingFileVersion.iss'
 $legacyInstaller = Join-Path $outputRoot 'Legacy-Missing-FileVersion.exe'
@@ -95,6 +95,20 @@ try {
         $outputRoot)) {
         [IO.Directory]::CreateDirectory($directory) | Out-Null
     }
+    [IO.Directory]::CreateDirectory($fixtureRepository) | Out-Null
+    & git -C $fixtureRepository init --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to initialize artifact validator fixture repository.' }
+    & git -C $fixtureRepository config user.name 'ExamTransfer Fixture'
+    & git -C $fixtureRepository config user.email 'fixture@example.test'
+    [IO.File]::WriteAllText((Join-Path $fixtureRepository 'tracked.txt'), 'fixture')
+    & git -C $fixtureRepository add -- tracked.txt
+    & git -C $fixtureRepository commit --quiet -m 'fixture'
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to commit artifact validator fixture repository.' }
+    $fixtureHead = (& git -C $fixtureRepository rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $fixtureHead) {
+        throw 'Unable to resolve artifact validator fixture HEAD.'
+    }
+
     [IO.File]::WriteAllText((Join-Path $releaseRoot 'Client\placeholder.txt'), 'fixture')
     [IO.File]::WriteAllText(
         (Join-Path $releaseRoot 'Client\publiccloud.runtime.json'), '{}')
@@ -104,6 +118,7 @@ try {
     $testAppId = '{{' + [Guid]::NewGuid().ToString().ToUpperInvariant() + '}'
     $isccArguments = @(
         "/DMyAppVersion=$Version",
+        "/DMyAppShortCommit=$($fixtureHead.Substring(0, 8))",
         "/DMyAppId=$testAppId",
         "/DMyDefaultDirName=$(Join-Path $fixtureRoot 'App')",
         "/DMyOutputDir=$outputRoot",
