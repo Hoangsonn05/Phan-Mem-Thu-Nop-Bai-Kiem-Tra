@@ -81,7 +81,9 @@ $outputRoot = Join-Path $fixtureRoot 'Installer'
 $installLog = Join-Path $fixtureRoot 'install.log'
 $upgradeLog = Join-Path $fixtureRoot 'upgrade.log'
 $uninstallLog = Join-Path $fixtureRoot 'uninstall.log'
-$testInstaller = Join-Path $outputRoot "Khoa-DT-KTMT-Setup-$Version.exe"
+$manifestContent = Get-Content -LiteralPath $releaseManifestPath -Raw | ConvertFrom-Json
+$shortCommit = $manifestContent.gitCommit.Substring(0, 8)
+$testInstaller = Join-Path $outputRoot "Khoa-DT-KTMT-Setup-$Version-$shortCommit.exe"
 $uninstaller = Join-Path $installRoot 'unins000.exe'
 
 try {
@@ -89,6 +91,7 @@ try {
     $testAppId = '{{' + [Guid]::NewGuid().ToString().ToUpperInvariant() + '}'
     $isccArguments = @(
         "/DMyAppVersion=$Version",
+        "/DMyAppShortCommit=$shortCommit",
         "/DMyAppId=$testAppId",
         "/DMyDefaultDirName=$installRoot",
         '/DMyClientShortcutName=Khoa-DT-KTMT Public Config Acceptance',
