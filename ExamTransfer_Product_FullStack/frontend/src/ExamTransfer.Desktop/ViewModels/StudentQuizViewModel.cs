@@ -8,6 +8,25 @@ using ExamTransfer.Shared.Contracts;
 
 namespace ExamTransfer.Desktop.ViewModels;
 
+// ── Interface injected for testability ─────────────────────────────────────
+public interface IQuizLocalStore
+{
+    /// <summary>
+    /// Reads local answers for <paramref name="attemptId"/> without acquiring
+    /// any cross-attempt or cross-operation lock.  Safe to call concurrently
+    /// with <see cref="SaveAsync"/> because saves write to a temp file then
+    /// atomically move it into place.
+    /// </summary>
+    Task<IReadOnlyList<QuizAnswerDto>> LoadAsync(Guid attemptId, CancellationToken ct);
+
+    /// <summary>
+    /// Persists answers for <paramref name="attemptId"/>.  A per-attempt write
+    /// lock prevents concurrent writes for the *same* attempt from racing.
+    /// </summary>
+    Task SaveAsync(Guid attemptId, IEnumerable<QuizAnswerDto> answers, CancellationToken ct);
+}
+
+// ── ViewModel ───────────────────────────────────────────────────────────────
 public sealed class StudentQuizViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
@@ -17,6 +36,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
     private readonly ICountdownTicker ticker;
     private readonly IStudentRealtimeService realtime;
     private readonly IStudentExamFlowCoordinator flowCoordinator;
+    private readonly IQuizLocalStore localStore;
     private readonly SemaphoreSlim syncGate = new(1, 1);
     private readonly Dictionary<Guid, QuizAnswerDto> localAnswers = [];
     private QuizAttemptDto? attempt;
@@ -27,6 +47,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
     private int realtimeSnapshotRefreshRequested;
     private string? lastGradeSignal;
 
+    // ── Production constructor (uses static default store) ──────────────────
     public StudentQuizViewModel(IBackendClient api, StudentSessionState session)
         : this(
             api,
@@ -34,17 +55,20 @@ public sealed class StudentQuizViewModel : ProductPageBase
             AppServices.ServerClock,
             AppServices.CountdownTickers.Create(TimeSpan.FromSeconds(1)),
             AppServices.StudentRealtime,
-            AppServices.StudentExamFlow)
+            AppServices.StudentExamFlow,
+            QuizLocalStoreAdapter.Default)
     {
     }
 
+    // ── Testable constructor ────────────────────────────────────────────────
     public StudentQuizViewModel(
         IBackendClient api,
         StudentSessionState session,
         IServerClock serverClock,
         ICountdownTicker ticker,
         IStudentRealtimeService realtime,
-        IStudentExamFlowCoordinator? flowCoordinator = null)
+        IStudentExamFlowCoordinator? flowCoordinator = null,
+        IQuizLocalStore? localStore = null)
     {
         this.api = api ?? throw new ArgumentNullException(nameof(api));
         this.session = session ?? throw new ArgumentNullException(nameof(session));
@@ -53,6 +77,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
         this.ticker = ticker ?? throw new ArgumentNullException(nameof(ticker));
         this.realtime = realtime ?? throw new ArgumentNullException(nameof(realtime));
         this.flowCoordinator = flowCoordinator ?? AppServices.StudentExamFlow;
+        this.localStore = localStore ?? QuizLocalStoreAdapter.Default;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy && session.HasSession);
         SyncCommand = new AsyncRelayCommand(() => SyncAsync(DisposeToken, true), () => !IsBusy && CanEditAnswers);
         FinalizeCommand = new AsyncRelayCommand(FinalizeAsync, () => !IsBusy && Attempt is not null && Attempt.Status == QuizAttemptStatus.InProgress);
@@ -159,20 +184,96 @@ public sealed class StudentQuizViewModel : ProductPageBase
                 throw new QuizAttemptContentException(
                     ErrorCodes.QuizAttemptSnapshotInvalid,
                     loadedAttempt.Id);
+
+            // ── Step 1: Seed localAnswers from authoritative server answers ──
+            localAnswers.Clear();
+            foreach (var answer in loadedAttempt.Answers)
+                localAnswers[answer.QuestionId] = answer;
+
+            // ── Step 2: Assign Attempt and render questions immediately ──────
+            // This must happen BEFORE awaiting the local store so the UI
+            // shows questions as soon as the server snapshot is available.
             Attempt = loadedAttempt;
             Review = null;
-            localAnswers.Clear();
-            foreach (var answer in Attempt.Answers) localAnswers[answer.QuestionId] = answer;
-            foreach (var answer in await QuizLocalStore.LoadAsync(Attempt.Id, token))
-                if (!localAnswers.TryGetValue(answer.QuestionId, out var current) || answer.Revision > current.Revision) localAnswers[answer.QuestionId] = answer;
             ApplyQuestions();
             ticker.Start();
+
+            // ── Step 3: Hydrate local answers in the background ──────────────
+            // Local store errors / slowness must not block or clear the render.
+            // We fire-and-forget the hydration task, which merges on the
+            // dispatcher once the data is available.
+            HydrateLocalAnswersAsync(loadedAttempt.Id, token).SafeFireAndForget("Quiz.LocalHydrate");
+
+            // ── Step 4: Proceed with post-load sync / review ─────────────────
             if (Attempt.Status == QuizAttemptStatus.InProgress) await SyncAsync(token, false);
             else await LoadReviewCoreAsync(token);
             UpdateCountdown();
             Interlocked.Exchange(
                 ref expiredSnapshotRefreshRequested,
                 remaining is { } value && value <= TimeSpan.Zero ? 1 : 0);
+        });
+    }
+
+    /// <summary>
+    /// Reads the local answer cache without blocking <see cref="LoadAsync"/>.
+    /// On success, merges any locally saved answers with higher revision than
+    /// the server snapshot and re-renders the choice selections.
+    /// On failure, logs a warning and leaves the server snapshot in place —
+    /// no questions are cleared and the attempt stays InProgress.
+    /// </summary>
+    private async Task HydrateLocalAnswersAsync(Guid attemptId, CancellationToken ct)
+    {
+        IReadOnlyList<QuizAnswerDto> stored;
+        try
+        {
+            stored = await localStore.LoadAsync(attemptId, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return; // disposed — no action needed
+        }
+        catch (Exception ex)
+        {
+            FrontendLogger.LogWarning(
+                $"Quiz.LocalHydrate: failed to read local answer cache for attempt {attemptId}: {ex.Message}",
+                "StudentQuizViewModel.HydrateLocalAnswers");
+            return; // leave server snapshot — do NOT clear questions
+        }
+
+        // Merge: local answer wins only if its revision is higher.
+        var changed = false;
+        foreach (var answer in stored)
+        {
+            if (!localAnswers.TryGetValue(answer.QuestionId, out var current)
+                || answer.Revision > current.Revision)
+            {
+                localAnswers[answer.QuestionId] = answer;
+                changed = true;
+            }
+        }
+
+        if (!changed) return;
+
+        // Re-apply selections on the UI thread without rebuilding the full list.
+        // Guard: if Attempt changed (e.g. finalized) while we were loading, skip.
+        if (IsDisposed || Attempt?.Id != attemptId) return;
+
+        RunOnUiThread(() =>
+        {
+            if (IsDisposed || Attempt?.Id != attemptId) return;
+            applying = true;
+            foreach (var row in Questions)
+            {
+                if (!localAnswers.TryGetValue(row.Id, out var answer)) continue;
+                var selected = answer.ChoiceIds.ToHashSet();
+                foreach (var choice in row.Choices)
+                    choice.IsSelected = selected.Contains(choice.Id);
+            }
+            applying = false;
+            Raise(nameof(AnsweredCount));
+            Raise(nameof(UnansweredCount));
+            Raise(nameof(ProgressText));
+            RaiseCommands();
         });
     }
 
@@ -213,7 +314,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
     private void ApplyQuestions()
     {
         if (Attempt is null) return;
-        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+        RunOnUiThread(() =>
         {
             applying = true;
             Questions.Clear();
@@ -254,7 +355,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
         Raise(nameof(AnsweredCount));
         Raise(nameof(UnansweredCount));
         Raise(nameof(ProgressText));
-        QuizLocalStore.SaveAsync(activeAttempt.Id, localAnswers.Values, DisposeToken).SafeFireAndForget("Quiz.LocalSave");
+        localStore.SaveAsync(activeAttempt.Id, localAnswers.Values, DisposeToken).SafeFireAndForget("Quiz.LocalSave");
         SyncAsync(DisposeToken, false).SafeFireAndForget("Quiz.AutoSync");
     }
 
@@ -275,7 +376,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
                     $"api/v1/student/quiz/attempts/{Attempt.Id}/answers", new(payload), ct));
             serverClock.Synchronize(response.ServerNowUtc);
             foreach (var answer in response.Answers) localAnswers[answer.QuestionId] = answer;
-            await QuizLocalStore.SaveAsync(Attempt.Id, localAnswers.Values, ct);
+            await localStore.SaveAsync(Attempt.Id, localAnswers.Values, ct);
             UpdateCountdown();
             if (showStatus) { Status = "Đã đồng bộ đáp án với máy chủ"; StatusTone = "success"; }
         }
@@ -525,6 +626,19 @@ public sealed class StudentQuizViewModel : ProductPageBase
         ticker.Dispose();
         base.Dispose();
     }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> on the WPF Dispatcher when a UI thread exists,
+    /// or directly when running in a unit-test context (no <c>Application.Current</c>).
+    /// </summary>
+    private static void RunOnUiThread(Action action)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null)
+            action();
+        else
+            dispatcher.Invoke(action);
+    }
 }
 
 internal sealed class QuizAttemptContentException(string code, Guid attemptId)
@@ -547,33 +661,66 @@ public sealed class QuizChoiceState : ObservableObject
     public bool IsSelected { get => selected; set { if (Set(ref selected, value)) changed(); } }
 }
 
+// ── Local store interface adapter (wraps the static implementation) ─────────
+
+/// <summary>
+/// Adapter that wraps <see cref="QuizLocalStore"/> under <see cref="IQuizLocalStore"/>
+/// so the ViewModel can be tested with fake stores.
+/// </summary>
+public sealed class QuizLocalStoreAdapter : IQuizLocalStore
+{
+    public static readonly QuizLocalStoreAdapter Default = new();
+
+    public Task<IReadOnlyList<QuizAnswerDto>> LoadAsync(Guid attemptId, CancellationToken ct) =>
+        QuizLocalStore.LoadAsync(attemptId, ct);
+
+    public Task SaveAsync(Guid attemptId, IEnumerable<QuizAnswerDto> answers, CancellationToken ct) =>
+        QuizLocalStore.SaveAsync(attemptId, answers, ct);
+}
+
+// ── Static file store ────────────────────────────────────────────────────────
+
 internal static class QuizLocalStore
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private static readonly SemaphoreSlim Gate = new(1, 1);
+
+    // Per-attempt write lock: keyed by attemptId so concurrent writes for
+    // different attempts never block each other, and reads for any attempt are
+    // never blocked by a write lock for a *different* attempt.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, SemaphoreSlim> WriteLocks = new();
+
     private static string Root => Path.Combine(AppProfile.LocalDataRoot, "quiz-outbox");
     private static string PathFor(Guid attemptId) => Path.Combine(Root, attemptId.ToString("N") + ".json");
+
+    /// <summary>
+    /// Reads the local answer file without acquiring any global lock.
+    /// Safe because <see cref="SaveAsync"/> writes atomically (temp → move).
+    /// </summary>
     public static async Task<IReadOnlyList<QuizAnswerDto>> LoadAsync(Guid attemptId, CancellationToken ct)
     {
-        await Gate.WaitAsync(ct);
-        try
-        {
-            var path = PathFor(attemptId); if (!File.Exists(path)) return [];
-            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
-            return await JsonSerializer.DeserializeAsync<List<QuizAnswerDto>>(stream, Json, ct) ?? [];
-        }
-        finally { Gate.Release(); }
+        var path = PathFor(attemptId);
+        if (!File.Exists(path)) return [];
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, true);
+        return await JsonSerializer.DeserializeAsync<List<QuizAnswerDto>>(stream, Json, ct) ?? [];
     }
+
+    /// <summary>
+    /// Saves answers via temp-file then atomic move, protected by a per-attempt
+    /// write lock so concurrent saves for the same attempt are serialized.
+    /// </summary>
     public static async Task SaveAsync(Guid attemptId, IEnumerable<QuizAnswerDto> answers, CancellationToken ct)
     {
-        await Gate.WaitAsync(ct);
+        var gate = WriteLocks.GetOrAdd(attemptId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
         try
         {
-            Directory.CreateDirectory(Root); var path = PathFor(attemptId); var temporary = path + ".tmp";
+            Directory.CreateDirectory(Root);
+            var path = PathFor(attemptId);
+            var temporary = path + ".tmp";
             await using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
                 await JsonSerializer.SerializeAsync(stream, answers.ToList(), Json, ct);
             File.Move(temporary, path, true);
         }
-        finally { Gate.Release(); }
+        finally { gate.Release(); }
     }
 }

@@ -309,6 +309,8 @@ internal sealed class RecordingBackendClient(
     public int DashboardRequests { get; private set; }
     public DashboardSummaryDto? DashboardResponse { get; init; }
     public QuizAttemptDto? QuizAttemptResponse { get; init; }
+    public StudentQuizReviewDto? StudentQuizReviewResponse { get; init; }
+    public SyncQuizAnswersResultDto? SyncQuizAnswersResultResponse { get; init; }
     public QuizImportResultDto? QuizImportResultResponse { get; set; }
     public ClassDetailDto? ClassDetailResponse { get; init; }
     public ExamSummaryDto? ExamSummaryResponse { get; init; }
@@ -447,6 +449,9 @@ internal sealed class RecordingBackendClient(
         if (ExamManifestResponse is not null && typeof(T) == typeof(ExamManifestDto))
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ExamManifestResponse, "test"));
+        if (StudentQuizReviewResponse is not null && typeof(T) == typeof(StudentQuizReviewDto))
+            return Task.FromResult<ApiResponse<T>?>(
+                ApiResponse<T>.Ok((T)(object)StudentQuizReviewResponse, "test"));
         if (typeof(T) == typeof(CloudProjectionReadinessView) && ProjectionResponses.Count > 0)
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ProjectionResponses.Dequeue(), "test"));
@@ -493,6 +498,9 @@ internal sealed class RecordingBackendClient(
         if (SessionDetailResponse is not null && typeof(TResponse) == typeof(SessionDetailDto))
             return Task.FromResult<ApiResponse<TResponse>?>(
                 ApiResponse<TResponse>.Ok((TResponse)(object)SessionDetailResponse, "test"));
+        if (SyncQuizAnswersResultResponse is not null && typeof(TResponse) == typeof(SyncQuizAnswersResultDto))
+            return Task.FromResult<ApiResponse<TResponse>?>(
+                ApiResponse<TResponse>.Ok((TResponse)(object)SyncQuizAnswersResultResponse, "test"));
         return Task.FromResult<ApiResponse<TResponse>?>(null);
     }
     public Task<ApiResponse<TResponse>?> DeleteAsync<TResponse>(string path, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);
