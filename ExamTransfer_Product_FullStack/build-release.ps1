@@ -218,6 +218,7 @@ dotnet publish $frontendProject `
     -p:ExamTransferBuildId=$buildId `
     -p:ExamTransferGitCommit=$gitCommit `
     -p:ExamTransferWorkingTreeDirty=false `
+    -p:IncludeSourceRevisionInInformationalVersion=false `
     "-p:ApplicationIcon=$appIcon" `
     -o $clientOutput
 if ($LASTEXITCODE -ne 0) { throw 'Frontend publish failed.' }
@@ -246,6 +247,7 @@ dotnet publish $backendProject `
     -p:ExamTransferBuildId=$buildId `
     -p:ExamTransferGitCommit=$gitCommit `
     -p:ExamTransferWorkingTreeDirty=false `
+    -p:IncludeSourceRevisionInInformationalVersion=false `
     -o $serverOutput
 if ($LASTEXITCODE -ne 0) { throw 'Local Server publish failed.' }
 
