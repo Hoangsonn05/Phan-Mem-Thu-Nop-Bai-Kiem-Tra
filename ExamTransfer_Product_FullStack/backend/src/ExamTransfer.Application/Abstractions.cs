@@ -717,6 +717,7 @@ public interface IQuizService
     Task<QuizImportPreviewDto> PreviewImportAsync(Guid examId, Guid teacherId, QuizImportPreviewRequest request, CancellationToken cancellationToken);
     Task<QuizImportResultDto> CommitImportAsync(Guid examId, Guid teacherId, QuizImportCommitRequest request, CancellationToken cancellationToken);
     Task<IReadOnlyList<QuizAttemptDto>> ListAttemptsForSessionAsync(Guid sessionId, CancellationToken cancellationToken);
+    Task<IReadOnlyList<TeacherQuizAttemptSummaryDto>> ListTeacherSubmissionsForSessionAsync(Guid sessionId, Guid actorId, string? organizationId, CancellationToken cancellationToken);
     Task<QuizAttemptDto?> GetAttemptAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken);
     Task<QuizAttemptDto> StartOrGetAttemptAsync(Guid sessionId, Guid participantId, CancellationToken cancellationToken);
     Task<SyncQuizAnswersResultDto> SyncAnswersAsync(Guid attemptId, Guid participantId, SyncQuizAnswersRequest request, CancellationToken cancellationToken);

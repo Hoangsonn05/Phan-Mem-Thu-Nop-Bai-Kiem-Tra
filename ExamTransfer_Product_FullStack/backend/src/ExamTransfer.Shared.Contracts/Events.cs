@@ -24,6 +24,7 @@ public static class RealtimeEvents
     public const string GradeReturned = nameof(GradeReturned);
     public const string QuizGradeReturned = nameof(QuizGradeReturned);
     public const string QuizGradeReopened = nameof(QuizGradeReopened);
+    public const string QuizAttemptFinalized = nameof(QuizAttemptFinalized);
     public const string ExportProgressChanged = nameof(ExportProgressChanged);
     public const string CloudSyncStatusChanged = nameof(CloudSyncStatusChanged);
     public const string BackupProgressChanged = nameof(BackupProgressChanged);
@@ -50,6 +51,7 @@ public sealed record DownloadProgressEvent(Guid ParticipantId, double Percent, l
 public sealed record TransferProgressEvent(Guid TransferId, TransferDirection Direction, long Bytes, double BytesPerSecond, TransferStatus Status);
 public sealed record SubmissionAcceptedEvent(Guid SubmissionId, Guid ParticipantId, string ReceiptCode, bool IsLate);
 public sealed record SubmissionRejectedEvent(Guid SubmissionId, string Reason);
+public sealed record QuizAttemptFinalizedEvent(Guid AttemptId, Guid ParticipantId);
 public sealed record TimeExtendedEvent(
     Guid? ParticipantId,
     int Minutes,

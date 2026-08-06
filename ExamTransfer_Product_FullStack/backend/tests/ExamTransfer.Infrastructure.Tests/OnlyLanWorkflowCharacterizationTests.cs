@@ -26,6 +26,256 @@ namespace ExamTransfer.Infrastructure.Tests;
 public sealed class OnlyLanWorkflowCharacterizationTests
 {
     [Fact]
+    public async Task FinalizedQuizAttempt_ContributesToSessionSubmittedCount()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var seeded = await fixture.SeedPublishedQuizAsync();
+        seeded.Exam.QuizResultPolicy = QuizResultPolicy.Hidden;
+        seeded.Exam.QuizShuffleEnabled = true;
+        await fixture.Db.SaveChangesAsync();
+        var session = await fixture.CreateAndOpenLanSessionAsync(seeded.Exam.Id, "LANCOUNT");
+        var participant = new SessionParticipant
+        {
+            SessionId = session.Summary.Id,
+            StudentCode = seeded.Student.StudentCode!,
+            DisplayName = seeded.Student.DisplayName,
+            DeviceId = "count-device",
+            MachineName = "count-machine",
+            AppVersion = "test",
+            Status = ParticipantStatus.Approved,
+            SubmissionStatus = SubmissionStatus.NotStarted
+        };
+        fixture.Db.SessionParticipantsSet.Add(participant);
+        fixture.Db.QuizAttemptsSet.Add(new QuizAttempt
+        {
+            SessionId = session.Summary.Id,
+            ParticipantId = participant.Id,
+            AttemptNumber = 1,
+            ExamVersion = session.Summary.ExamVersion,
+            Status = QuizAttemptStatus.Finalized,
+            StartedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5),
+            DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(25),
+            FinalizedAtUtc = DateTimeOffset.UtcNow,
+            AutoScore = 8m,
+            Score = 8m,
+            MaxScore = 10m,
+            GradingStatus = GradingStatus.Graded,
+            SnapshotJson = "{}"
+        });
+        var inProgressParticipant = new SessionParticipant
+        {
+            SessionId = session.Summary.Id,
+            StudentCode = "LAN-IN-PROGRESS",
+            DisplayName = "In Progress Student",
+            DeviceId = "in-progress-device",
+            MachineName = "in-progress-machine",
+            AppVersion = "test",
+            Status = ParticipantStatus.Approved,
+            SubmissionStatus = SubmissionStatus.NotStarted
+        };
+        fixture.Db.SessionParticipantsSet.Add(inProgressParticipant);
+        fixture.Db.QuizAttemptsSet.Add(new QuizAttempt
+        {
+            SessionId = session.Summary.Id,
+            ParticipantId = inProgressParticipant.Id,
+            AttemptNumber = 1,
+            ExamVersion = session.Summary.ExamVersion,
+            Status = QuizAttemptStatus.InProgress,
+            StartedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-2),
+            DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(28),
+            MaxScore = 10m,
+            SnapshotJson = "{}"
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var detail = await fixture.Sessions.GetAsync(
+            session.Summary.Id,
+            CancellationToken.None);
+
+        Assert.Equal(1, detail.Summary.Counts.Submitted);
+    }
+
+    [Fact]
+    public async Task TeacherQuizProjection_ReturnsIdentityAuthoritativeScoreAndServerTiming()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var seeded = await fixture.SeedPublishedQuizAsync();
+        seeded.Exam.QuizResultPolicy = QuizResultPolicy.Hidden;
+        seeded.Exam.QuizShuffleEnabled = true;
+        await fixture.Db.SaveChangesAsync();
+        var session = await fixture.CreateAndOpenLanSessionAsync(seeded.Exam.Id, "LANLIST");
+        var startedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var finalizedAt = startedAt.AddMinutes(5);
+        var participant = new SessionParticipant
+        {
+            SessionId = session.Summary.Id,
+            StudentCode = seeded.Student.StudentCode!,
+            DisplayName = seeded.Student.DisplayName,
+            DeviceId = "list-device",
+            MachineName = "list-machine",
+            AppVersion = "test",
+            Status = ParticipantStatus.Approved
+        };
+        var attempt = new QuizAttempt
+        {
+            SessionId = session.Summary.Id,
+            ParticipantId = participant.Id,
+            AttemptNumber = 1,
+            ExamVersion = session.Summary.ExamVersion,
+            Status = QuizAttemptStatus.Finalized,
+            StartedAtUtc = startedAt,
+            DeadlineUtc = finalizedAt.AddMinutes(10),
+            FinalizedAtUtc = finalizedAt,
+            AutoScore = 8m,
+            Score = 8m,
+            MaxScore = 10m,
+            GradingStatus = GradingStatus.Graded,
+            ResultPolicySnapshot = QuizResultPolicy.Hidden,
+            SnapshotJson = "{}"
+        };
+        fixture.Db.AddRange(participant, attempt);
+        await fixture.Db.SaveChangesAsync();
+
+        var rows = await fixture.Quiz.ListTeacherSubmissionsForSessionAsync(
+            session.Summary.Id,
+            seeded.Teacher.Id,
+            seeded.Teacher.OrganizationId,
+            CancellationToken.None);
+
+        var row = Assert.Single(rows);
+        Assert.Equal(participant.Id, row.ParticipantId);
+        Assert.Equal(participant.StudentCode, row.StudentCode);
+        Assert.Equal(participant.DisplayName, row.FullName);
+        Assert.Equal(1, row.AttemptNumber);
+        Assert.Equal(QuizAttemptStatus.Finalized, row.Status);
+        Assert.Equal(GradingStatus.Graded, row.GradingStatus);
+        Assert.Equal(8m, row.Score);
+        Assert.Equal(10m, row.MaxScore);
+        Assert.Equal(startedAt, row.StartedAtUtc);
+        Assert.Equal(finalizedAt, row.FinalizedAtUtc);
+        Assert.Equal(300, row.DurationSeconds);
+        Assert.Null(row.DataIssue);
+    }
+
+    [Fact]
+    public async Task TeacherQuizProjection_InvalidScoreFailsClosedWithoutDroppingRow()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var seeded = await fixture.SeedPublishedQuizAsync();
+        var session = await fixture.CreateAndOpenLanSessionAsync(seeded.Exam.Id, "LANBAD");
+        var participant = new SessionParticipant
+        {
+            SessionId = session.Summary.Id,
+            StudentCode = seeded.Student.StudentCode!,
+            DisplayName = seeded.Student.DisplayName,
+            DeviceId = "bad-device",
+            MachineName = "bad-machine",
+            AppVersion = "test",
+            Status = ParticipantStatus.Approved
+        };
+        fixture.Db.AddRange(participant, new QuizAttempt
+        {
+            SessionId = session.Summary.Id,
+            ParticipantId = participant.Id,
+            ExamVersion = session.Summary.ExamVersion,
+            Status = QuizAttemptStatus.Finalized,
+            StartedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+            DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(29),
+            FinalizedAtUtc = DateTimeOffset.UtcNow,
+            AutoScore = 12m,
+            Score = 12m,
+            MaxScore = 10m,
+            GradingStatus = GradingStatus.Graded,
+            SnapshotJson = "{}"
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var row = Assert.Single(await fixture.Quiz.ListTeacherSubmissionsForSessionAsync(
+            session.Summary.Id,
+            seeded.Teacher.Id,
+            seeded.Teacher.OrganizationId,
+            CancellationToken.None));
+
+        Assert.Null(row.Score);
+        Assert.Equal(10m, row.MaxScore);
+        Assert.Contains("không hợp lệ", row.DataIssue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task TeacherQuizProjection_DeniesTeacherFromAnotherOrganization()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var seeded = await fixture.SeedPublishedQuizAsync();
+        var session = await fixture.CreateAndOpenLanSessionAsync(seeded.Exam.Id, "LANDENY");
+        var stranger = new User
+        {
+            Username = $"stranger-{Guid.NewGuid():N}",
+            DisplayName = "Other Teacher",
+            Role = UserRole.Teacher,
+            IsActive = true,
+            OrganizationId = "org-other"
+        };
+        fixture.Db.UsersSet.Add(stranger);
+        await fixture.Db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            fixture.Quiz.ListTeacherSubmissionsForSessionAsync(
+                session.Summary.Id,
+                stranger.Id,
+                stranger.OrganizationId,
+                CancellationToken.None));
+
+        Assert.Equal(403, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task FileSubmissionSession_PreservesSubmissionStatusCount()
+    {
+        await using var fixture = await OnlyLanFixture.CreateAsync();
+        var teacher = new User
+        {
+            Username = $"file-teacher-{Guid.NewGuid():N}",
+            DisplayName = "File Teacher",
+            Role = UserRole.Teacher,
+            IsActive = true,
+            OrganizationId = "org-onlylan"
+        };
+        var exam = new Exam
+        {
+            Title = "File exam",
+            Subject = "Regression",
+            DurationMinutes = 30,
+            Status = ExamStatus.Published,
+            DeliveryType = ExamDeliveryType.FileSubmission,
+            CreatedBy = teacher.Id
+        };
+        fixture.Db.AddRange(teacher, exam);
+        await fixture.Db.SaveChangesAsync();
+        var session = await fixture.CreateAndOpenLanSessionAsync(exam.Id, "LANFILE");
+        fixture.Db.SessionParticipantsSet.AddRange(
+            Participant("FILE-1", SubmissionStatus.Submitted),
+            Participant("FILE-2", SubmissionStatus.LateSubmitted),
+            Participant("FILE-3", SubmissionStatus.Uploading));
+        await fixture.Db.SaveChangesAsync();
+
+        var detail = await fixture.Sessions.GetAsync(session.Summary.Id, CancellationToken.None);
+
+        Assert.Equal(2, detail.Summary.Counts.Submitted);
+
+        SessionParticipant Participant(string code, SubmissionStatus status) => new()
+        {
+            SessionId = session.Summary.Id,
+            StudentCode = code,
+            DisplayName = code,
+            DeviceId = code,
+            MachineName = code,
+            AppVersion = "test",
+            Status = ParticipantStatus.Approved,
+            SubmissionStatus = status
+        };
+    }
+
+    [Fact]
     public async Task FullLifecycle_CompletesWithStrictPolicyAndPersistsAfterContextReload()
     {
         await using var fixture = await OnlyLanFixture.CreateAsync();
@@ -126,6 +376,9 @@ public sealed class OnlyLanWorkflowCharacterizationTests
         Assert.Equal(10.00m, finalized.Score);
         Assert.Equal(finalized.Score, repeated.Score);
         Assert.Equal(finalized.Id, repeated.Id);
+        Assert.Equal(
+            1,
+            fixture.RealtimeEvents.Count(x => x == RealtimeEvents.QuizAttemptFinalized));
         Assert.Single(await fixture.Quiz.ListAttemptsForSessionAsync(
             session.Summary.Id,
             CancellationToken.None));
@@ -868,7 +1121,9 @@ public sealed class OnlyLanWorkflowCharacterizationTests
                 new DeviceStatusReadExecution(db));
             Quiz = new QuizService(
                 db,
-                new QuizProjectionOutbox(outbox));
+                new QuizProjectionOutbox(outbox),
+                logger: NullLogger<QuizService>.Instance,
+                realtime: realtime);
         }
 
         public AppDbContext Db { get; }
@@ -946,7 +1201,8 @@ public sealed class OnlyLanWorkflowCharacterizationTests
                 Username = $"lan-teacher-{Guid.NewGuid():N}",
                 DisplayName = "OnlyLAN Teacher",
                 Role = UserRole.Teacher,
-                IsActive = true
+                IsActive = true,
+                OrganizationId = "org-onlylan"
             };
             var student = new User
             {

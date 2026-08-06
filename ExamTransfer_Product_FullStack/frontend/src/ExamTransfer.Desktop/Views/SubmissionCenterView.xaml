@@ -45,7 +45,7 @@
                               SelectedItem="{Binding SelectedSession}"
                               DisplayMemberPath="Title"
                               Width="260" />
-                    <Button Content="Tải bài nộp"
+                    <Button Content="Tải danh sách"
                             Command="{Binding LoadCommand}"
                             Style="{StaticResource PrimaryButton}"
                             MinHeight="42"
@@ -192,6 +192,7 @@
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  IsEnabled="{Binding CanSelect}"
                                                   HorizontalAlignment="Center"
                                                   VerticalAlignment="Center" />
                                     </DataTemplate>
@@ -200,19 +201,35 @@
                             <DataGridTextColumn Header="MÃ" Binding="{Binding StudentCode}" Width="80" />
                             <DataGridTextColumn Header="HỌ TÊN" Binding="{Binding StudentName}" Width="*" />
                             <DataGridTextColumn Header="LẦN" Binding="{Binding AttemptNumber}" Width="55" />
-                            <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="110" />
+                            <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding StatusText}" Width="110" />
+                            <DataGridTextColumn Header="CHẤM" Binding="{Binding GradingStatusText}" Width="90" />
+                            <DataGridTextColumn Header="ĐIỂM" Binding="{Binding ScoreText}" Width="70" />
+                            <DataGridTextColumn Header="TỐI ĐA" Binding="{Binding MaxScoreText}" Width="70" />
+                            <DataGridTextColumn Header="BẮT ĐẦU" Binding="{Binding StartedAtText}" Width="145" />
+                            <DataGridTextColumn Header="CHỐT BÀI" Binding="{Binding FinalizedAtText}" Width="145" />
+                            <DataGridTextColumn Header="THỜI GIAN" Binding="{Binding DurationText}" Width="90" />
                             <DataGridCheckBoxColumn Header="MUỘN"
                                                     Binding="{Binding IsLate, Mode=OneWay}"
                                                     IsReadOnly="True"
                                                     Width="55" />
                             <DataGridTextColumn Header="BIÊN NHẬN" Binding="{Binding ReceiptCode}" Width="120" />
+                            <DataGridTextColumn Header="DỮ LIỆU" Binding="{Binding DataIssue}" Width="180" />
                         </DataGrid.Columns>
                     </DataGrid>
+                    <TextBlock Grid.Row="1"
+                               Text="Chưa có bài đã nộp trong phiên này."
+                               Style="{StaticResource BodyText}"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               IsHitTestVisible="False"
+                               Visibility="{Binding HasNoSubmissions, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 </Grid>
             </Border>
 
             <!-- Action panel -->
-            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+            <ScrollViewer Grid.Column="2"
+                          VerticalScrollBarVisibility="Auto"
+                          Visibility="{Binding IsFileSubmissionSession, Converter={StaticResource BooleanToVisibilityConverter}}">
                 <StackPanel>
                     <Border Style="{StaticResource Card}">
                         <StackPanel>

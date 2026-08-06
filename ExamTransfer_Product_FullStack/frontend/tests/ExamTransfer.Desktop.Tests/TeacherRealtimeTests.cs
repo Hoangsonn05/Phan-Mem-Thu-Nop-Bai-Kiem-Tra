@@ -7,6 +7,10 @@ using Xunit;
 
 namespace ExamTransfer.Desktop.Tests;
 
+[CollectionDefinition("Teacher realtime", DisableParallelization = true)]
+public sealed class TeacherRealtimeCollection;
+
+[Collection("Teacher realtime")]
 public sealed class TeacherRealtimeTests
 {
     [Fact]
@@ -626,6 +630,74 @@ public sealed class TeacherRealtimeTests
         Assert.Single(viewModel.Submissions);
     }
 
+    [Fact]
+    public async Task SubmissionCenter_QuizAttemptFinalizedRefreshesQuizProjectionOnly()
+    {
+        var session = CreateSession(SessionStatus.Collecting) with
+        {
+            DeliveryType = ExamDeliveryType.MultipleChoice
+        };
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        using var viewModel = new SubmissionCenterViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        Assert.Equal(1, backend.QuizAttemptRequests);
+        Assert.Equal(0, backend.SubmissionRequests);
+
+        backend.QuizAttempts = [CreateQuizAttempt(session.Id)];
+        realtime.Raise(new(
+            Guid.NewGuid(),
+            RealtimeEvents.QuizAttemptFinalized,
+            2,
+            null));
+        await Task.Delay(250);
+        Assert.Equal(1, backend.QuizAttemptRequests);
+
+        for (var index = 0; index < 3; index++)
+        {
+            realtime.Raise(new(
+                session.Id,
+                RealtimeEvents.QuizAttemptFinalized,
+                index + 3,
+                null));
+        }
+
+        await WaitForAsync(() => backend.QuizAttemptRequests == 2);
+        Assert.True(Assert.Single(viewModel.Submissions).IsQuizAttempt);
+        Assert.Equal(0, backend.SubmissionRequests);
+    }
+
+    [Fact]
+    public async Task SessionManagement_QuizAttemptFinalizedRefreshesSubmittedCount()
+    {
+        var session = CreateSession(SessionStatus.InProgress) with
+        {
+            DeliveryType = ExamDeliveryType.MultipleChoice
+        };
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        using var viewModel = new SessionManagementViewModel(
+            backend,
+            projectionDelay: (_, _) => Task.CompletedTask,
+            projectionPollAttempts: 1,
+            realtime: realtime);
+        await viewModel.InitializeAsync(default);
+        Assert.Equal(0, viewModel.SelectedSession?.Counts.Submitted);
+
+        backend.Session = session with
+        {
+            Counts = session.Counts with { Submitted = 1 }
+        };
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.QuizAttemptFinalized,
+            2,
+            null));
+
+        await WaitForAsync(() => backend.SessionRequests == 2);
+        Assert.Equal(1, viewModel.SelectedSession?.Counts.Submitted);
+    }
+
     private static SessionSummaryDto CreateSession(
         SessionStatus status,
         SessionAccessMode accessMode = SessionAccessMode.LanOnly) =>
@@ -678,6 +750,26 @@ public sealed class TeacherRealtimeTests
             "RECEIPT",
             true,
             []);
+
+    private static TeacherQuizAttemptSummaryDto CreateQuizAttempt(Guid sessionId)
+    {
+        var startedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        return new(
+            Guid.NewGuid(),
+            sessionId,
+            Guid.NewGuid(),
+            "SV-QUIZ",
+            "Quiz Student",
+            1,
+            QuizAttemptStatus.Finalized,
+            GradingStatus.Graded,
+            8m,
+            10m,
+            startedAt,
+            startedAt.AddMinutes(5),
+            300,
+            false);
+    }
 
     private static async Task WaitForAsync(
         Func<bool> condition,
@@ -750,10 +842,14 @@ public sealed class TeacherRealtimeTests
     private sealed class TeacherRealtimeBackend(
         SessionSummaryDto session) : IBackendClient
     {
+        public SessionSummaryDto Session { get; set; } = session;
         public IReadOnlyList<ParticipantDto> Participants { get; set; } = [];
         public IReadOnlyList<SubmissionSummaryDto> Submissions { get; set; } = [];
+        public IReadOnlyList<TeacherQuizAttemptSummaryDto> QuizAttempts { get; set; } = [];
+        public int SessionRequests { get; private set; }
         public int SessionDetailRequests { get; private set; }
         public int SubmissionRequests { get; private set; }
+        public int QuizAttemptRequests { get; private set; }
         public Uri BaseAddress { get; } = new("http://localhost:5048/");
         public bool HasTrustedAccountToken => true;
 
@@ -767,11 +863,14 @@ public sealed class TeacherRealtimeTests
         }
 
         public Task<ApiResponse<PagedResult<SessionSummaryDto>>?> GetSessionsAsync(
-            CancellationToken ct = default) =>
-            Task.FromResult<ApiResponse<PagedResult<SessionSummaryDto>>?>(
+            CancellationToken ct = default)
+        {
+            SessionRequests++;
+            return Task.FromResult<ApiResponse<PagedResult<SessionSummaryDto>>?>(
                 ApiResponse<PagedResult<SessionSummaryDto>>.Ok(
-                    new([session], 1, 50, 1),
+                    new([Session], 1, 50, 1),
                     "test"));
+        }
 
         public Task<ApiResponse<SessionDetailDto>?> GetSessionAsync(
             Guid id,
@@ -780,7 +879,7 @@ public sealed class TeacherRealtimeTests
             SessionDetailRequests++;
             return Task.FromResult<ApiResponse<SessionDetailDto>?>(
                 ApiResponse<SessionDetailDto>.Ok(
-                    new(session, Participants, "{}"),
+                    new(Session, Participants, "{}"),
                     "test"));
         }
 
@@ -806,7 +905,22 @@ public sealed class TeacherRealtimeTests
             Task.FromResult<ApiResponse<PagedResult<ClassSummaryDto>>?>(null);
         public Task<ApiResponse<PagedResult<ExamSummaryDto>>?> GetExamsAsync(
             CancellationToken ct = default) =>
-            Task.FromResult<ApiResponse<PagedResult<ExamSummaryDto>>?>(null);
+            Task.FromResult<ApiResponse<PagedResult<ExamSummaryDto>>?>(
+                ApiResponse<PagedResult<ExamSummaryDto>>.Ok(
+                    new([
+                        new ExamSummaryDto(
+                            Session.ExamId,
+                            null,
+                            Session.Title,
+                            "Realtime",
+                            30,
+                            Session.DeliveryType,
+                            ExamStatus.Published,
+                            Session.ExamVersion,
+                            0,
+                            "exam-rv")
+                    ], 1, 50, 1),
+                    "test"));
         public Task<ApiResponse<CloudSyncStatusDto>?> GetCloudStatusAsync(
             CancellationToken ct = default) =>
             Task.FromResult<ApiResponse<CloudSyncStatusDto>?>(null);
@@ -815,8 +929,19 @@ public sealed class TeacherRealtimeTests
             Task.FromResult<ApiResponse<SettingsDto>?>(null);
         public Task<ApiResponse<T>?> GetAsync<T>(
             string path,
-            CancellationToken ct = default) =>
-            Task.FromResult<ApiResponse<T>?>(null);
+            CancellationToken ct = default)
+        {
+            if (path.EndsWith("/quiz-attempts", StringComparison.Ordinal))
+            {
+                QuizAttemptRequests++;
+                var response = ApiResponse<IReadOnlyList<TeacherQuizAttemptSummaryDto>>.Ok(
+                    QuizAttempts,
+                    "test");
+                return Task.FromResult<ApiResponse<T>?>(
+                    (ApiResponse<T>)(object)response);
+            }
+            return Task.FromResult<ApiResponse<T>?>(null);
+        }
         public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(
             string path,
             TRequest request,

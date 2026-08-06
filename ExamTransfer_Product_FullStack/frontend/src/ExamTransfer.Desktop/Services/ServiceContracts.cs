@@ -14,6 +14,8 @@ public interface IBackendClient
     Task<ApiResponse<PagedResult<SessionSummaryDto>>?> GetSessionsAsync(CancellationToken ct = default);
     Task<ApiResponse<SessionDetailDto>?> GetSessionAsync(Guid id, CancellationToken ct = default);
     Task<ApiResponse<PagedResult<SubmissionSummaryDto>>?> GetSubmissionsAsync(Guid sessionId, CancellationToken ct = default);
+    Task<ApiResponse<IReadOnlyList<TeacherQuizAttemptSummaryDto>>?> GetTeacherQuizAttemptsAsync(Guid sessionId, CancellationToken ct = default) =>
+        GetAsync<IReadOnlyList<TeacherQuizAttemptSummaryDto>>($"api/v1/sessions/{sessionId}/quiz-attempts", ct);
     Task<ApiResponse<CloudSyncStatusDto>?> GetCloudStatusAsync(CancellationToken ct = default);
     Task<ApiResponse<SettingsDto>?> GetSettingsAsync(CancellationToken ct = default);
     Task<ApiResponse<T>?> GetAsync<T>(string path, CancellationToken ct = default);

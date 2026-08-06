@@ -34,8 +34,12 @@ public sealed class QuizAuthoringController(IQuizService quiz) : ApiControllerBa
 public sealed class TeacherQuizMonitoringController(IQuizService quiz) : ApiControllerBase
 {
     [HttpGet]
-    public async Task<ActionResult<ApiResponse<IReadOnlyList<QuizAttemptDto>>>> List(Guid sessionId, CancellationToken ct) =>
-        Data(await quiz.ListAttemptsForSessionAsync(sessionId, ct));
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<TeacherQuizAttemptSummaryDto>>>> List(Guid sessionId, CancellationToken ct) =>
+        Data(await quiz.ListTeacherSubmissionsForSessionAsync(
+            sessionId,
+            RequiredGuidClaim(ClaimTypes.NameIdentifier),
+            User.FindFirst("organization_id")?.Value,
+            ct));
 }
 
 [Route("api/v1/student/quiz")]

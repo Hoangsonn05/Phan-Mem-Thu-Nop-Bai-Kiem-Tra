@@ -58,9 +58,12 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
             .Include(x => x.Exam)
             .Include(x => x.Participants)
             .ToListAsync(cancellationToken);
+        var quizSubmittedCounts = await GetQuizSubmittedCountsAsync(pageIds, cancellationToken);
         var items = rows
             .OrderBy(x => position[x.Id])
-            .Select(ToSummary)
+            .Select(session => ToSummary(
+                session,
+                quizSubmittedCounts.GetValueOrDefault(session.Id)))
             .ToList();
 
         return new(items, page, pageSize, total);
@@ -70,7 +73,8 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
     {
         var session = await db.ExamSessionsSet.AsNoTracking().Include(x => x.Exam).Include(x => x.Participants).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
-        return ToDetail(session);
+        var quizSubmittedCounts = await GetQuizSubmittedCountsAsync([id], cancellationToken);
+        return ToDetail(session, quizSubmittedCounts.GetValueOrDefault(id));
     }
 
     public async Task<SessionDetailDto> CreateAsync(CreateSessionRequest request, string hostDeviceId, CancellationToken cancellationToken)
@@ -295,7 +299,8 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("SessionStateChanged", nameof(ExamSession), session.Id.ToString(), session.Id, new { status = before }, new { status = session.Status, reason = endRequest?.Reason }, cancellationToken);
             await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", ToCloud(session), cancellationToken: cancellationToken);
-            return ToDetail(session);
+            var quizSubmittedCounts = await GetQuizSubmittedCountsAsync([session.Id], cancellationToken);
+            return ToDetail(session, quizSubmittedCounts.GetValueOrDefault(session.Id));
         }, cancellationToken);
         await PublishSessionStateSafeAsync(detail, cancellationToken);
         return detail;
@@ -332,6 +337,9 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
                 .Where(x => x.Status != SessionStatus.Archived)
                 .OrderBy(x => x.Id)
                 .ToList();
+            var quizSubmittedCounts = await GetQuizSubmittedCountsAsync(
+                toArchive.Select(x => x.Id),
+                cancellationToken);
             var rejected = toArchive
                 .Where(x => x.Status is not (SessionStatus.Finished or SessionStatus.Cancelled))
                 .Select(x => new BulkArchiveFailureDto(
@@ -365,7 +373,9 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
                     "upsert",
                     ToCloud(session),
                     cancellationToken: cancellationToken);
-                archivedDetails.Add(ToDetail(session));
+                archivedDetails.Add(ToDetail(
+                    session,
+                    quizSubmittedCounts.GetValueOrDefault(session.Id)));
             }
 
             return new BulkArchiveResultDto(
@@ -493,8 +503,8 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
             ParticipantDeadline(entity));
     }
 
-    private SessionDetailDto ToDetail(ExamSession session) => new(
-        ToSummary(session),
+    private SessionDetailDto ToDetail(ExamSession session, int quizSubmittedCount = 0) => new(
+        ToSummary(session, quizSubmittedCount),
         session.Participants
             .OrderBy(x => x.StudentCode)
             .Select(x => x.ToDto(DateTimeOffset.UtcNow, _options.Session.DisconnectAfterSeconds, ParticipantDeadline(x)))
@@ -502,11 +512,39 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
         session.SettingsJson,
         session.PlannedStartUtc,
         session.Capacity);
-    private SessionSummaryDto ToSummary(ExamSession s)
+    private SessionSummaryDto ToSummary(ExamSession s, int quizSubmittedCount = 0)
     {
         var p = s.Participants; var now = DateTimeOffset.UtcNow;
-        var counts = new SessionCountsDto(p.Count, p.Count(x => x.Status == ParticipantStatus.PendingApproval), p.Count(x => x.Status == ParticipantStatus.Approved), p.Count(x => x.LastSeenUtc.HasValue && now - x.LastSeenUtc <= TimeSpan.FromSeconds(_options.Session.DisconnectAfterSeconds)), p.Count(x => x.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted), p.Count(x => x.SubmissionStatus == SubmissionStatus.Uploading), p.Count(x => x.Status == ParticipantStatus.Disconnected));
+        var submitted = s.DeliveryTypeSnapshot == ExamDeliveryType.MultipleChoice
+            ? quizSubmittedCount
+            : p.Count(x => x.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted);
+        var counts = new SessionCountsDto(p.Count, p.Count(x => x.Status == ParticipantStatus.PendingApproval), p.Count(x => x.Status == ParticipantStatus.Approved), p.Count(x => x.LastSeenUtc.HasValue && now - x.LastSeenUtc <= TimeSpan.FromSeconds(_options.Session.DisconnectAfterSeconds)), submitted, p.Count(x => x.SubmissionStatus == SubmissionStatus.Uploading), p.Count(x => x.Status == ParticipantStatus.Disconnected));
         return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion, s.AccessMode, s.AutoApprove, s.DeliveryTypeSnapshot, s.SupervisionModeSnapshot, s.QuizResultPolicySnapshot, s.ExamVersionSnapshot, s.AdmissionMode, s.QuizShuffleEnabledSnapshot);
+    }
+    private async Task<Dictionary<Guid, int>> GetQuizSubmittedCountsAsync(
+        IEnumerable<Guid> sessionIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = sessionIds.Distinct().ToArray();
+        if (ids.Length == 0)
+            return [];
+        return await db.QuizAttemptsSet.AsNoTracking()
+            .Where(x => ids.Contains(x.SessionId)
+                && x.Status == QuizAttemptStatus.Finalized
+                && db.SessionParticipantsSet.Any(participant =>
+                    participant.Id == x.ParticipantId
+                    && participant.SessionId == x.SessionId)
+                && db.ExamSessionsSet.Any(session =>
+                    session.Id == x.SessionId
+                    && session.DeliveryTypeSnapshot == ExamDeliveryType.MultipleChoice
+                    && session.ExamVersionSnapshot == x.ExamVersion))
+            .GroupBy(x => x.SessionId)
+            .Select(group => new
+            {
+                SessionId = group.Key,
+                Count = group.Select(x => x.ParticipantId).Distinct().Count()
+            })
+            .ToDictionaryAsync(x => x.SessionId, x => x.Count, cancellationToken);
     }
     private static DateTimeOffset? EffectiveDeadline(ExamSession s) => s.StartedAtUtc?.AddMinutes(s.Exam.DurationMinutes);
     private static DateTimeOffset? ParticipantDeadline(SessionParticipant participant) =>

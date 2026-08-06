@@ -9,6 +9,73 @@ namespace ExamTransfer.Desktop.Tests;
 public sealed class SubmissionSelectionTests
 {
     [Fact]
+    public async Task MultipleChoiceSession_LoadsQuizAttemptsInsteadOfFileSubmissions()
+    {
+        var session = MakeSession() with
+        {
+            DeliveryType = ExamDeliveryType.MultipleChoice
+        };
+        var api = new SubmissionBackendClient(session);
+        using var viewModel = new SubmissionCenterViewModel(
+            api,
+            new SilentRealtimeService());
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.Equal(1, api.QuizAttemptRequests);
+        Assert.Equal(0, api.SubmissionRequests);
+    }
+
+    [Fact]
+    public async Task MultipleChoiceSession_ProjectsTeacherScoreTimingAndDisablesFileActions()
+    {
+        var session = MakeSession() with
+        {
+            DeliveryType = ExamDeliveryType.MultipleChoice
+        };
+        var startedAt = new DateTimeOffset(2026, 8, 7, 8, 0, 0, TimeSpan.Zero);
+        var attempt = new TeacherQuizAttemptSummaryDto(
+            Guid.NewGuid(),
+            session.Id,
+            Guid.NewGuid(),
+            "HS-QUIZ",
+            "Học sinh Quiz",
+            1,
+            QuizAttemptStatus.Finalized,
+            GradingStatus.Graded,
+            8m,
+            10m,
+            startedAt,
+            startedAt.AddMinutes(5),
+            300,
+            false);
+        var api = new SubmissionBackendClient(session)
+        {
+            QuizAttempts = [attempt]
+        };
+        using var viewModel = new SubmissionCenterViewModel(
+            api,
+            new SilentRealtimeService());
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        var row = Assert.Single(viewModel.Submissions);
+        Assert.True(row.IsQuizAttempt);
+        Assert.False(row.IsFileSubmission);
+        Assert.Equal("HS-QUIZ", row.StudentCode);
+        Assert.Equal("Học sinh Quiz", row.StudentName);
+        Assert.Equal("8", row.ScoreText);
+        Assert.Equal("10", row.MaxScoreText);
+        Assert.Equal("00:05:00", row.DurationText);
+        Assert.False(row.CanSelect);
+        Assert.False(row.CanDownload);
+        Assert.False(row.CanAllowResubmit);
+        Assert.False(viewModel.RejectCommand.CanExecute(null));
+        Assert.False(viewModel.ResubmitCommand.CanExecute(null));
+        Assert.False(viewModel.DownloadSelectedCommand.CanExecute(null));
+    }
+
+    [Fact]
     public void SelectionRow_ProjectsSubmissionAndRaisesForIsSelectedOnlyWhenChanged()
     {
         var submittedAt = new DateTimeOffset(2026, 8, 1, 8, 30, 0, TimeSpan.Zero);
@@ -32,7 +99,7 @@ public sealed class SubmissionSelectionTests
         Assert.Equal(submission.AttemptNumber, row.AttemptNumber);
         Assert.Equal(submittedAt, row.SubmittedAt);
         Assert.True(row.IsLate);
-        Assert.Equal(submission.Status, row.Status);
+        Assert.Equal(submission.Status, row.FileSubmissionStatus);
         Assert.True(row.IsOfficial);
         Assert.False(row.ResubmitAllowed);
         Assert.True(row.CanAllowResubmit);
@@ -273,6 +340,9 @@ public sealed class SubmissionSelectionTests
         Assert.Contains("ClearSelectionCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("Đã chọn", xaml, StringComparison.Ordinal);
         Assert.Contains("SelectedCount", xaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding ScoreText}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding DurationText}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsFileSubmissionSession", xaml, StringComparison.Ordinal);
     }
 
     private static string FindFile(params string[] segments)
@@ -366,7 +436,9 @@ public sealed class SubmissionSelectionTests
     private sealed class SubmissionBackendClient(SessionSummaryDto session) : IBackendClient
     {
         public IReadOnlyList<SubmissionSummaryDto> Submissions { get; set; } = [];
+        public IReadOnlyList<TeacherQuizAttemptSummaryDto> QuizAttempts { get; set; } = [];
         public int SubmissionRequests { get; private set; }
+        public int QuizAttemptRequests { get; private set; }
         public int ResubmitRequests { get; private set; }
         public AllowResubmitRequest? LastResubmitRequest { get; set; }
         public Action<AllowResubmitRequest>? OnResubmit { get; set; }
@@ -404,7 +476,20 @@ public sealed class SubmissionSelectionTests
         public Task<ApiResponse<SessionDetailDto>?> GetSessionAsync(Guid id, CancellationToken ct = default) => Task.FromResult<ApiResponse<SessionDetailDto>?>(null);
         public Task<ApiResponse<CloudSyncStatusDto>?> GetCloudStatusAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<CloudSyncStatusDto>?>(null);
         public Task<ApiResponse<SettingsDto>?> GetSettingsAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<SettingsDto>?>(null);
-        public Task<ApiResponse<T>?> GetAsync<T>(string path, CancellationToken ct = default) => Task.FromResult<ApiResponse<T>?>(null);
+        public Task<ApiResponse<T>?> GetAsync<T>(string path, CancellationToken ct = default)
+        {
+            if (path.EndsWith("/quiz-attempts", StringComparison.Ordinal))
+            {
+                QuizAttemptRequests++;
+                var response = ApiResponse<IReadOnlyList<TeacherQuizAttemptSummaryDto>>.Ok(
+                    QuizAttempts,
+                    "test");
+                return Task.FromResult<ApiResponse<T>?>(
+                    (ApiResponse<T>)(object)response);
+            }
+
+            return Task.FromResult<ApiResponse<T>?>(null);
+        }
         public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
         {
             if (path.Contains("/allow-resubmit", StringComparison.Ordinal)

@@ -100,6 +100,7 @@ public sealed class BackendClient : IBackendClient
     public Task<ApiResponse<PagedResult<SessionSummaryDto>>?> GetSessionsAsync(CancellationToken ct = default) => GetAsync<PagedResult<SessionSummaryDto>>("api/v1/sessions", ct);
     public Task<ApiResponse<SessionDetailDto>?> GetSessionAsync(Guid id, CancellationToken ct = default) => GetAsync<SessionDetailDto>($"api/v1/sessions/{id}", ct);
     public Task<ApiResponse<PagedResult<SubmissionSummaryDto>>?> GetSubmissionsAsync(Guid sessionId, CancellationToken ct = default) => GetAsync<PagedResult<SubmissionSummaryDto>>($"api/v1/sessions/{sessionId}/submissions", ct);
+    public Task<ApiResponse<IReadOnlyList<TeacherQuizAttemptSummaryDto>>?> GetTeacherQuizAttemptsAsync(Guid sessionId, CancellationToken ct = default) => GetAsync<IReadOnlyList<TeacherQuizAttemptSummaryDto>>($"api/v1/sessions/{sessionId}/quiz-attempts", ct);
     public Task<ApiResponse<CloudSyncStatusDto>?> GetCloudStatusAsync(CancellationToken ct = default) => GetAsync<CloudSyncStatusDto>("api/v1/cloud/sync/status", ct);
     public Task<ApiResponse<SettingsDto>?> GetSettingsAsync(CancellationToken ct = default) => GetAsync<SettingsDto>("api/v1/settings", ct);
 

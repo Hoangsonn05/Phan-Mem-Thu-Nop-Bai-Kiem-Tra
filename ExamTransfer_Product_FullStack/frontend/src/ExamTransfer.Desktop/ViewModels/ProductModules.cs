@@ -966,6 +966,10 @@ public sealed class SessionManagementViewModel : ProductPageBase
 {
     private readonly IBackendClient api;
     private readonly IDialogService archiveDialogs;
+    private readonly IRealtimeService realtime;
+    private readonly TeacherRealtimeSessionBinding realtimeBinding;
+    private readonly RealtimeRefreshDebouncer realtimeRefresh =
+        new(TimeSpan.FromMilliseconds(150), "SessionManagement.RealtimeRefresh");
     private ExamSummaryDto? selectedExam;
     private SelectableSessionRow? selectedSession;
     private string roomCode = string.Empty;
@@ -991,12 +995,16 @@ public sealed class SessionManagementViewModel : ProductPageBase
         IBackendClient api,
         IDialogService? archiveDialogs = null,
         Func<TimeSpan, CancellationToken, Task>? projectionDelay = null,
-        int projectionPollAttempts = 24)
+        int projectionPollAttempts = 24,
+        IRealtimeService? realtime = null)
     {
         this.api = api;
         this.archiveDialogs = archiveDialogs ?? AppServices.Dialogs;
         this.projectionDelay = projectionDelay ?? Task.Delay;
         this.projectionPollAttempts = Math.Max(1, projectionPollAttempts);
+        this.realtime = realtime ?? new RealtimeService(AppServices.BaseUrl);
+        realtimeBinding = new TeacherRealtimeSessionBinding(this.realtime);
+        this.realtime.NotificationReceived += OnRealtimeNotification;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         CreateCommand = new AsyncRelayCommand(CreateAsync, () => !IsBusy && SelectedExam is not null);
         BulkArchiveCommand = new AsyncRelayCommand(
@@ -1034,6 +1042,9 @@ public sealed class SessionManagementViewModel : ProductPageBase
         set
         {
             if (!Set(ref selectedSession, value)) return;
+            realtimeBinding
+                .SelectAsync(value?.Id, DisposeToken)
+                .SafeFireAndForget("SessionManagement.SelectRealtimeSession");
             var selectionVersion = ++projectionSelectionVersion;
             if (value is not null)
             {
@@ -1124,7 +1135,77 @@ public sealed class SessionManagementViewModel : ProductPageBase
         await RunAsync("Đang tải phòng thi", "Danh sách phòng thi đã được cập nhật", async token =>
         {
             await RefreshSessionsCoreAsync(SelectedExam?.Id, SelectedSession?.Id, token);
+            await EnsureRealtimeSafeAsync(token);
         });
+    }
+
+    private async Task EnsureRealtimeSafeAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await realtimeBinding.EnsureAsync(
+                AppServices.AuthState.AccountAccessToken,
+                SelectedSession?.Id,
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            FrontendLogger.Log(
+                exception,
+                "SessionManagementViewModel.EnsureRealtime");
+        }
+    }
+
+    private void OnRealtimeNotification(
+        object? sender,
+        StudentRealtimeNotification notification)
+    {
+        if (IsDisposed
+            || SelectedSession is not { } session
+            || notification.SessionId != session.Id
+            || notification.EventName != RealtimeEvents.QuizAttemptFinalized)
+            return;
+
+        void ScheduleRefresh() =>
+            realtimeRefresh.Schedule(RefreshSelectedSessionSummaryAsync);
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+            ScheduleRefresh();
+        else
+            dispatcher.InvokeAsync(ScheduleRefresh);
+    }
+
+    private async Task RefreshSelectedSessionSummaryAsync()
+    {
+        try
+        {
+            if (SelectedSession is not { } selected)
+                return;
+            var sessions = ApiGuard.Require(await api.GetSessionsAsync(DisposeToken));
+            var updated = sessions.Items.FirstOrDefault(x => x.Id == selected.Id);
+            if (updated is null || SelectedSession?.Id != selected.Id)
+                return;
+
+            void ApplyUpdate()
+            {
+                if (SelectedSession?.Id == selected.Id)
+                    ReplaceSelected(updated);
+            }
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+                ApplyUpdate();
+            else
+                await dispatcher.InvokeAsync(ApplyUpdate);
+        }
+        catch (OperationCanceledException) when (DisposeToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            FrontendLogger.Log(
+                exception,
+                "SessionManagementViewModel.RefreshSelectedSessionSummary");
+        }
     }
 
     private async Task RefreshSessionsCoreAsync(
@@ -1533,6 +1614,18 @@ public sealed class SessionManagementViewModel : ProductPageBase
         base.ReportFailure(exception);
     }
 
+    public override void Dispose()
+    {
+        if (IsDisposed)
+            return;
+        realtime.NotificationReceived -= OnRealtimeNotification;
+        realtimeRefresh.Dispose();
+        realtimeBinding
+            .StopAsync()
+            .SafeFireAndForget("SessionManagement.DisconnectRealtime");
+        base.Dispose();
+    }
+
     protected override void RaiseCommands()
     {
         foreach (var command in new[] { RefreshCommand, CreateCommand, BulkArchiveCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand, RetryProjectionCommand, RecoverRoomCodeCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
@@ -1875,7 +1968,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         this.realtime.NotificationReceived += OnRealtimeNotification;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSubmissionsAsync, () => !IsBusy && SelectedSession is not null);
-        RejectCommand = new AsyncRelayCommand(RejectAsync, () => !IsBusy && SelectedSubmission is not null);
+        RejectCommand = new AsyncRelayCommand(RejectAsync, () => !IsBusy && SelectedSubmission?.IsFileSubmission == true);
         ResubmitCommand = new AsyncRelayCommand(
             ResubmitAsync,
             () => !IsBusy
@@ -1902,6 +1995,11 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         {
             if (!Set(ref selectedSession, value))
                 return;
+            UnsubscribeSubmissionRows();
+            Submissions.Clear();
+            SelectedSubmission = null;
+            Raise(nameof(IsFileSubmissionSession));
+            RaiseSelectionState();
             realtimeBinding
                 .SelectAsync(value?.Id, DisposeToken)
                 .SafeFireAndForget("SubmissionCenter.SelectRealtimeSession");
@@ -1915,8 +2013,12 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         Submissions.Count(row => row.IsSelected && row.CanDownload);
     public bool HasSelection => SelectedCount > 0;
     public bool HasDownloadableSelection => DownloadableSelectedCount > 0;
+    public bool HasNoSubmissions => Submissions.Count == 0;
+    public bool IsFileSubmissionSession =>
+        SelectedSession?.DeliveryType == ExamDeliveryType.FileSubmission;
     public bool AllVisibleSelected =>
-        Submissions.Count > 0 && Submissions.All(row => row.IsSelected);
+        Submissions.Any(row => row.CanSelect)
+        && Submissions.Where(row => row.CanSelect).All(row => row.IsSelected);
     public ICommand RefreshCommand { get; }
     public ICommand LoadCommand { get; }
     public ICommand RejectCommand { get; }
@@ -1931,8 +2033,12 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         await RunAsync("Đang tải dữ liệu thu bài", "Trung tâm thu bài đã được cập nhật", async token =>
         {
             var sessions = ApiGuard.Require(await api.GetSessionsAsync(token));
+            var selectedSessionId = SelectedSession?.Id;
             Sessions.ReplaceWith(sessions.Items);
-            SelectedSession ??= Sessions.FirstOrDefault();
+            SelectedSession = selectedSessionId.HasValue
+                ? Sessions.FirstOrDefault(x => x.Id == selectedSessionId.Value)
+                    ?? Sessions.FirstOrDefault()
+                : Sessions.FirstOrDefault();
 
             Exception? realtimeEx = null;
             try
@@ -1975,22 +2081,35 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         if (SelectedSession is null) return;
         var selectedIds = Submissions
             .Where(row => row.IsSelected)
-            .Select(row => row.SubmissionId)
+            .Select(row => row.ItemId)
             .ToHashSet();
-        var focusedId = SelectedSubmission?.SubmissionId;
-        var data = ApiGuard.Require(await api.GetSubmissionsAsync(SelectedSession.Id, ct));
+        var focusedId = SelectedSubmission?.ItemId;
         UnsubscribeSubmissionRows();
-        var refreshedRows = data.Items
-            .Select(item => new SubmissionSelectionRow(item)
-            {
-                IsSelected = selectedIds.Contains(item.Id)
-            })
-            .ToList();
+        List<SubmissionSelectionRow> refreshedRows;
+        if (SelectedSession.DeliveryType == ExamDeliveryType.MultipleChoice)
+        {
+            var attempts = ApiGuard.Require(await api.GetTeacherQuizAttemptsAsync(
+                SelectedSession.Id,
+                ct));
+            refreshedRows = attempts
+                .Select(item => new SubmissionSelectionRow(item))
+                .ToList();
+        }
+        else
+        {
+            var data = ApiGuard.Require(await api.GetSubmissionsAsync(SelectedSession.Id, ct));
+            refreshedRows = data.Items
+                .Select(item => new SubmissionSelectionRow(item)
+                {
+                    IsSelected = selectedIds.Contains(item.Id)
+                })
+                .ToList();
+        }
         foreach (var row in refreshedRows)
             row.PropertyChanged += OnSubmissionRowPropertyChanged;
         Submissions.ReplaceWith(refreshedRows);
         SelectedSubmission = focusedId.HasValue
-            ? Submissions.FirstOrDefault(row => row.SubmissionId == focusedId.Value)
+            ? Submissions.FirstOrDefault(row => row.ItemId == focusedId.Value)
                 ?? Submissions.FirstOrDefault()
             : Submissions.FirstOrDefault();
         RaiseSelectionState();
@@ -1999,9 +2118,10 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     private Task RejectAsync() => RunAsync("Đang từ chối bài", "Bài nộp đã bị từ chối và vẫn được lưu lịch sử", async ct =>
     {
         if (SelectedSubmission is null || !AppServices.Dialogs.Confirm("Từ chối bài nộp", $"Từ chối attempt {SelectedSubmission.AttemptNumber} của {SelectedSubmission.StudentName}?")) return;
-        var mutationKey = $"reject-submission:{SelectedSubmission.SubmissionId:N}";
+        if (SelectedSubmission.SubmissionId is not { } submissionId) return;
+        var mutationKey = $"reject-submission:{submissionId:N}";
         var mutationId = GetMutationRequestId(mutationKey);
-        _ = ApiGuard.Require(await api.PostAsync<RejectSubmissionRequest, object>($"api/v1/submissions/{SelectedSubmission.SubmissionId}/reject", new(Reason, mutationId), ct));
+        _ = ApiGuard.Require(await api.PostAsync<RejectSubmissionRequest, object>($"api/v1/submissions/{submissionId}/reject", new(Reason, mutationId), ct));
         CompleteMutationRequest(mutationKey);
         await LoadSubmissionsCoreAsync(ct);
     });
@@ -2027,8 +2147,8 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             return;
 
         var selectionSnapshot = Submissions
-            .Where(row => row.IsSelected)
-            .Select(row => row.Submission)
+            .Where(row => row.IsSelected && row.Submission is not null)
+            .Select(row => row.Submission!)
             .ToArray();
         SubmissionDownloadResult? result = null;
         await RunAsync(
@@ -2045,7 +2165,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
 
     private void SelectAll()
     {
-        foreach (var row in Submissions)
+        foreach (var row in Submissions.Where(row => row.CanSelect))
             row.IsSelected = true;
     }
 
@@ -2087,6 +2207,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         Raise(nameof(DownloadableSelectedCount));
         Raise(nameof(HasSelection));
         Raise(nameof(HasDownloadableSelection));
+        Raise(nameof(HasNoSubmissions));
         Raise(nameof(AllVisibleSelected));
         RaiseCommands();
     }
@@ -2114,10 +2235,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         if (IsDisposed
             || SelectedSession is not { } session
             || notification.SessionId != session.Id
-            || notification.EventName is not (
-                RealtimeEvents.SubmissionStarted
-                or RealtimeEvents.SubmissionAccepted
-                or RealtimeEvents.SubmissionRejected))
+            || !IsRelevantSubmissionEvent(session, notification.EventName))
             return;
 
         void ScheduleRefresh() =>
@@ -2128,6 +2246,15 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         else
             dispatcher.InvokeAsync(ScheduleRefresh);
     }
+
+    private static bool IsRelevantSubmissionEvent(
+        SessionSummaryDto session,
+        string eventName) =>
+        session.DeliveryType == ExamDeliveryType.MultipleChoice
+            ? eventName == RealtimeEvents.QuizAttemptFinalized
+            : eventName is RealtimeEvents.SubmissionStarted
+                or RealtimeEvents.SubmissionAccepted
+                or RealtimeEvents.SubmissionRejected;
 
     public override void Dispose()
     {

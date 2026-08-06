@@ -18,7 +18,8 @@ public sealed class QuizService(
     AppDbContext db,
     QuizProjectionOutbox projectionOutbox,
     IStoragePaths? paths = null,
-    ILogger<QuizService>? logger = null) : IQuizService
+    ILogger<QuizService>? logger = null,
+    IRealtimePublisher? realtime = null) : IQuizService
 {
     public async Task<IReadOnlyList<QuizAttemptDto>> ListAttemptsForSessionAsync(Guid sessionId, CancellationToken cancellationToken)
     {
@@ -34,6 +35,49 @@ public sealed class QuizService(
             .OrderByDescending(x => x.StartedAtUtc)
             .ThenByDescending(x => x.Id)
             .Select(ToTeacherDto)
+            .ToArray();
+    }
+
+    public async Task<IReadOnlyList<TeacherQuizAttemptSummaryDto>> ListTeacherSubmissionsForSessionAsync(
+        Guid sessionId,
+        Guid actorId,
+        string? organizationId,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireTeacherActorAsync(actorId, organizationId, cancellationToken);
+        var session = await db.ExamSessionsSet.AsNoTracking()
+            .Include(x => x.Exam)
+            .SingleOrDefaultAsync(x => x.Id == sessionId, cancellationToken)
+            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phiên thi.", 404);
+        if (session.AccessMode != SessionAccessMode.LanOnly
+            || session.DeliveryTypeSnapshot != ExamDeliveryType.MultipleChoice
+            || session.Exam.DeliveryType != ExamDeliveryType.MultipleChoice)
+        {
+            throw new ApiException(
+                ErrorCodes.NotFound,
+                "Không tìm thấy danh sách bài trắc nghiệm OnlyLAN.",
+                404);
+        }
+        if (!await CanAccessExamAsync(session.Exam, actor, cancellationToken))
+            throw new ApiException(ErrorCodes.Forbidden, "Không được xem bài thuộc tổ chức khác.", 403);
+
+        var attempts = await db.QuizAttemptsSet.AsNoTracking()
+            .Include(x => x.Participant)
+            .Where(x => x.SessionId == sessionId
+                && x.Status == QuizAttemptStatus.Finalized)
+            .ToListAsync(cancellationToken);
+        return attempts
+            .Where(x => x.ParticipantId == x.Participant.Id
+                && x.Participant.SessionId == sessionId
+                && x.ExamVersion == session.ExamVersionSnapshot
+                && !string.Equals(
+                    x.SourceMode,
+                    "PublicCloud",
+                    StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(x => x.FinalizedAtUtc)
+            .ThenBy(x => x.Participant.StudentCode, StringComparer.Ordinal)
+            .ThenBy(x => x.Id)
+            .Select(ToTeacherSummary)
             .ToArray();
     }
 
@@ -407,11 +451,34 @@ public sealed class QuizService(
         attempt.FinalizeIdempotencyKey = request.IdempotencyKey.Trim();
         await db.SaveChangesAsync(cancellationToken);
         await projectionOutbox.EnqueueAttemptUpsertAsync(attempt, cancellationToken);
+        if (realtime is not null)
+        {
+            try
+            {
+                await realtime.PublishSessionAsync(
+                    attempt.SessionId,
+                    RealtimeEvents.QuizAttemptFinalized,
+                    attempt.Session.Sequence,
+                    new QuizAttemptFinalizedEvent(attempt.Id, attempt.ParticipantId),
+                    cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                logger?.LogWarning(
+                    exception,
+                    "Realtime publish failed after quiz finalize committed. SessionId={SessionId}; AttemptId={AttemptId}",
+                    attempt.SessionId,
+                    attempt.Id);
+            }
+        }
         return ToStudentDto(attempt);
     }
 
     private async Task<QuizAttempt> OwnedAttempt(Guid attemptId, Guid participantId, CancellationToken ct) =>
-        await db.QuizAttemptsSet.Include(x => x.Answers).FirstOrDefaultAsync(x => x.Id == attemptId && x.ParticipantId == participantId, ct)
+        await db.QuizAttemptsSet
+            .Include(x => x.Answers)
+            .Include(x => x.Session)
+            .FirstOrDefaultAsync(x => x.Id == attemptId && x.ParticipantId == participantId, ct)
         ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài làm trắc nghiệm.", 404);
 
     private QuizAttemptDto ToStudentDto(
@@ -432,6 +499,87 @@ public sealed class QuizService(
         attempt.StartedAtUtc, attempt.DeadlineUtc, attempt.FinalizedAtUtc, attempt.Score, attempt.MaxScore,
         SnapshotForTeacher(attempt), attempt.Answers.Select(ToAnswerDto).ToList(),
         attempt.Status == QuizAttemptStatus.Finalized, attempt.ResultPolicySnapshot);
+
+    private static TeacherQuizAttemptSummaryDto ToTeacherSummary(QuizAttempt attempt)
+    {
+        var issues = new List<string>();
+        decimal? score = attempt.Score;
+        decimal? maxScore = attempt.MaxScore;
+        if (!score.HasValue
+            || attempt.MaxScore <= 0
+            || score.Value < 0
+            || score.Value > attempt.MaxScore)
+        {
+            score = null;
+            maxScore = attempt.MaxScore > 0 ? attempt.MaxScore : null;
+            issues.Add("Điểm authoritative không hợp lệ.");
+        }
+
+        long? durationSeconds = null;
+        if (!attempt.FinalizedAtUtc.HasValue
+            || attempt.FinalizedAtUtc.Value < attempt.StartedAtUtc)
+        {
+            issues.Add("Timestamp bài làm không hợp lệ.");
+        }
+        else
+        {
+            durationSeconds = (long)(attempt.FinalizedAtUtc.Value - attempt.StartedAtUtc).TotalSeconds;
+        }
+
+        return new(
+            attempt.Id,
+            attempt.SessionId,
+            attempt.ParticipantId,
+            attempt.Participant.StudentCode,
+            attempt.Participant.DisplayName,
+            attempt.AttemptNumber,
+            attempt.Status,
+            attempt.GradingStatus,
+            score,
+            maxScore,
+            attempt.StartedAtUtc,
+            attempt.FinalizedAtUtc,
+            durationSeconds,
+            attempt.FinalizedAtUtc > attempt.DeadlineUtc,
+            issues.Count == 0 ? null : string.Join(" ", issues));
+    }
+
+    private async Task<User> RequireTeacherActorAsync(
+        Guid actorId,
+        string? organizationId,
+        CancellationToken cancellationToken)
+    {
+        var actor = await db.UsersSet.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == actorId, cancellationToken);
+        if (actor is null
+            || !actor.IsActive
+            || actor.Role is not (UserRole.Teacher or UserRole.Admin)
+            || string.IsNullOrWhiteSpace(organizationId)
+            || string.IsNullOrWhiteSpace(actor.OrganizationId)
+            || !string.Equals(actor.OrganizationId, organizationId, StringComparison.Ordinal))
+        {
+            throw new ApiException(ErrorCodes.Forbidden, "Không được phép xem bài Quiz hoặc tổ chức không hợp lệ.", 403);
+        }
+        return actor;
+    }
+
+    private async Task<bool> CanAccessExamAsync(
+        Exam exam,
+        User actor,
+        CancellationToken cancellationToken)
+    {
+        if (!exam.CreatedBy.HasValue || string.IsNullOrWhiteSpace(actor.OrganizationId))
+            return false;
+        if (exam.CreatedBy.Value == actor.Id)
+            return true;
+        var ownerOrganization = await db.UsersSet.AsNoTracking()
+            .Where(x => x.Id == exam.CreatedBy.Value && x.IsActive)
+            .Select(x => x.OrganizationId)
+            .SingleOrDefaultAsync(cancellationToken);
+        return !string.IsNullOrWhiteSpace(ownerOrganization)
+            && string.Equals(ownerOrganization, actor.OrganizationId, StringComparison.Ordinal);
+    }
+
     private static QuizAnswerDto ToAnswerDto(QuizAnswer x) => new(x.QuestionId, JsonSerializer.Deserialize<List<Guid>>(x.ChoiceIdsJson, Json) ?? [], x.Revision, x.ClientUpdatedAtUtc);
     private IReadOnlyList<QuizQuestionDto> Snapshot(QuizAttempt attempt)
     {
