@@ -142,19 +142,7 @@ try {
         "fileVersion=$($metadata.FileVersionRaw) " +
         "productVersion=$($metadata.ProductVersionRaw)") -ForegroundColor Green
 
-    [IO.Directory]::CreateDirectory($fixtureRepository) | Out-Null
-    & git -C $fixtureRepository init --quiet
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to initialize artifact validator fixture repository.' }
-    & git -C $fixtureRepository config user.name 'ExamTransfer Fixture'
-    & git -C $fixtureRepository config user.email 'fixture@example.test'
-    [IO.File]::WriteAllText((Join-Path $fixtureRepository 'tracked.txt'), 'fixture')
-    & git -C $fixtureRepository add -- tracked.txt
-    & git -C $fixtureRepository commit --quiet -m 'fixture'
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to commit artifact validator fixture repository.' }
-    $fixtureHead = (& git -C $fixtureRepository rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $fixtureHead) {
-        throw 'Unable to resolve artifact validator fixture HEAD.'
-    }
+
     $fixtureBuildId = "$Version+$($fixtureHead.Substring(0, 8))-clean.fixture"
     $fixtureManifest = [ordered]@{
         semanticVersion  = $Version
