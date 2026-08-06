@@ -301,7 +301,7 @@ try {
         'installer-localserver-guard.log',
         'Source: "{#MyReleaseRoot}\Server\*"',
         'RunLocalServerGuard(''StopOnly''',
-        'RunLocalServerGuard(''StartAndVerify''',
+        'RunLocalServerGuard(''VerifyInstalledPayload''',
         'RunLocalServerGuard(''CheckDowngrade''',
         ("ExamTransfer UDP {0}" -f $legacyDiscoveryPorts[0]),
         'ExamTransfer UDP 40550',
@@ -314,6 +314,7 @@ try {
         ) "Installer contract missing: $requiredInstallerContract"
     }
     foreach ($forbiddenInstallerContract in @(
+        'RunLocalServerGuard(''StartAndVerify''',
         '[Types]',
         '[Components]',
         'IsStudentOnlyInstall',
@@ -394,6 +395,81 @@ try {
     if (-not (Test-Path -LiteralPath $userDataMarker -PathType Leaf)) {
         throw 'User data fixture was removed.'
     }
+
+
+    # VerifyInstalledPayload tests
+    $verifyPayloadManifest = Join-Path $fixtureRoot 'verify-manifest.json'
+    $verifyPayloadClientDir = Join-Path $fixtureRoot 'Client'
+    $verifyPayloadServerDir = Join-Path $fixtureRoot 'Server'
+    New-Item -ItemType Directory -Path $verifyPayloadClientDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $verifyPayloadServerDir -Force | Out-Null
+    
+    $clientFile = Join-Path $verifyPayloadClientDir 'ExamTransfer.Desktop.exe'
+    $serverFile = Join-Path $verifyPayloadServerDir 'ExamTransfer.LocalServer.exe'
+    
+    [IO.File]::WriteAllBytes($clientFile, [byte[]]@(1, 2, 3))
+    [IO.File]::WriteAllBytes($serverFile, [byte[]]@(4, 5, 6))
+    
+    $clientHash = (Get-FileHash -LiteralPath $clientFile -Algorithm SHA256).Hash
+    $serverHash = (Get-FileHash -LiteralPath $serverFile -Algorithm SHA256).Hash
+    
+    $manifestObj = [ordered]@{
+        buildId = '1.6.5+test'
+        discoveryProtocol = 'ExamTransfer/2'
+        discoveryUdpPort = 40550
+        client = [ordered]@{ file = 'Client/ExamTransfer.Desktop.exe'; sha256 = $clientHash }
+        server = [ordered]@{ file = 'Server/ExamTransfer.LocalServer.exe'; sha256 = $serverHash }
+    }
+    Write-JsonFile $verifyPayloadManifest $manifestObj
+    
+    $processCountBefore = @(Get-Process -Name 'ExamTransfer.LocalServer' -ErrorAction SilentlyContinue).Count
+    
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $guard -Mode VerifyInstalledPayload -ManifestPath $verifyPayloadManifest -InstalledServerPath $serverFile
+    if ($LASTEXITCODE -ne 0) { throw 'Valid payload failed.' }
+    
+    $processCountAfter = @(Get-Process -Name 'ExamTransfer.LocalServer' -ErrorAction SilentlyContinue).Count
+    Assert-Equal $processCountBefore $processCountAfter 'VerifyInstalledPayload started a Local Server process.'
+    
+    # client sai hash
+    [IO.File]::WriteAllBytes($clientFile, [byte[]]@(1, 2, 3, 4))
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $guard -Mode VerifyInstalledPayload -ManifestPath $verifyPayloadManifest -InstalledServerPath $serverFile
+    Assert-Equal 43 $LASTEXITCODE 'Client hash mismatch did not fail.'
+    [IO.File]::WriteAllBytes($clientFile, [byte[]]@(1, 2, 3))
+    
+    # server sai hash
+    [IO.File]::WriteAllBytes($serverFile, [byte[]]@(4, 5, 6, 7))
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $guard -Mode VerifyInstalledPayload -ManifestPath $verifyPayloadManifest -InstalledServerPath $serverFile
+    Assert-Equal 43 $LASTEXITCODE 'Server hash mismatch did not fail.'
+    [IO.File]::WriteAllBytes($serverFile, [byte[]]@(4, 5, 6))
+    
+    # thiếu manifest
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $guard -Mode VerifyInstalledPayload -ManifestPath (Join-Path $fixtureRoot 'missing.json') -InstalledServerPath $serverFile
+    Assert-Equal 43 $LASTEXITCODE 'Missing manifest did not fail.'
+    
+    # thiếu client
+    Remove-Item -LiteralPath $clientFile -Force
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $guard -Mode VerifyInstalledPayload -ManifestPath $verifyPayloadManifest -InstalledServerPath $serverFile
+    Assert-Equal 43 $LASTEXITCODE 'Missing client did not fail.'
+    [IO.File]::WriteAllBytes($clientFile, [byte[]]@(1, 2, 3))
+    
+    # thiếu server
+    Remove-Item -LiteralPath $serverFile -Force
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $guard -Mode VerifyInstalledPayload -ManifestPath $verifyPayloadManifest -InstalledServerPath $serverFile
+    Assert-Equal 43 $LASTEXITCODE 'Missing server did not fail.'
+    [IO.File]::WriteAllBytes($serverFile, [byte[]]@(4, 5, 6))
+    
+    # json lỗi
+    [IO.File]::WriteAllText($verifyPayloadManifest, "{ invalid json }")
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $guard -Mode VerifyInstalledPayload -ManifestPath $verifyPayloadManifest -InstalledServerPath $serverFile
+    Assert-Equal 43 $LASTEXITCODE 'Invalid JSON manifest did not fail.'
+    
+    # thiếu buildId
+    $manifestObj.Remove('buildId')
+    Write-JsonFile $verifyPayloadManifest $manifestObj
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $guard -Mode VerifyInstalledPayload -ManifestPath $verifyPayloadManifest -InstalledServerPath $serverFile
+    Assert-Equal 43 $LASTEXITCODE 'Missing buildId did not fail.'
+    
+    Write-Host 'PASS code=INSTALLER_VERIFY_PAYLOAD all payload validation contracts passed.' -ForegroundColor Green
 
     Write-Host 'PASS code=INSTALLER_EXACT_PATH_PROCESS_GUARD unrelated_same_name=preserved user_data=preserved' -ForegroundColor Green
     Write-Host 'PASS code=RUNTIME_SETTINGS_CLEAN_INSTALL role=unified port=40550 storage=programdata cloud=release-payload fixture-config=not-used' -ForegroundColor Green

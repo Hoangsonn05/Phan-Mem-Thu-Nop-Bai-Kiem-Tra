@@ -216,7 +216,7 @@ begin
       exit;
     end;
 
-    if (not RunLocalServerGuard('UpgradeRuntimeSettings', ExpandConstant('{app}\release-manifest.json'), ResultCode)) or (ResultCode <> 0) then
+    if (not RunLocalServerGuard('VerifyInstalledPayload', ExpandConstant('{app}\release-manifest.json'), ResultCode)) or (ResultCode <> 0) then
     begin
       InstallValidationExitCode := 45;
       if not WizardSilent then

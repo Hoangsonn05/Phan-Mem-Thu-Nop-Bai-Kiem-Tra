@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('CheckDowngrade', 'StopOnly', 'StopAndPreflight', 'StartAndVerify', 'UpgradeRuntimeSettings')]
+    [ValidateSet('CheckDowngrade', 'StopOnly', 'StopAndPreflight', 'StartAndVerify', 'VerifyInstalledPayload', 'UpgradeRuntimeSettings')]
     [string]$Mode,
 
     [Parameter(Mandatory = $true)]
@@ -640,6 +640,15 @@ function Assert-InstalledHashes($Manifest, [string]$ManifestFile) {
     }
 }
 
+function Verify-InstalledPayload([string]$ReleaseManifestPath) {
+    if (-not (Test-Path -LiteralPath $ReleaseManifestPath -PathType Leaf)) {
+        throw "Installed release-manifest.json is missing: $ReleaseManifestPath"
+    }
+    $manifest = Read-Manifest $ReleaseManifestPath
+    Assert-InstalledHashes $manifest $ReleaseManifestPath
+    Write-Host "ExamTransfer payload verified. BuildId=$($manifest.buildId)"
+}
+
 function Start-AndVerify(
     [string]$ExactPath,
     [string]$ReleaseManifestPath) {
@@ -791,6 +800,9 @@ try {
         }
         'StartAndVerify' {
             Start-AndVerify $exactServerPath ([IO.Path]::GetFullPath($ManifestPath))
+        }
+        'VerifyInstalledPayload' {
+            Verify-InstalledPayload ([IO.Path]::GetFullPath($ManifestPath))
         }
         'UpgradeRuntimeSettings' {
             Upgrade-RuntimeSettings
