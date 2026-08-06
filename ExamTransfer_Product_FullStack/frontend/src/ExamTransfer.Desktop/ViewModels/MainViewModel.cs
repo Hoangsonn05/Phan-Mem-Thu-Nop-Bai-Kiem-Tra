@@ -24,6 +24,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool isBuildingNavigation;
     private bool isNavigating;
     private int pendingSubmissionCount;
+    private int navigationGeneration;
+    private CancellationTokenSource? navigationCts;
 
     public MainViewModel()
     {
@@ -114,7 +116,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
 
             if (Set(ref selected, accepted) && accepted is not null)
-                NavigateSafely(accepted);
+                NavigateSafelyAsync(accepted).SafeFireAndForget("MainViewModel.NavigateSafely");
         }
     }
 
@@ -557,7 +559,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
             var first = Navigation.FirstOrDefault();
             Set(ref selected, first, nameof(Selected));
-            if (first is not null) NavigateSafely(first);
+            if (first is not null) NavigateSafelyAsync(first).SafeFireAndForget("MainViewModel.NavigateSafely");
         }
         finally
         {
@@ -601,7 +603,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _ => new ErrorPageViewModel("Màn hình chưa được ánh xạ.", item.Key, FrontendLogger.LogPath, RetrySelected, GoHome)
         };
 
-    private void NavigateSafely(NavigationItem item)
+    private async Task NavigateSafelyAsync(NavigationItem item)
     {
         if (isNavigating) return;
 
@@ -622,6 +624,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
         }
 
+        if (item.Key == "S-06" && CurrentPage is StudentQuizViewModel)
+        {
+            return;
+        }
+
+        var generation = Interlocked.Increment(ref navigationGeneration);
+        navigationCts?.Cancel();
+        navigationCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        navigationCts = cts;
+        var token = cts.Token;
+
         object? nextPage = null;
         try
         {
@@ -631,15 +645,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             var previous = page;
             SetCurrentPageWithoutDisposing(nextPage);
             DisposePage(previous);
-
-            if (nextPage is IAsyncInitializable initializable)
-                initializable.InitializeAsync(CancellationToken.None).SafeFireAndForget($"{nextPage.GetType().Name}.InitializeAsync");
-        }
-        catch (Exception ex)
-        {
-            DisposePage(nextPage);
-            var traceId = FrontendLogger.Log(ex, $"MainViewModel.NavigateSafely:{item.Key}");
-            CurrentPage = CreateErrorPage("Không thể mở màn hình này. Ứng dụng vẫn đang chạy và lỗi đã được ghi log.", traceId);
         }
         finally
         {
@@ -647,6 +652,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         RaisePageProperties();
+
+        if (nextPage is IAsyncInitializable initializable)
+        {
+            try
+            {
+                await initializable.InitializeAsync(token);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                if (generation != navigationGeneration || !ReferenceEquals(CurrentPage, nextPage))
+                    return;
+
+                DisposePage(nextPage);
+                var traceId = FrontendLogger.Log(ex, $"MainViewModel.NavigateSafely:{item.Key}");
+                CurrentPage = CreateErrorPage("Không thể mở màn hình này. Ứng dụng vẫn đang chạy và lỗi đã được ghi log.", traceId);
+                RaisePageProperties();
+            }
+        }
     }
 
     internal static bool TryResolveSelection(
@@ -703,7 +729,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void RetrySelected()
     {
-        if (Selected is { } item) NavigateSafely(item);
+        if (Selected is { } item) NavigateSafelyAsync(item).SafeFireAndForget("MainViewModel.NavigateSafely");
     }
 
     private void GoHome()

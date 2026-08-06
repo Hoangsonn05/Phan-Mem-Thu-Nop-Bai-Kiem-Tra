@@ -134,7 +134,7 @@ public sealed class ResponsiveNavigationLockTests
     public void NavigationGuard_PrecedesPageCreationAndLockedItemsRemainClickable()
     {
         var source = File.ReadAllText(FindSource("ViewModels", "MainViewModel.cs"));
-        var navigateStart = source.IndexOf("private void NavigateSafely", StringComparison.Ordinal);
+        var navigateStart = source.IndexOf("private async Task NavigateSafelyAsync", StringComparison.Ordinal);
         var guard = source.IndexOf("if (!item.IsAvailable)", navigateStart, StringComparison.Ordinal);
         var pageCreation = source.IndexOf("CreatePage(item)", navigateStart, StringComparison.Ordinal);
         var theme = XDocument.Load(FindSource("Themes", "Theme.xaml"));
