@@ -47,7 +47,7 @@
         
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="0,0,16,0">
-            <ItemsControl ItemsSource="{Binding Review.Questions}">
+            <ItemsControl x:Name="ReviewQuestionsList" ItemsSource="{Binding Review.Questions}" Visibility="{Binding IsReviewVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <Border Style="{StaticResource Card}" Margin="0,0,0,20" Padding="24">
@@ -84,7 +84,7 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
-            <ItemsControl ItemsSource="{Binding Questions}">
+            <ItemsControl x:Name="ActiveQuestionsList" ItemsSource="{Binding Questions}" Visibility="{Binding IsActiveAttemptVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <Border Style="{StaticResource Card}" Margin="0,0,0,20" Padding="24">

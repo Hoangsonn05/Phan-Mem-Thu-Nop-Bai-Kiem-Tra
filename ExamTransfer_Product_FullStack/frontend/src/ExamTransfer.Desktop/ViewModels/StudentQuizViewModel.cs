@@ -77,6 +77,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
             {
                 Raise(nameof(ReviewSummary));
                 Raise(nameof(ReviewComment));
+                Raise(nameof(IsReviewVisible));
             }
         }
     }
@@ -92,6 +93,7 @@ public sealed class StudentQuizViewModel : ProductPageBase
                 Raise(nameof(AnsweredCount));
                 Raise(nameof(UnansweredCount));
                 Raise(nameof(ProgressText));
+                Raise(nameof(IsActiveAttemptVisible));
                 RaiseCommands();
             }
         }
@@ -117,6 +119,8 @@ public sealed class StudentQuizViewModel : ProductPageBase
     public bool CanEditAnswers => Attempt?.Status == QuizAttemptStatus.InProgress
         && remaining is { } value
         && value > TimeSpan.Zero;
+    public bool IsActiveAttemptVisible => Attempt?.Status == QuizAttemptStatus.InProgress;
+    public bool IsReviewVisible => Review != null;
     public ICommand RefreshCommand { get; }
     public ICommand SyncCommand { get; }
     public ICommand FinalizeCommand { get; }
@@ -209,17 +213,25 @@ public sealed class StudentQuizViewModel : ProductPageBase
     private void ApplyQuestions()
     {
         if (Attempt is null) return;
-        applying = true;
-        Questions.Clear();
-        foreach (var question in Attempt.Questions)
+        System.Windows.Application.Current.Dispatcher.Invoke(() =>
         {
-            localAnswers.TryGetValue(question.Id, out var answer);
-            var selected = answer?.ChoiceIds.ToHashSet() ?? [];
-            var row = new QuizQuestionState(question.Id, question.Text, question.Order, question.Points, question.Multiple);
-            foreach (var choice in question.Choices) row.Choices.Add(new QuizChoiceState(choice.Id, choice.Text, selected.Contains(choice.Id), () => ChoiceChanged(row)));
-            Questions.Add(row);
-        }
-        applying = false;
+            applying = true;
+            Questions.Clear();
+            foreach (var question in Attempt.Questions)
+            {
+                localAnswers.TryGetValue(question.Id, out var answer);
+                var selected = answer?.ChoiceIds.ToHashSet() ?? [];
+                var row = new QuizQuestionState(question.Id, question.Text, question.Order, question.Points, question.Multiple);
+                foreach (var choice in question.Choices) row.Choices.Add(new QuizChoiceState(choice.Id, choice.Text, selected.Contains(choice.Id), () => ChoiceChanged(row)));
+                Questions.Add(row);
+            }
+            applying = false;
+        });
+        Raise(nameof(AnsweredCount));
+        Raise(nameof(UnansweredCount));
+        Raise(nameof(ProgressText));
+        Raise(nameof(CanEditAnswers));
+        RaiseCommands();
     }
 
     private void ChoiceChanged(QuizQuestionState question)
