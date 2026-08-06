@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('StopOnly', 'StopAndPreflight', 'StartAndVerify', 'UpgradeRuntimeSettings')]
+    [ValidateSet('CheckDowngrade', 'StopOnly', 'StopAndPreflight', 'StartAndVerify', 'UpgradeRuntimeSettings')]
     [string]$Mode,
 
     [Parameter(Mandatory = $true)]
@@ -710,10 +710,76 @@ function Start-AndVerify(
     throw "LOCAL_SERVER_IDENTITY_TIMEOUT: attempts=$attempt; last=$lastDiagnostic"
 }
 
+function Check-Downgrade([string]$PackageManifestPath, [string]$ExactServerPath) {
+    if ([string]::IsNullOrWhiteSpace($PackageManifestPath) -or -not (Test-Path -LiteralPath $PackageManifestPath -PathType Leaf)) {
+        exit 46
+    }
+    
+    try {
+        $package = Get-Content -LiteralPath $PackageManifestPath -Raw | ConvertFrom-Json
+        if ($null -eq $package -or $null -eq $package.semanticVersion -or $null -eq $package.builtAtUtc) {
+            exit 46
+        }
+    }
+    catch {
+        exit 46
+    }
+    
+    $installedManifestPath = Join-Path (Split-Path -Parent $ExactServerPath) '..\release-manifest.json'
+    $installedManifestPath = [IO.Path]::GetFullPath($installedManifestPath)
+    
+    if (-not (Test-Path -LiteralPath $installedManifestPath -PathType Leaf)) {
+        return
+    }
+    
+    try {
+        $installed = Get-Content -LiteralPath $installedManifestPath -Raw | ConvertFrom-Json
+        if ($null -eq $installed -or $null -eq $installed.semanticVersion -or $null -eq $installed.builtAtUtc) {
+            Write-GuardLog 'INSTALLED_MANIFEST_INVALID' 'The installed release-manifest.json is missing required fields.'
+            exit 46
+        }
+    }
+    catch {
+        Write-GuardLog 'INSTALLED_MANIFEST_INVALID' 'The installed release-manifest.json could not be parsed.'
+        exit 46
+    }
+    
+    if ([string]::Equals($package.buildId, $installed.buildId, [StringComparison]::OrdinalIgnoreCase)) {
+        return
+    }
+    
+    $packageVer = [version]$package.semanticVersion
+    $installedVer = [version]$installed.semanticVersion
+    
+    if ($packageVer -gt $installedVer) {
+        return
+    }
+    
+    if ($packageVer -lt $installedVer) {
+        Write-GuardLog 'INSTALLER_DOWNGRADE_BLOCKED' "Package=$($package.semanticVersion) Installed=$($installed.semanticVersion)"
+        [Console]::WriteLine("INSTALLER_DOWNGRADE_BLOCKED`n`nInstalled:`n- $($installed.semanticVersion)`n- $($installed.buildId)`n- $($installed.builtAtUtc)`n`nPackage:`n- $($package.semanticVersion)`n- $($package.buildId)`n- $($package.builtAtUtc)")
+        exit 45
+    }
+    
+    $packageTime = [DateTime]::Parse($package.builtAtUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+    $installedTime = [DateTime]::Parse($installed.builtAtUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+    
+    if ($packageTime -gt $installedTime) {
+        return
+    }
+    
+    Write-GuardLog 'INSTALLER_DOWNGRADE_BLOCKED' "Package timestamp is older or equal."
+    [Console]::WriteLine("INSTALLER_DOWNGRADE_BLOCKED`n`nInstalled:`n- $($installed.semanticVersion)`n- $($installed.buildId)`n- $($installed.builtAtUtc)`n`nPackage:`n- $($package.semanticVersion)`n- $($package.buildId)`n- $($package.builtAtUtc)")
+    exit 45
+}
+
 $exactServerPath = Resolve-ExactPath $InstalledServerPath
 
 try {
     switch ($Mode) {
+        'CheckDowngrade' {
+            Check-Downgrade ([IO.Path]::GetFullPath($ManifestPath)) $exactServerPath
+        }
         'StopOnly' {
             Stop-ExactInstalledServer $exactServerPath
         }

@@ -4,6 +4,9 @@
 #ifndef MyAppId
   #define MyAppId "{{724D43BD-E4C5-4927-A3CF-8AC292F03D21}"
 #endif
+#ifndef MyAppShortCommit
+  #define MyAppShortCommit "unknown"
+#endif
 #ifndef MyDefaultDirName
   #define MyDefaultDirName "{autopf}\ExamTransfer"
 #endif
@@ -51,7 +54,7 @@ DefaultDirName={#MyDefaultDirName}
 DefaultGroupName=Khoa-DT-KTMT
 DisableProgramGroupPage=yes
 OutputDir={#MyOutputDir}
-OutputBaseFilename=Khoa-DT-KTMT-Setup-{#MyAppVersion}
+OutputBaseFilename=Khoa-DT-KTMT-Setup-{#MyAppVersion}-{#MyAppShortCommit}
 SetupIconFile={#MyAppIcon}
 Compression=lzma2
 SolidCompression=yes
@@ -79,6 +82,7 @@ Source: "{#MyReleaseRoot}\Server\*"; DestDir: "{app}\Server"; Flags: ignoreversi
 Source: "{#MyReleaseRoot}\release-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\installer-localserver-guard.ps1"; DestDir: "{app}\Support"; Flags: ignoreversion
 Source: "..\scripts\installer-localserver-guard.ps1"; Flags: dontcopy
+Source: "{#MyReleaseRoot}\release-manifest.json"; DestName: "package-manifest.json"; Flags: dontcopy
 
 [InstallDelete]
 #ifndef MyDisableLegacyCleanup
@@ -171,6 +175,21 @@ var
   ResultCode: Integer;
 begin
   Result := '';
+  ExtractTemporaryFile('package-manifest.json');
+  if not RunLocalServerGuard('CheckDowngrade', ExpandConstant('{tmp}\package-manifest.json'), ResultCode) then
+  begin
+    Result := 'Lỗi nội bộ khi kiểm tra phiên bản gói cập nhật.';
+    exit;
+  end;
+  if ResultCode <> 0 then
+  begin
+    if ResultCode = 46 then
+      Result := 'INSTALLED_MANIFEST_INVALID'
+    else
+      Result := 'INSTALLER_DOWNGRADE_BLOCKED';
+    exit;
+  end;
+
   if not RunLocalServerGuard('StopOnly', '', ResultCode) then
   begin
     Result := 'Không thể dừng Local Server cũ trước khi cập nhật.';
@@ -192,6 +211,17 @@ begin
       if not WizardSilent then
         MsgBox(
           'RUNTIME_SETTINGS_UPGRADE_FAILED: Xem installer-runtime-settings.log.',
+          mbError,
+          MB_OK);
+      exit;
+    end;
+
+    if (not RunLocalServerGuard('StartAndVerify', ExpandConstant('{app}\release-manifest.json'), ResultCode)) or (ResultCode <> 0) then
+    begin
+      InstallValidationExitCode := 45;
+      if not WizardSilent then
+        MsgBox(
+          'INSTALL_PAYLOAD_VERIFICATION_FAILED: Xem installer-localserver-guard.log.',
           mbError,
           MB_OK);
       exit;

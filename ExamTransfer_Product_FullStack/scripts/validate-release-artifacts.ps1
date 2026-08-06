@@ -85,7 +85,7 @@ try {
         'manifest-build-id' `
         'Manifest Build ID does not match version, HEAD, and clean source state.'
 
-    $expectedInstallerName = "Khoa-DT-KTMT-Setup-$ExpectedVersion.exe"
+    $expectedInstallerName = "Khoa-DT-KTMT-Setup-$ExpectedVersion-$($ExpectedHead.Substring(0, 8)).exe"
     Assert-IdentityCheck `
         ((Test-Path -LiteralPath $InstallerPath -PathType Leaf) -and
             [IO.Path]::GetFileName($InstallerPath) -eq $expectedInstallerName) `

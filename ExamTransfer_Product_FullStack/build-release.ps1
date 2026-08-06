@@ -174,11 +174,15 @@ foreach ($publishOutput in @($clientOutput, $serverOutput)) {
 if (Test-Path -LiteralPath $releaseManifest -PathType Leaf) {
     Remove-Item -LiteralPath $releaseManifest -Force
 }
-$installer = Join-Path $installerOutput "Khoa-DT-KTMT-Setup-$Version.exe"
+$shortCommit = $gitCommit.Substring(0, 8)
+$installer = Join-Path $installerOutput "Khoa-DT-KTMT-Setup-$Version-$shortCommit.exe"
 $installerHashFile = "$installer.sha256.txt"
-foreach ($oldInstallerOutput in @($installer, $installerHashFile)) {
-    if (Test-Path -LiteralPath $oldInstallerOutput -PathType Leaf) {
-        Remove-Item -LiteralPath $oldInstallerOutput -Force
+if (Test-Path -LiteralPath $installerOutput -PathType Container) {
+    foreach ($oldExe in @(Get-ChildItem -LiteralPath $installerOutput -Filter "*.exe" -File)) {
+        Remove-Item -LiteralPath $oldExe.FullName -Force
+    }
+    foreach ($oldHash in @(Get-ChildItem -LiteralPath $installerOutput -Filter "*.sha256.txt" -File)) {
+        Remove-Item -LiteralPath $oldHash.FullName -Force
     }
 }
 New-Item -ItemType Directory -Path $clientOutput -Force | Out-Null
@@ -256,7 +260,9 @@ $manifest = [ordered]@{
     semanticVersion   = $Version
     buildId           = $buildId
     gitCommit         = $gitCommit
+    shortCommit       = $shortCommit
     workingTreeDirty  = $false
+    builtAtUtc        = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
     buildTimestampUtc = $buildTimestamp
     discoveryProtocol = 'ExamTransfer/2'
     discoveryUdpPort  = 40550
@@ -274,7 +280,7 @@ $manifest = [ordered]@{
         classification = 'publishable-client-config'
     }
     installer         = [ordered]@{
-        file           = "Khoa-DT-KTMT-Setup-$Version.exe"
+        file           = "Khoa-DT-KTMT-Setup-$Version-$shortCommit.exe"
         fileVersion    = $assemblyVersion
         productVersion = $Version
         productName    = 'Khoa-DT-KTMT'
@@ -284,6 +290,27 @@ $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $releaseManifest 
 Copy-Item -LiteralPath $releaseManifest -Destination (Join-Path $clientOutput 'release-manifest.json')
 Copy-Item -LiteralPath $releaseManifest -Destination (Join-Path $serverOutput 'release-manifest.json')
 Require-File $releaseManifest
+
+$preIsccManifest = Get-Content -LiteralPath $releaseManifest -Raw | ConvertFrom-Json
+if ([string]$preIsccManifest.gitCommit -ne $gitCommit) { throw 'PRE_ISCC_VALIDATION_FAILED: Git commit mismatch.' }
+if ($preIsccManifest.workingTreeDirty -ne $false) { throw 'PRE_ISCC_VALIDATION_FAILED: Working tree dirty.' }
+if (-not (Test-Path -LiteralPath $clientExe -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $serverExe -PathType Leaf)) {
+    throw 'PRE_ISCC_VALIDATION_FAILED: Client or Server output is missing.'
+}
+$actualClientHash = (Get-FileHash $clientExe -Algorithm SHA256).Hash
+$actualServerHash = (Get-FileHash $serverExe -Algorithm SHA256).Hash
+if (-not [string]::Equals($preIsccManifest.client.sha256, $actualClientHash, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::Equals($preIsccManifest.server.sha256, $actualServerHash, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'PRE_ISCC_VALIDATION_FAILED: Client or Server hash mismatch.'
+}
+$clientVersionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($clientExe)
+$serverVersionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($serverExe)
+$clientProductVersionNormalized = ConvertFrom-InstallerVersionText -Value $clientVersionInfo.ProductVersion -MetadataName 'ProductVersion'
+$serverProductVersionNormalized = ConvertFrom-InstallerVersionText -Value $serverVersionInfo.ProductVersion -MetadataName 'ProductVersion'
+if ($clientProductVersionNormalized -ne $Version -or $serverProductVersionNormalized -ne $Version) {
+    throw 'PRE_ISCC_VALIDATION_FAILED: Semantic version mismatch.'
+}
 
 Write-Host "\n[6/8] Verify installer guard with release public config..." -ForegroundColor Yellow
 & powershell `
@@ -297,7 +324,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "\n[7/8] Build installer..." -ForegroundColor Yellow
 $iscc = Find-InnoCompiler
-& $iscc "/DMyAppVersion=$Version" "/DMyAppIcon=$appIcon" $installerScript
+& $iscc "/DMyAppVersion=$Version" "/DMyAppShortCommit=$shortCommit" "/DMyAppIcon=$appIcon" $installerScript
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 Require-File $installer
 
