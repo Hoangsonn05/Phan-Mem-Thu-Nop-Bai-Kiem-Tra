@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
@@ -164,10 +164,9 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             var completed = exam.Files.Where(x => x.Version == exam.Version && x.TransferStatus == TransferStatus.Completed).ToList();
             if (exam.DeliveryType == ExamDeliveryType.FileSubmission && rule.RequireAtLeastOneFile && completed.Count == 0) throw new ApiException(ErrorCodes.ValidationFailed, "Bài kiểm tra yêu cầu ít nhất một file đề.", 422);
             if (exam.DeliveryType == ExamDeliveryType.MultipleChoice
-                && (exam.SupervisionMode != SupervisionMode.Standard
-                    || !HasValidCurrentQuizGraph(exam)
+                && (!HasValidCurrentQuizGraph(exam)
                     || !exam.QuizImportSources.Any(x => x.ExamVersion == exam.Version && x.Status == "Committed")))
-                throw new ApiException(ErrorCodes.ValidationFailed, "Đề trắc nghiệm phải có giám sát chuẩn, nguồn DOCX/PDF đã commit và graph câu hỏi/lựa chọn thang điểm 10.00 hợp lệ.", 422);
+                throw new ApiException(ErrorCodes.ValidationFailed, "Đề trắc nghiệm phải có nguồn DOCX/PDF đã commit và graph câu hỏi/lựa chọn thang điểm 10.00 hợp lệ.", 422);
             exam.Status = ExamStatus.Published;
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamPublished", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
@@ -1009,11 +1008,9 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             throw new ApiException(ErrorCodes.ValidationFailed, "Loại bài hoặc chính sách không hợp lệ.");
         if (deliveryType == ExamDeliveryType.MultipleChoice)
         {
-            if (supervisionMode != SupervisionMode.Standard)
-                throw new ApiException(ErrorCodes.ValidationFailed, "Trắc nghiệm bắt buộc dùng giám sát chuẩn.");
-            return (resultPolicy, SupervisionMode.Standard);
+            return (resultPolicy, supervisionMode);
         }
-        return (QuizResultPolicy.Hidden, supervisionMode);
+        return (QuizResultPolicy.Hidden, SupervisionMode.Standard);
     }
     private static void ValidateFile(string name, long size, string sha)
     {

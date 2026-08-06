@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using System.Text.Json;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
@@ -596,9 +596,6 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
         if (exam.Status != ExamStatus.Published)
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ tạo phòng từ bài kiểm tra đã phát hành.", 409);
-        if (exam.DeliveryType == ExamDeliveryType.MultipleChoice
-            && exam.SupervisionMode != SupervisionMode.Standard)
-            throw new ApiException(ErrorCodes.InvalidStateTransition, "Trắc nghiệm bắt buộc dùng giám sát chuẩn.", 409);
         ValidateSessionConfiguration(request.SettingsJson, request.Capacity);
 
         Guid? effectiveClassId;

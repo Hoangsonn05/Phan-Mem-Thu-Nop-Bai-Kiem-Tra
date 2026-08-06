@@ -548,20 +548,21 @@ public sealed class QuizService(
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài trắc nghiệm chưa bắt đầu.", 409);
         if (session.DeliveryTypeSnapshot != ExamDeliveryType.MultipleChoice)
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Đề này không phải đề trắc nghiệm.", 409);
-        if (session.SupervisionModeSnapshot != SupervisionMode.Standard)
-            throw new ApiException(ErrorCodes.Forbidden, "Phiên trắc nghiệm không có giám sát chuẩn hợp lệ.", 403);
-        var latestPolicyVersion = await db.ControlPoliciesSet.AsNoTracking()
-            .Where(x => x.SessionId == session.Id)
-            .MaxAsync(x => (int?)x.Version, cancellationToken);
-        var supervisionReady = latestPolicyVersion.HasValue
-            && await db.DevicePolicyStatusesSet.AsNoTracking().AnyAsync(
-                x => x.SessionId == session.Id
-                    && x.ParticipantId == participant.Id
-                    && x.PolicyVersion == latestPolicyVersion.Value
-                    && x.Status == PolicyApplyStatus.Applied,
-                cancellationToken);
-        if (!supervisionReady)
-            throw new ApiException(ErrorCodes.Forbidden, "Thiết bị chưa áp dụng xong chính sách giám sát chuẩn.", 403);
+        if (session.SupervisionModeSnapshot == SupervisionMode.Standard)
+        {
+            var latestPolicyVersion = await db.ControlPoliciesSet.AsNoTracking()
+                .Where(x => x.SessionId == session.Id)
+                .MaxAsync(x => (int?)x.Version, cancellationToken);
+            var supervisionReady = latestPolicyVersion.HasValue
+                && await db.DevicePolicyStatusesSet.AsNoTracking().AnyAsync(
+                    x => x.SessionId == session.Id
+                        && x.ParticipantId == participant.Id
+                        && x.PolicyVersion == latestPolicyVersion.Value
+                        && x.Status == PolicyApplyStatus.Applied,
+                    cancellationToken);
+            if (!supervisionReady)
+                throw new ApiException(ErrorCodes.Forbidden, "Thiết bị chưa áp dụng xong chính sách giám sát chuẩn.", 403);
+        }
     }
 
     private static IReadOnlyList<QuizQuestionDto> BuildAuthoritativeSnapshot(SessionParticipant participant)

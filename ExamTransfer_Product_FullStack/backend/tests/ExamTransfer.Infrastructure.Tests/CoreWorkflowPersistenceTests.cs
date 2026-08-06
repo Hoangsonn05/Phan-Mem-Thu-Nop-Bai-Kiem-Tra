@@ -970,7 +970,7 @@ public sealed class CoreWorkflowPersistenceTests
             new(null, "Invalid quiz", "Rules", null, 30, fileRule,
                 ExamDeliveryType.MultipleChoice,
                 QuizResultPolicy.Hidden,
-                SupervisionMode.None),
+                (SupervisionMode)999),
             CancellationToken.None));
         Assert.Equal(ErrorCodes.ValidationFailed, invalid.Code);
 
@@ -1008,6 +1008,74 @@ public sealed class CoreWorkflowPersistenceTests
                 SupervisionMode.Standard),
             CancellationToken.None));
         Assert.Equal(ErrorCodes.InvalidStateTransition, immutable.Code);
+    }
+
+    [Fact]
+    public async Task OptionalSupervision_CanBeChangedBeforePublish()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var rule = new FileRuleDto([".txt"], 1024, 2048, 1, false, false);
+        
+        var draft = await services.Exams.CreateAsync(
+            new(null, "Quiz None", "Math", null, 30, rule, ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.None),
+            CancellationToken.None);
+        
+        var changedToStandard = await services.Exams.UpdateAsync(
+            draft.Id,
+            new(null, draft.Title, draft.Subject, draft.Description, 30, rule, draft.RowVersion, ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.Standard),
+            CancellationToken.None);
+        Assert.Equal(SupervisionMode.Standard, changedToStandard.SupervisionMode);
+
+        var changedToNone = await services.Exams.UpdateAsync(
+            changedToStandard.Id,
+            new(null, draft.Title, draft.Subject, draft.Description, 30, rule, changedToStandard.RowVersion, ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.None),
+            CancellationToken.None);
+        Assert.Equal(SupervisionMode.None, changedToNone.SupervisionMode);
+    }
+
+    [Fact]
+    public async Task OptionalSupervision_IsImmutableAfterPublish()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var rule = new FileRuleDto([".txt"], 1024, 2048, 1, false, false);
+        
+        var draft = await services.Exams.CreateAsync(
+            new(null, "Quiz None", "Math", null, 30, rule, ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.None),
+            CancellationToken.None);
+        
+        var published = await database.Context.ExamsSet.SingleAsync(x => x.Id == draft.Id);
+        published.Status = ExamStatus.Published;
+        await database.Context.SaveChangesAsync();
+        
+        var immutable1 = await Assert.ThrowsAsync<ApiException>(() => services.Exams.UpdateAsync(
+            published.Id,
+            new(null, published.Title, published.Subject, published.Description, 30, rule, published.RowVersion, ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.Standard),
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.InvalidStateTransition, immutable1.Code);
+        
+        var draftStandard = await services.Exams.CreateAsync(
+            new(null, "Quiz Std", "Math", null, 30, rule, ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.Standard),
+            CancellationToken.None);
+        
+        var publishedStandard = await database.Context.ExamsSet.SingleAsync(x => x.Id == draftStandard.Id);
+        publishedStandard.Status = ExamStatus.Published;
+        await database.Context.SaveChangesAsync();
+
+        var immutable2 = await Assert.ThrowsAsync<ApiException>(() => services.Exams.UpdateAsync(
+            publishedStandard.Id,
+            new(null, publishedStandard.Title, publishedStandard.Subject, publishedStandard.Description, 30, rule, publishedStandard.RowVersion, ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.None),
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.InvalidStateTransition, immutable2.Code);
+
+        // Verify un-protected field can still be changed without changing supervision
+        var updatedTitle = await services.Exams.UpdateAsync(
+            publishedStandard.Id,
+            new(null, "Quiz Std Edited", publishedStandard.Subject, publishedStandard.Description, 30, rule, publishedStandard.RowVersion, ExamDeliveryType.MultipleChoice, QuizResultPolicy.Hidden, SupervisionMode.Standard),
+            CancellationToken.None);
+        Assert.Equal("Quiz Std Edited", updatedTitle.Title);
+        Assert.Equal(SupervisionMode.Standard, updatedTitle.SupervisionMode);
     }
 
     [Fact]

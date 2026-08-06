@@ -438,9 +438,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         {
             if (!Set(ref deliveryType, value))
                 return;
-            if (value == ExamDeliveryType.MultipleChoice)
-                SupervisionMode = SupervisionMode.Standard;
-            else
+            if (value != ExamDeliveryType.MultipleChoice)
                 QuizResultPolicy = QuizResultPolicy.Hidden;
             QuizImport.Clear();
             Raise(nameof(IsFileSubmission));
@@ -484,8 +482,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         get => SupervisionMode == SupervisionMode.Standard;
         set
         {
-            if (IsMultipleChoice)
-                value = true;
+
             SupervisionMode = value ? SupervisionMode.Standard : SupervisionMode.None;
         }
     }

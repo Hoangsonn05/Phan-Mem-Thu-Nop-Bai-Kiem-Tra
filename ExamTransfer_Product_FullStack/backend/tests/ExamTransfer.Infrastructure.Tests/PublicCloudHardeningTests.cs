@@ -308,7 +308,7 @@ public sealed class FinalCloudSourceCompatibilityTests
                 $"/quiz-sources/{sourceId}/source.bin",
                 firstPath,
                 StringComparison.Ordinal);
-            Assert.Equal(28, CloudSchemaCompatibility.RequiredVersion);
+            Assert.Equal(30, CloudSchemaCompatibility.RequiredVersion);
         }
         finally
         {
@@ -320,7 +320,7 @@ public sealed class FinalCloudSourceCompatibilityTests
     [Fact]
     public void PublicCloudCapability_RequiresCurrentSchemaAndCriticalRpcs()
     {
-        Assert.Equal(28, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(30, CloudSchemaCompatibility.RequiredVersion);
         Assert.Contains("save_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("return_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("reopen_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
@@ -390,10 +390,10 @@ public sealed class PublicCloudSchemaContractTests
     [Fact]
     public void RequiredSchemaVersion_MatchesCanonicalMigrationAndAcceptanceScript()
     {
-        Assert.Equal(28, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(30, CloudSchemaCompatibility.RequiredVersion);
 
         var migration = PublicCloudTestHarness.ReadRepositoryFile(
-            "backend/supabase/migrations/20260805080841_fix_verify_submission_archive_completed_status.sql");
+            "backend/supabase/migrations/20260806120000_optional_quiz_supervision.sql");
         var migrationVersion = Regex.Match(
             migration,
             @"\bset\s+schema_version\s*=\s*(\d+)\b",
@@ -420,9 +420,9 @@ public sealed class PublicCloudSchemaContractTests
     }
 
     [Fact]
-    public async Task RemoteSchema28_PassesHealthAndPreflight()
+    public async Task RemoteSchema30_PassesHealthAndPreflight()
     {
-        using var fixture = SchemaAdapterFixture.Create(28);
+        using var fixture = SchemaAdapterFixture.Create(30);
 
         Assert.True(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
         var preflight = await fixture.Adapter.PreflightAsync(CancellationToken.None);
@@ -435,17 +435,17 @@ public sealed class PublicCloudSchemaContractTests
     }
 
     [Fact]
-    public async Task RemoteSchema27_IsRejectedAsStale()
+    public async Task RemoteSchema29_IsRejectedAsStale()
     {
-        using var fixture = SchemaAdapterFixture.Create(27);
+        using var fixture = SchemaAdapterFixture.Create(29);
 
         Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
     }
 
     [Fact]
-    public async Task RemoteSchema29_IsRejectedByExactMatchContract()
+    public async Task RemoteSchema31_IsRejectedByExactMatchContract()
     {
-        using var fixture = SchemaAdapterFixture.Create(29);
+        using var fixture = SchemaAdapterFixture.Create(31);
 
         Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
     }
@@ -469,10 +469,10 @@ public sealed class PublicCloudSchemaContractTests
     }
 
     [Fact]
-    public async Task RemoteSchema28_UnblocksCloudWorkerAndPublicCloudPullPreflight()
+    public async Task RemoteSchema30_UnblocksCloudWorkerAndPublicCloudPullPreflight()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
-        using var fixture = SchemaAdapterFixture.Create(28);
+        using var fixture = SchemaAdapterFixture.Create(30);
         var services = new ServiceCollection();
         services.AddDbContext<AppDbContext>(builder =>
             builder.UseSqlite($"Data Source={database.Path}"));
@@ -489,6 +489,27 @@ public sealed class PublicCloudSchemaContractTests
         Assert.Equal("SUPABASE_SCHEMA_COMPATIBLE", report.SupabaseSchemaCompatible.Code);
         Assert.Equal("CLOUD_WORKER_HEALTHY", report.CloudWorker.Code);
         Assert.Equal("PUBLIC_CLOUD_PULL_HEALTHY", report.PublicCloudPullWorker.Code);
+    }
+
+    [Fact]
+    public async Task RemoteSchema29_BlocksCloudWorkerAndPublicCloudPullPreflight()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        using var fixture = SchemaAdapterFixture.Create(29);
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(builder =>
+            builder.UseSqlite($"Data Source={database.Path}"));
+        services.AddSingleton<ICloudAdapter>(fixture.Adapter);
+        await using var provider = services.BuildServiceProvider();
+        var reporter = new RuntimeHealthReporter(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new ContractStoragePaths(Path.GetDirectoryName(database.Path)!),
+            fixture.Options,
+            new DiscoveryRuntimeState());
+
+        var report = await reporter.GetAsync(CancellationToken.None);
+
+        Assert.Equal("SUPABASE_SCHEMA_INCOMPATIBLE_OR_UNREACHABLE", report.SupabaseSchemaCompatible.Code);
     }
 
     [Fact]

@@ -285,8 +285,8 @@ select is((
   select schema_version
   from public.examtransfer_cloud_meta
   where id=1),
-  29,
-  'OpenRequest supervision remains compatible at cloud schema 29');
+  30,
+  'OpenRequest supervision remains compatible at cloud schema 30');
 select set_config('request.jwt.claims','{"role":"service_role"}',true);
 select ok(public.get_examtransfer_cloud_capabilities()->'criticalRpcs'
   ? 'report_public_violation',
