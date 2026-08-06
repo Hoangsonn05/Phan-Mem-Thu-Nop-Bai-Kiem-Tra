@@ -36,7 +36,7 @@ foreach ($contract in @(
     '$root = $PSScriptRoot',
     'installer\assets\Khoa-DT-KTMT.ico',
     '"-p:ApplicationIcon=$appIcon"',
-    'Khoa-DT-KTMT-Setup-$Version.exe',
+    'Khoa-DT-KTMT-Setup-$Version-$shortCommit.exe',
     'RELEASE_WORKTREE_DIRTY')) {
     if ($buildSource.IndexOf($contract, [StringComparison]::Ordinal) -lt 0) {
         throw "CANONICAL_BUILD_CONTRACT_MISSING: $contract"
@@ -51,7 +51,7 @@ foreach ($contract in @(
     '#define MyAppName "Khoa-DT-KTMT"',
     '#define MyAppPublisher "Khoa-DT-KTMT"',
     'SetupIconFile={#MyAppIcon}',
-    'OutputBaseFilename=Khoa-DT-KTMT-Setup-{#MyAppVersion}',
+    'OutputBaseFilename=Khoa-DT-KTMT-Setup-{#MyAppVersion}-{#MyAppShortCommit}',
     'AppId={#MyAppId}',
     'ExamTransfer.Desktop.exe',
     'ExamTransfer.LocalServer.exe')) {
