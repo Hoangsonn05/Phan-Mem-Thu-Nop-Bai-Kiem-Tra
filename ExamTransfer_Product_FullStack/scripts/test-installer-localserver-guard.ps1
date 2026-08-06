@@ -301,6 +301,8 @@ try {
         'installer-localserver-guard.log',
         'Source: "{#MyReleaseRoot}\Server\*"',
         'RunLocalServerGuard(''StopOnly''',
+        'RunLocalServerGuard(''StartAndVerify''',
+        'RunLocalServerGuard(''CheckDowngrade''',
         ("ExamTransfer UDP {0}" -f $legacyDiscoveryPorts[0]),
         'ExamTransfer UDP 40550',
         'protocol=UDP localport=40550',
@@ -316,8 +318,7 @@ try {
         '[Components]',
         'IsStudentOnlyInstall',
         'WizardIsComponentSelected',
-        'SetIniString(''Install'', ''Role''',
-        'RunLocalServerGuard(''StartAndVerify''')) {
+        'SetIniString(''Install'', ''Role'')') {
         Assert-True (
             $installerSource.IndexOf(
                 $forbiddenInstallerContract,
