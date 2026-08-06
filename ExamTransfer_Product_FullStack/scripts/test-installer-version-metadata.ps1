@@ -82,8 +82,6 @@ $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) (
     'ExamTransfer-InstallerMetadata-' + [Guid]::NewGuid().ToString('N'))
 $releaseRoot = Join-Path $fixtureRoot 'Release'
 $outputRoot = Join-Path $fixtureRoot 'Output'
-$fixtureInstaller = Join-Path $outputRoot "Khoa-DT-KTMT-Setup-$Version-$($fixtureHead.Substring(0, 8)).exe"
-$fixtureHashFile = "$fixtureInstaller.sha256.txt"
 $legacySource = Join-Path $fixtureRoot 'LegacyMissingFileVersion.iss'
 $legacyInstaller = Join-Path $outputRoot 'Legacy-Missing-FileVersion.exe'
 $fixtureRepository = Join-Path $fixtureRoot 'Repository'
@@ -108,6 +106,9 @@ try {
     if ($LASTEXITCODE -ne 0 -or -not $fixtureHead) {
         throw 'Unable to resolve artifact validator fixture HEAD.'
     }
+    
+    $fixtureInstaller = Join-Path $outputRoot "Khoa-DT-KTMT-Setup-$Version-$($fixtureHead.Substring(0, 8)).exe"
+    $fixtureHashFile = "$fixtureInstaller.sha256.txt"
 
     [IO.File]::WriteAllText((Join-Path $releaseRoot 'Client\placeholder.txt'), 'fixture')
     [IO.File]::WriteAllText(
