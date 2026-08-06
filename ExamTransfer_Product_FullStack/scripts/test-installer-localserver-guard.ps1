@@ -318,7 +318,7 @@ try {
         '[Components]',
         'IsStudentOnlyInstall',
         'WizardIsComponentSelected',
-        'SetIniString(''Install'', ''Role'')') {
+        'SetIniString(''Install'', ''Role''')) {
         Assert-True (
             $installerSource.IndexOf(
                 $forbiddenInstallerContract,
