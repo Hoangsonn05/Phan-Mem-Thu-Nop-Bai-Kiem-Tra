@@ -96,6 +96,7 @@ public sealed class Exam : EntityBase
     public int DurationMinutes { get; set; }
     public ExamDeliveryType DeliveryType { get; set; } = ExamDeliveryType.FileSubmission;
     public QuizResultPolicy QuizResultPolicy { get; set; } = QuizResultPolicy.Hidden;
+    public bool QuizShuffleEnabled { get; set; }
     public SupervisionMode SupervisionMode { get; set; } = SupervisionMode.None;
     public string FileRuleJson { get; set; } = "{}";
     public ExamStatus Status { get; set; } = ExamStatus.Draft;
@@ -250,6 +251,7 @@ public sealed class ExamSession : EntityBase
     public ExamDeliveryType DeliveryTypeSnapshot { get; set; } = ExamDeliveryType.FileSubmission;
     public SupervisionMode SupervisionModeSnapshot { get; set; } = SupervisionMode.None;
     public QuizResultPolicy QuizResultPolicySnapshot { get; set; } = QuizResultPolicy.Hidden;
+    public bool QuizShuffleEnabledSnapshot { get; set; }
     public int ExamVersionSnapshot { get; set; } = 1;
     public string SettingsJson { get; set; } = "{}";
     public bool AutoApprove { get; set; }

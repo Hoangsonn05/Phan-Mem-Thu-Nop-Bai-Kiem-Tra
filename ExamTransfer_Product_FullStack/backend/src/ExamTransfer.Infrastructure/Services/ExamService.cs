@@ -96,13 +96,15 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         {
             Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
             var policy = ValidateExamPolicy(request.DeliveryType, request.QuizResultPolicy, request.SupervisionMode);
+            ValidateQuizShuffle(request.DeliveryType, request.QuizShuffleEnabled);
             if (request.ClassId.HasValue && !await db.ClassesSet.AnyAsync(x => x.Id == request.ClassId, cancellationToken))
                 throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy lớp.", 404);
             var exam = new Exam
             {
                 ClassId = request.ClassId, Title = request.Title.Trim(), Subject = request.Subject.Trim(), Description = request.Description?.Trim(),
                 DurationMinutes = request.DurationMinutes, DeliveryType = request.DeliveryType,
-                QuizResultPolicy = policy.ResultPolicy, SupervisionMode = policy.SupervisionMode,
+                QuizResultPolicy = policy.ResultPolicy, QuizShuffleEnabled = request.QuizShuffleEnabled,
+                SupervisionMode = policy.SupervisionMode,
                 FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions), Status = ExamStatus.Draft, Version = 1,
                 CreatedBy = actorId
             };
@@ -119,6 +121,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         {
             Validate(request.Title, request.Subject, request.DurationMinutes, request.FileRule);
             var policy = ValidateExamPolicy(request.DeliveryType, request.QuizResultPolicy, request.SupervisionMode);
+            ValidateQuizShuffle(request.DeliveryType, request.QuizShuffleEnabled);
             var exam = await db.ExamsSet.Include(x => x.Files).Include(x => x.QuizQuestions).ThenInclude(x => x.Choices).Include(x => x.QuizImportSources).FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
                 ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
             EnsureRowVersion(exam.RowVersion, request.RowVersion);
@@ -138,11 +141,12 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                     || exam.QuizResultPolicy != policy.ResultPolicy
                     || exam.SupervisionMode != policy.SupervisionMode))
                 throw new ApiException(ErrorCodes.InvalidStateTransition, "Không thể đổi loại bài, chính sách điểm hoặc giám sát sau khi phát hành/có phiên/có attempt; hãy nhân bản bài kiểm tra.", 409);
-            var before = new { exam.Title, exam.Subject, exam.Description, exam.DurationMinutes, exam.FileRuleJson, exam.Version };
+            var before = new { exam.Title, exam.Subject, exam.Description, exam.DurationMinutes, exam.FileRuleJson, exam.Version, exam.QuizShuffleEnabled };
             exam.ClassId = request.ClassId; exam.Title = request.Title.Trim(); exam.Subject = request.Subject.Trim(); exam.Description = request.Description?.Trim();
             exam.DurationMinutes = request.DurationMinutes; exam.FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions);
             exam.DeliveryType = request.DeliveryType;
             exam.QuizResultPolicy = policy.ResultPolicy;
+            exam.QuizShuffleEnabled = request.QuizShuffleEnabled;
             exam.SupervisionMode = policy.SupervisionMode;
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamUpdated", nameof(Exam), exam.Id.ToString(), null, before, ToAudit(exam), cancellationToken);
@@ -261,7 +265,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
     {
         var actorId = RequiredAuthenticatedActorId();
         var source = await db.ExamsSet.AsNoTracking().Include(x => x.Files).Include(x => x.QuizImportSources).Include(x => x.QuizQuestions).ThenInclude(x => x.Choices).FirstOrDefaultAsync(x => x.Id == id, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
-        var clone = new Exam { ClassId = source.ClassId, Title = source.Title + " - Bản sao", Subject = source.Subject, Description = source.Description, DurationMinutes = source.DurationMinutes, DeliveryType = source.DeliveryType, QuizResultPolicy = source.QuizResultPolicy, SupervisionMode = source.SupervisionMode, FileRuleJson = source.FileRuleJson, Status = ExamStatus.Draft, Version = 1, CreatedBy = actorId };
+        var clone = new Exam { ClassId = source.ClassId, Title = source.Title + " - Bản sao", Subject = source.Subject, Description = source.Description, DurationMinutes = source.DurationMinutes, DeliveryType = source.DeliveryType, QuizResultPolicy = source.QuizResultPolicy, QuizShuffleEnabled = source.QuizShuffleEnabled, SupervisionMode = source.SupervisionMode, FileRuleJson = source.FileRuleJson, Status = ExamStatus.Draft, Version = 1, CreatedBy = actorId };
         var sourceQuestions = source.QuizQuestions
             .Where(x => x.Version == source.Version)
             .OrderBy(x => x.Order)
@@ -876,6 +880,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         duration_minutes = x.DurationMinutes,
         delivery_type = x.DeliveryType.ToString(),
         quiz_result_policy = x.QuizResultPolicy.ToString(),
+        quiz_shuffle_enabled = x.QuizShuffleEnabled,
         supervision_mode = x.SupervisionMode.ToString(),
         file_rule_json = x.FileRuleJson,
         status = x.Status.ToString(),
@@ -1011,6 +1016,14 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             return (resultPolicy, supervisionMode);
         }
         return (QuizResultPolicy.Hidden, SupervisionMode.Standard);
+    }
+    private static void ValidateQuizShuffle(ExamDeliveryType deliveryType, bool enabled)
+    {
+        if (enabled && deliveryType != ExamDeliveryType.MultipleChoice)
+            throw new ApiException(
+                ErrorCodes.ValidationFailed,
+                "Chỉ đề trắc nghiệm mới có thể đảo thứ tự câu hỏi và đáp án.",
+                422);
     }
     private static void ValidateFile(string name, long size, string sha)
     {

@@ -506,7 +506,7 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
     {
         var p = s.Participants; var now = DateTimeOffset.UtcNow;
         var counts = new SessionCountsDto(p.Count, p.Count(x => x.Status == ParticipantStatus.PendingApproval), p.Count(x => x.Status == ParticipantStatus.Approved), p.Count(x => x.LastSeenUtc.HasValue && now - x.LastSeenUtc <= TimeSpan.FromSeconds(_options.Session.DisconnectAfterSeconds)), p.Count(x => x.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted), p.Count(x => x.SubmissionStatus == SubmissionStatus.Uploading), p.Count(x => x.Status == ParticipantStatus.Disconnected));
-        return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion, s.AccessMode, s.AutoApprove, s.DeliveryTypeSnapshot, s.SupervisionModeSnapshot, s.QuizResultPolicySnapshot, s.ExamVersionSnapshot, s.AdmissionMode);
+        return new SessionSummaryDto(s.Id, s.ExamId, s.Exam.Title, s.RoomCode, s.Status, now, s.StartedAtUtc, s.EndedAtUtc, EffectiveDeadline(s), counts, s.Sequence, s.RowVersion, s.AccessMode, s.AutoApprove, s.DeliveryTypeSnapshot, s.SupervisionModeSnapshot, s.QuizResultPolicySnapshot, s.ExamVersionSnapshot, s.AdmissionMode, s.QuizShuffleEnabledSnapshot);
     }
     private static DateTimeOffset? EffectiveDeadline(ExamSession s) => s.StartedAtUtc?.AddMinutes(s.Exam.DurationMinutes);
     private static DateTimeOffset? ParticipantDeadline(SessionParticipant participant) =>
@@ -596,6 +596,11 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài kiểm tra.", 404);
         if (exam.Status != ExamStatus.Published)
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Chỉ tạo phòng từ bài kiểm tra đã phát hành.", 409);
+        if (request.AccessMode == SessionAccessMode.PublicCloud && exam.QuizShuffleEnabled)
+            throw new ApiException(
+                ErrorCodes.ValidationFailed,
+                "Tính năng đảo câu hỏi và đáp án hiện chỉ hỗ trợ phòng OnlyLAN.",
+                422);
         ValidateSessionConfiguration(request.SettingsJson, request.Capacity);
 
         Guid? effectiveClassId;
@@ -657,6 +662,7 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
             DeliveryTypeSnapshot = exam.DeliveryType,
             SupervisionModeSnapshot = exam.SupervisionMode,
             QuizResultPolicySnapshot = exam.QuizResultPolicy,
+            QuizShuffleEnabledSnapshot = exam.QuizShuffleEnabled,
             ExamVersionSnapshot = exam.Version
         };
         db.ExamSessionsSet.Add(session);

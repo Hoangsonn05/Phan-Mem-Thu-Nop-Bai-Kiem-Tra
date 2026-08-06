@@ -20,7 +20,7 @@ namespace ExamTransfer.Infrastructure.Tests;
 public sealed class UnifiedGradingTests(ITestOutputHelper output)
 {
     [Fact]
-    public async Task SqliteUpgrade_BackfillsExistingFinalizedAttemptAndAdvancesSchema12()
+    public async Task SqliteUpgrade_BackfillsExistingFinalizedAttemptAndAdvancesSchema13()
     {
         await using var fixture = await Fixture.CreateAsync();
         await fixture.Db.Database.ExecuteSqlRawAsync(
@@ -44,7 +44,7 @@ public sealed class UnifiedGradingTests(ITestOutputHelper output)
         Assert.Equal(GradingStatus.Graded, upgraded.GradingStatus);
         Assert.Equal(upgraded.FinalizedAtUtc, upgraded.GradedAtUtc);
         Assert.Equal(
-            "\"12\"",
+            "\"13\"",
             (await fixture.Db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
     }
 
@@ -400,7 +400,8 @@ public sealed class UnifiedGradingTests(ITestOutputHelper output)
                 Status = SessionStatus.Finished,
                 DeliveryTypeSnapshot = ExamDeliveryType.MultipleChoice,
                 ExamVersionSnapshot = 1,
-                QuizResultPolicySnapshot = QuizResultPolicy.Hidden
+                QuizResultPolicySnapshot = QuizResultPolicy.Hidden,
+                QuizShuffleEnabledSnapshot = true
             };
             var participant = new SessionParticipant
             {

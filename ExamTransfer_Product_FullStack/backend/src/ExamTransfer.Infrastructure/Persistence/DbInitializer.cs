@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "12";
+    public const string SchemaVersion = "13";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -75,6 +75,7 @@ public static class DbInitializer
         await EnsureColumnAsync(db, "user_login_sessions", "EncryptedRefreshToken", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "exams", "DeliveryType", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exams", "QuizResultPolicy", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exams", "QuizShuffleEnabled", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exams", "SupervisionMode", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "classes", "AccessMode", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "classes", "EnrollmentOpen", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
@@ -88,6 +89,7 @@ public static class DbInitializer
         await EnsureColumnAsync(db, "exam_sessions", "DeliveryTypeSnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exam_sessions", "SupervisionModeSnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exam_sessions", "QuizResultPolicySnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "exam_sessions", "QuizShuffleEnabledSnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "exam_sessions", "ExamVersionSnapshot", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
         await db.Database.ExecuteSqlRawAsync("""
             UPDATE "exam_sessions"

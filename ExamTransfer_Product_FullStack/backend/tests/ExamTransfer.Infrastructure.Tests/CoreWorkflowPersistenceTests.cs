@@ -1011,6 +1011,92 @@ public sealed class CoreWorkflowPersistenceTests
     }
 
     [Fact]
+    public async Task QuizShuffle_ConfigRoundTripsSnapshotsAndPublicCloudFailsClosed()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var services = Services(database.Context);
+        var rule = new FileRuleDto([".docx"], 1024, 2048, 1, false, false);
+
+        var invalidFileExam = await Assert.ThrowsAsync<ApiException>(() => services.Exams.CreateAsync(
+            new(null, "File exam", "Rules", null, 30, rule,
+                ExamDeliveryType.FileSubmission,
+                QuizResultPolicy.Hidden,
+                SupervisionMode.Standard,
+                true),
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.ValidationFailed, invalidFileExam.Code);
+        Assert.Equal(422, invalidFileExam.StatusCode);
+
+        var created = await services.Exams.CreateAsync(
+            new(null, "Shuffle quiz", "Rules", null, 30, rule,
+                ExamDeliveryType.MultipleChoice,
+                QuizResultPolicy.Hidden,
+                SupervisionMode.None,
+                true),
+            CancellationToken.None);
+        Assert.True(created.QuizShuffleEnabled);
+        Assert.True((await services.Exams.GetAsync(created.Id, CancellationToken.None)).QuizShuffleEnabled);
+
+        var clone = await services.Exams.CloneAsync(created.Id, CancellationToken.None);
+        Assert.True(clone.QuizShuffleEnabled);
+
+        var persisted = await database.Context.ExamsSet.SingleAsync(x => x.Id == created.Id);
+        persisted.Status = ExamStatus.Published;
+        await database.Context.SaveChangesAsync();
+        database.Context.ChangeTracker.Clear();
+
+        var enabled = await services.Exams.GetAsync(created.Id, CancellationToken.None);
+        var enabledSession = await services.Sessions.CreateAsync(
+            SessionRequest(created.Id, null, "SHUFFLE1"),
+            "host",
+            CancellationToken.None);
+        Assert.True(enabledSession.Summary.QuizShuffleEnabled);
+
+        var disabled = await services.Exams.UpdateAsync(
+            created.Id,
+            new(null, enabled.Title, enabled.Subject, enabled.Description, enabled.DurationMinutes, rule,
+                enabled.RowVersion,
+                ExamDeliveryType.MultipleChoice,
+                enabled.QuizResultPolicy,
+                enabled.SupervisionMode,
+                false),
+            CancellationToken.None);
+        var disabledSession = await services.Sessions.CreateAsync(
+            SessionRequest(created.Id, null, "SHUFFLE2"),
+            "host",
+            CancellationToken.None);
+        Assert.True((await services.Sessions.GetAsync(enabledSession.Summary.Id, CancellationToken.None)).Summary.QuizShuffleEnabled);
+        Assert.False(disabledSession.Summary.QuizShuffleEnabled);
+
+        var publicSession = await services.Sessions.CreateAsync(
+            SessionRequest(created.Id, null, "SHUFFLE3") with { AccessMode = SessionAccessMode.PublicCloud },
+            "host",
+            CancellationToken.None);
+        Assert.Equal(SessionAccessMode.PublicCloud, publicSession.Summary.AccessMode);
+
+        var reenabled = await services.Exams.UpdateAsync(
+            created.Id,
+            new(null, disabled.Title, disabled.Subject, disabled.Description, disabled.DurationMinutes, rule,
+                disabled.RowVersion,
+                ExamDeliveryType.MultipleChoice,
+                disabled.QuizResultPolicy,
+                disabled.SupervisionMode,
+                true),
+            CancellationToken.None);
+        Assert.True(reenabled.QuizShuffleEnabled);
+        Assert.False((await services.Sessions.GetAsync(disabledSession.Summary.Id, CancellationToken.None)).Summary.QuizShuffleEnabled);
+
+        var publicError = await Assert.ThrowsAsync<ApiException>(() => services.Sessions.CreateAsync(
+            SessionRequest(created.Id, null, "SHUFFLE4") with { AccessMode = SessionAccessMode.PublicCloud },
+            "host",
+            CancellationToken.None));
+        Assert.Equal(ErrorCodes.ValidationFailed, publicError.Code);
+        Assert.Equal(422, publicError.StatusCode);
+        Assert.Contains("OnlyLAN", publicError.Message, StringComparison.Ordinal);
+        Assert.False(await database.Context.ExamSessionsSet.AnyAsync(x => x.RoomCode == "SHUFFLE4"));
+    }
+
+    [Fact]
     public async Task OptionalSupervision_CanBeChangedBeforePublish()
     {
         await using var database = await FileDatabase.CreateAsync();

@@ -23,7 +23,7 @@ public sealed class DbInitializerQuizTests
                 await DbInitializer.InitializeAsync(db, paths);
 
                 Assert.Equal(7, await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name LIKE 'quiz_%'").SingleAsync());
-                Assert.Equal("\"12\"", (await db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
+                Assert.Equal("\"13\"", (await db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
 
                 var classroom = new ClassRoom
                 {
@@ -114,6 +114,57 @@ public sealed class DbInitializerQuizTests
                         "SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='index' AND name='IX_quiz_import_sources_ExamId_ExamVersion'")
                         .SingleAsync());
             }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task InitializeAsync_AddsLegacyShuffleColumnsWithFalseDefaults()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ExamTransfer.DbInitTests", Guid.NewGuid().ToString("N"));
+        var paths = new Paths(root);
+        try
+        {
+            await using var db = new AppDbContext(
+                new DbContextOptionsBuilder<AppDbContext>()
+                    .UseSqlite($"Data Source={paths.DatabasePath}")
+                    .Options);
+            await DbInitializer.InitializeAsync(db, paths);
+            var exam = new Exam
+            {
+                Title = "Legacy quiz",
+                Subject = "Upgrade",
+                DurationMinutes = 30,
+                DeliveryType = ExamDeliveryType.MultipleChoice
+            };
+            var session = new ExamSession
+            {
+                Exam = exam,
+                ExamId = exam.Id,
+                RoomCode = "LEGSHUF1",
+                DeliveryTypeSnapshot = ExamDeliveryType.MultipleChoice
+            };
+            db.AddRange(exam, session);
+            await db.SaveChangesAsync();
+
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE \"exam_sessions\" DROP COLUMN \"QuizShuffleEnabledSnapshot\";");
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE \"exams\" DROP COLUMN \"QuizShuffleEnabled\";");
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE \"app_settings\" SET \"ValueJson\" = '\"12\"' WHERE \"Key\" = 'schema.version';");
+            db.ChangeTracker.Clear();
+
+            await DbInitializer.InitializeAsync(db, paths);
+            db.ChangeTracker.Clear();
+
+            Assert.False(await db.ExamsSet.Where(x => x.Id == exam.Id).Select(x => x.QuizShuffleEnabled).SingleAsync());
+            Assert.False(await db.ExamSessionsSet.Where(x => x.Id == session.Id).Select(x => x.QuizShuffleEnabledSnapshot).SingleAsync());
+            Assert.Equal("\"13\"", (await db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
         }
         finally
         {

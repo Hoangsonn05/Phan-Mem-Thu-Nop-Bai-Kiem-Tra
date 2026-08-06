@@ -75,6 +75,7 @@ public sealed class QuizWorkflowTests
             DeliveryTypeSnapshot = ExamDeliveryType.MultipleChoice,
             SupervisionModeSnapshot = SupervisionMode.Standard,
             QuizResultPolicySnapshot = QuizResultPolicy.ShowAfterSubmission,
+            QuizShuffleEnabledSnapshot = true,
             ExamVersionSnapshot = exam.Version
         };
         var participant = new SessionParticipant { Session = session, SessionId = session.Id, StudentCode = "S1", DisplayName = "Student", DeviceId = "d", MachineName = "m", AppVersion = "1", Status = ParticipantStatus.Approved };
@@ -98,15 +99,26 @@ public sealed class QuizWorkflowTests
         var attempt = await service.StartOrGetAttemptAsync(session.Id, participant.Id, default);
         Assert.Equal(2, attempt.Questions.Count);
         Assert.DoesNotContain("correct", (await db.QuizAttemptsSet.SingleAsync()).SnapshotJson, StringComparison.OrdinalIgnoreCase);
-        var q1 = attempt.Questions[0]; var q2 = attempt.Questions[1];
-        await service.SyncAnswersAsync(attempt.Id, participant.Id, new([
-            new(q1.Id, [q1.Choices[1].Id], 2, DateTimeOffset.UtcNow),
-            new(q2.Id, [q2.Choices[0].Id, q2.Choices[2].Id], 1, DateTimeOffset.UtcNow)
-        ]), default);
+        var correctChoices = imported.Questions.ToDictionary(
+            question => question.Id,
+            question => (IReadOnlyList<Guid>)question.Choices
+                .Where(choice => choice.IsCorrect)
+                .Select(choice => choice.Id)
+                .ToList());
+        var q1 = attempt.Questions[0];
+        await service.SyncAnswersAsync(attempt.Id, participant.Id, new(
+            attempt.Questions.Select((question, index) => new QuizAnswerDto(
+                question.Id,
+                correctChoices[question.Id],
+                index == 0 ? 2 : 1,
+                DateTimeOffset.UtcNow)).ToList()), default);
+        var incorrectChoice = q1.Choices.First(choice => !correctChoices[q1.Id].Contains(choice.Id));
         var stale = await service.SyncAnswersAsync(attempt.Id, participant.Id, new([
-            new(q1.Id, [q1.Choices[0].Id], 1, DateTimeOffset.UtcNow)
+            new(q1.Id, [incorrectChoice.Id], 1, DateTimeOffset.UtcNow)
         ]), default);
-        Assert.Equal(q1.Choices[1].Id, stale.Answers.Single(x => x.QuestionId == q1.Id).ChoiceIds.Single());
+        Assert.Equal(
+            correctChoices[q1.Id].Order(),
+            stale.Answers.Single(x => x.QuestionId == q1.Id).ChoiceIds.Order());
 
         var finalized = await service.FinalizeAsync(attempt.Id, participant.Id, new("final-1", DateTimeOffset.UtcNow), default);
         var repeated = await service.FinalizeAsync(attempt.Id, participant.Id, new("final-1", DateTimeOffset.UtcNow), default);
@@ -137,6 +149,7 @@ public sealed class QuizWorkflowTests
             DeliveryTypeSnapshot = ExamDeliveryType.MultipleChoice,
             SupervisionModeSnapshot = SupervisionMode.Standard,
             QuizResultPolicySnapshot = QuizResultPolicy.Hidden,
+            QuizShuffleEnabledSnapshot = true,
             ExamVersionSnapshot = exam.Version
         };
         var hiddenParticipant = new SessionParticipant
@@ -179,7 +192,7 @@ public sealed class QuizWorkflowTests
             new([
                 new(
                     hiddenQuestion.Id,
-                    [hiddenQuestion.Choices[1].Id],
+                    correctChoices[hiddenQuestion.Id],
                     1,
                     DateTimeOffset.UtcNow)
             ]),

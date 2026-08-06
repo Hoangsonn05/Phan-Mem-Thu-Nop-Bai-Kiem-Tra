@@ -26,8 +26,8 @@ public sealed record BulkArchiveResultDto(
     IReadOnlyList<Guid> AlreadyArchived,
     IReadOnlyList<BulkArchiveFailureDto> Rejected);
 
-public sealed record CreateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule, ExamDeliveryType DeliveryType = ExamDeliveryType.FileSubmission, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None);
-public sealed record UpdateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule, string RowVersion, ExamDeliveryType DeliveryType = ExamDeliveryType.FileSubmission, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None);
+public sealed record CreateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule, ExamDeliveryType DeliveryType = ExamDeliveryType.FileSubmission, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None, bool QuizShuffleEnabled = false);
+public sealed record UpdateExamRequest(Guid? ClassId, string Title, string Subject, string? Description, int DurationMinutes, FileRuleDto FileRule, string RowVersion, ExamDeliveryType DeliveryType = ExamDeliveryType.FileSubmission, QuizResultPolicy QuizResultPolicy = QuizResultPolicy.Hidden, SupervisionMode SupervisionMode = SupervisionMode.None, bool QuizShuffleEnabled = false);
 public sealed record InitFileUploadRequest(string FileName, long SizeBytes, string Sha256, string MimeType, int? ChunkSizeBytes = null);
 public sealed record InitFileUploadResponse(Guid FileId, int ChunkSizeBytes, int TotalChunks, IReadOnlyList<int> MissingChunks);
 public sealed record FinalizeFileUploadRequest(string Sha256);

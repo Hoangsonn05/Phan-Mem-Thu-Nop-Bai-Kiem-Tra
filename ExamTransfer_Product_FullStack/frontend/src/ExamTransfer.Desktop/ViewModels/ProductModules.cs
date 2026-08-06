@@ -365,6 +365,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
     private string allowedExtensions = ".pdf,.docx,.zip,.cs,.java,.py";
     private ExamDeliveryType deliveryType = ExamDeliveryType.FileSubmission;
     private QuizResultPolicy quizResultPolicy = QuizResultPolicy.Hidden;
+    private bool quizShuffleEnabled;
     private SupervisionMode supervisionMode = SupervisionMode.None;
     private bool currentHasCommittedQuizSource;
     private int currentQuizQuestionCount;
@@ -418,6 +419,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
             }
             Raise(nameof(PublishHint));
             Raise(nameof(IsPolicyEditable));
+            Raise(nameof(IsQuizShuffleEditable));
             Raise(nameof(HasSelectedExam));
             RaiseCommands();
         }
@@ -439,10 +441,14 @@ public sealed class ExamManagementViewModel : ProductPageBase
             if (!Set(ref deliveryType, value))
                 return;
             if (value != ExamDeliveryType.MultipleChoice)
+            {
                 QuizResultPolicy = QuizResultPolicy.Hidden;
+                QuizShuffleEnabled = false;
+            }
             QuizImport.Clear();
             Raise(nameof(IsFileSubmission));
             Raise(nameof(IsMultipleChoice));
+            Raise(nameof(IsQuizShuffleEditable));
             Raise(nameof(CanPublish));
             Raise(nameof(PublishHint));
             RaiseCommands();
@@ -477,6 +483,11 @@ public sealed class ExamManagementViewModel : ProductPageBase
                 Raise(nameof(ShowScoreAfterSubmission));
         }
     }
+    public bool QuizShuffleEnabled
+    {
+        get => quizShuffleEnabled;
+        set => Set(ref quizShuffleEnabled, value && IsMultipleChoice);
+    }
     public bool UseSupervision
     {
         get => SupervisionMode == SupervisionMode.Standard;
@@ -500,6 +511,8 @@ public sealed class ExamManagementViewModel : ProductPageBase
     public bool IsPolicyEditable => SelectedExam is null
         ? IsCreatingNew
         : SelectedExam.Status == ExamStatus.Draft;
+    public bool IsQuizShuffleEditable => IsMultipleChoice
+        && (SelectedExam is null || SelectedExam.Status != ExamStatus.Archived);
     public bool HasSelectedExam => SelectedExam is not null;
     public bool CanPublish => SelectedExam is not null
         && SelectedExam.Status is not (ExamStatus.Archived or ExamStatus.Cancelled)
@@ -613,6 +626,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         AllowedExtensions = string.Join(',', detail.FileRule.AllowedExtensions);
         DeliveryType = detail.DeliveryType;
         QuizResultPolicy = detail.QuizResultPolicy;
+        QuizShuffleEnabled = detail.QuizShuffleEnabled;
         SupervisionMode = detail.SupervisionMode;
         QuizImport.SetCommitted(
             detail.QuizSource,
@@ -652,7 +666,8 @@ public sealed class ExamManagementViewModel : ProductPageBase
                 currentExamRowVersion,
                 DeliveryType,
                 QuizResultPolicy,
-                SupervisionMode),
+                SupervisionMode,
+                QuizShuffleEnabled),
             ct));
         await RefreshExamsCoreAsync(updated.Id, ct);
     });
@@ -691,7 +706,8 @@ public sealed class ExamManagementViewModel : ProductPageBase
                 rule,
                 DeliveryType,
                 QuizResultPolicy,
-                SupervisionMode),
+                SupervisionMode,
+                QuizShuffleEnabled),
             ct));
         await RefreshExamsCoreAsync(exam.Id, ct);
     });
@@ -901,6 +917,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
             AllowedExtensions = ".pdf,.docx,.zip,.cs,.java,.py";
             DeliveryType = ExamDeliveryType.FileSubmission;
             QuizResultPolicy = QuizResultPolicy.Hidden;
+            QuizShuffleEnabled = false;
             SupervisionMode = SupervisionMode.None;
         }
         Raise(nameof(CanPublish));
@@ -916,6 +933,7 @@ public sealed class ExamManagementViewModel : ProductPageBase
         Raise(nameof(IsCreatingNew));
         Raise(nameof(IsEditingExisting));
         Raise(nameof(IsPolicyEditable));
+        Raise(nameof(IsQuizShuffleEditable));
         Raise(nameof(HasSelectedExam));
         RaiseCommands();
     }

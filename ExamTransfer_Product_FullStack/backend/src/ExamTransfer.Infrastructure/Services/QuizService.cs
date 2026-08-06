@@ -574,7 +574,13 @@ public sealed class QuizService(
             throw new ApiException(ErrorCodes.QuizHasNoQuestions, "Đề chưa có câu hỏi trắc nghiệm.", 409);
         if (!ValidateAuthoritativeGraph(graph))
             throw QuestionGraphInvalid();
-        return graph.Select(ToQuestionDto).ToList();
+        return session.QuizShuffleEnabledSnapshot
+            ? QuizDeterministicShuffle.BuildSnapshot(
+                graph,
+                session.Id,
+                participant.Id,
+                session.ExamVersionSnapshot)
+            : graph.Select(ToQuestionDto).ToList();
     }
 
     private async Task<QuizAttemptDto> RepairAttemptAsync(

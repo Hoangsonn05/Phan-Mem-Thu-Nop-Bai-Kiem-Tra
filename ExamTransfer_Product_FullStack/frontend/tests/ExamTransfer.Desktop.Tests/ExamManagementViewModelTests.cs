@@ -109,6 +109,8 @@ public sealed class ExamManagementViewModelTests
 
         Assert.Contains("Header=\"NỘI DUNG\"", source, StringComparison.Ordinal);
         Assert.Contains("Binding=\"{Binding ContentSummaryText}\"", source, StringComparison.Ordinal);
+        Assert.Contains("Đảo thứ tự câu hỏi và đáp án cho từng học sinh", source, StringComparison.Ordinal);
+        Assert.Contains("IsChecked=\"{Binding QuizShuffleEnabled, Mode=TwoWay}\"", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Header=\"FILE\"", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Binding=\"{Binding FileCount}\"", source, StringComparison.Ordinal);
     }
@@ -224,7 +226,8 @@ public sealed class ExamManagementViewModelTests
             QuizResultPolicy.Hidden,
             SupervisionMode.Standard,
             true,
-            2);
+            2,
+            true);
         var committedQuestions = new[]
         {
             new QuizAuthoringQuestionDto(
@@ -259,7 +262,8 @@ public sealed class ExamManagementViewModelTests
             summary.SupervisionMode,
             source,
             2,
-            10.00m)
+            10.00m,
+            true)
         {
             QuizQuestions = committedQuestions
         };
@@ -274,6 +278,8 @@ public sealed class ExamManagementViewModelTests
         await viewModel.LoadSelectedExamAsync();
 
         Assert.True(viewModel.QuizImport.HasCommittedSource);
+        Assert.True(viewModel.QuizShuffleEnabled);
+        Assert.True(viewModel.IsQuizShuffleEditable);
         Assert.Contains("persisted.docx", viewModel.QuizImport.Summary, StringComparison.Ordinal);
         Assert.Equal(2, viewModel.QuizImport.Questions.Count);
         Assert.Equal("Persisted question 1", viewModel.QuizImport.Questions[0].Text);
@@ -293,6 +299,7 @@ public sealed class ExamManagementViewModelTests
             TimeSpan.FromSeconds(2)));
         var request = Assert.IsType<UpdateExamRequest>(api.PutRequests.Single());
         Assert.Equal(ExamDeliveryType.MultipleChoice, request.DeliveryType);
+        Assert.True(request.QuizShuffleEnabled);
         Assert.Equal("quiz-row-version", request.RowVersion);
         Assert.True(viewModel.QuizImport.HasCommittedSource);
         Assert.Equal(2, viewModel.QuizImport.CommittedQuestionCount);
@@ -535,6 +542,8 @@ public sealed class ExamManagementViewModelTests
         Assert.False(viewModel.SaveCommand.CanExecute(null));
         viewModel.Title = "New classless exam";
         viewModel.Subject = "Math";
+        viewModel.IsMultipleChoice = true;
+        viewModel.QuizShuffleEnabled = true;
         viewModel.CreateCommand.Execute(null);
         Assert.True(SpinWait.SpinUntil(
             () => api.PostPaths.Contains("api/v1/exams"),
@@ -542,6 +551,9 @@ public sealed class ExamManagementViewModelTests
         var create = Assert.IsType<CreateExamRequest>(
             api.PostRequests.First(request => request is CreateExamRequest));
         Assert.Null(create.ClassId);
+        Assert.True(create.QuizShuffleEnabled);
+        viewModel.IsFileSubmission = true;
+        Assert.False(viewModel.QuizShuffleEnabled);
     }
 
     [Fact]
