@@ -90,20 +90,20 @@ function Find-InnoCompiler {
 }
 
 foreach ($requiredFile in @(
-    $frontendProject,
-    $backendSolution,
-    $backendProject,
-    $frontendVerify,
-    $installerScript,
-    $publicConfigPackaging,
-    $canonicalLayoutTests,
-    $publicConfigPackagingTests,
-    $dockerPackagingContractTests,
-    $installerGuardTests,
-    $installerCleanInstallTest,
-    $installerMetadataHelper,
-    $installerMetadataTests,
-    $releaseArtifactValidator)) {
+        $frontendProject,
+        $backendSolution,
+        $backendProject,
+        $frontendVerify,
+        $installerScript,
+        $publicConfigPackaging,
+        $canonicalLayoutTests,
+        $publicConfigPackagingTests,
+        $dockerPackagingContractTests,
+        $installerGuardTests,
+        $installerCleanInstallTest,
+        $installerMetadataHelper,
+        $installerMetadataTests,
+        $releaseArtifactValidator)) {
     Require-File $requiredFile
 }
 Assert-CanonicalIcon $appIcon
@@ -127,8 +127,8 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Unable to determine whether the Git working tree is dirty.'
 }
 if (@($statusOutput | Where-Object {
-        -not [string]::IsNullOrWhiteSpace([string]$_)
-    }).Count -ne 0) {
+            -not [string]::IsNullOrWhiteSpace([string]$_)
+        }).Count -ne 0) {
     throw 'RELEASE_WORKTREE_DIRTY: commit the release source and remove unrelated worktree changes before building an official installer.'
 }
 if ($SkipTests) {
@@ -368,7 +368,7 @@ Assert-PublicCloudConfigEqual `
 
 $hash = Get-FileHash $installer -Algorithm SHA256
 "$($hash.Hash)  $([IO.Path]::GetFileName($installer))" |
-    Set-Content -LiteralPath $installerHashFile -Encoding ascii
+Set-Content -LiteralPath $installerHashFile -Encoding ascii
 
 & powershell `
     -NoProfile `
