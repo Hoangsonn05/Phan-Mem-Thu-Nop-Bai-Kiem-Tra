@@ -698,6 +698,85 @@ public sealed class TeacherRealtimeTests
         Assert.Equal(1, viewModel.SelectedSession?.Counts.Submitted);
     }
 
+    [Fact]
+    public async Task SubmissionCenter_PublicCloudQuizProjectionRefreshesSelectedSessionOnly()
+    {
+        var session = CreateSession(
+            SessionStatus.Collecting,
+            SessionAccessMode.PublicCloud) with
+        {
+            DeliveryType = ExamDeliveryType.MultipleChoice
+        };
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        using var viewModel = new SubmissionCenterViewModel(backend, realtime);
+        await viewModel.InitializeAsync(default);
+        Assert.Equal(1, backend.QuizAttemptRequests);
+
+        backend.QuizAttempts = [CreateQuizAttempt(session.Id)];
+        realtime.Raise(new(
+            Guid.NewGuid(),
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            20,
+            null,
+            ProjectionUpdated: new(
+                Guid.NewGuid(),
+                PublicCloudProjectionEntityTypes.QuizAttempt,
+                20)));
+        await Task.Delay(250);
+        Assert.Equal(1, backend.QuizAttemptRequests);
+
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            21,
+            null,
+            ProjectionUpdated: new(
+                session.Id,
+                PublicCloudProjectionEntityTypes.QuizAttempt,
+                21)));
+
+        await WaitForAsync(() => backend.QuizAttemptRequests == 2);
+        Assert.True(Assert.Single(viewModel.Submissions).IsQuizAttempt);
+    }
+
+    [Fact]
+    public async Task SessionManagement_PublicCloudQuizProjectionRefreshesSubmittedCount()
+    {
+        var session = CreateSession(
+            SessionStatus.InProgress,
+            SessionAccessMode.PublicCloud) with
+        {
+            DeliveryType = ExamDeliveryType.MultipleChoice
+        };
+        var backend = new TeacherRealtimeBackend(session);
+        var realtime = new FakeTeacherRealtime();
+        using var viewModel = new SessionManagementViewModel(
+            backend,
+            projectionDelay: (_, _) => Task.CompletedTask,
+            projectionPollAttempts: 1,
+            realtime: realtime);
+        await viewModel.InitializeAsync(default);
+        Assert.Equal(0, viewModel.SelectedSession?.Counts.Submitted);
+
+        backend.Session = session with
+        {
+            Counts = session.Counts with { Submitted = 1 }
+        };
+        realtime.Raise(new(
+            session.Id,
+            RealtimeEvents.PublicCloudProjectionUpdated,
+            22,
+            null,
+            ProjectionUpdated: new(
+                session.Id,
+                PublicCloudProjectionEntityTypes.QuizAttempt,
+                22)));
+
+        await WaitForAsync(() => backend.SessionRequests == 2);
+        Assert.Equal(1, viewModel.SelectedSession?.Counts.Submitted);
+    }
+
     private static SessionSummaryDto CreateSession(
         SessionStatus status,
         SessionAccessMode accessMode = SessionAccessMode.LanOnly) =>

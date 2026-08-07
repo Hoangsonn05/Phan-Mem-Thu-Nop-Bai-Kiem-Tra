@@ -1162,8 +1162,21 @@ public sealed class SessionManagementViewModel : ProductPageBase
     {
         if (IsDisposed
             || SelectedSession is not { } session
-            || notification.SessionId != session.Id
-            || notification.EventName != RealtimeEvents.QuizAttemptFinalized)
+            || notification.SessionId != session.Id)
+            return;
+
+        var isLocalFinalize =
+            notification.EventName == RealtimeEvents.QuizAttemptFinalized;
+        var projection = notification.ProjectionUpdated;
+        var isPublicCloudProjection =
+            notification.EventName == RealtimeEvents.PublicCloudProjectionUpdated
+            && session.AccessMode == SessionAccessMode.PublicCloud
+            && projection?.SessionId == session.Id
+            && string.Equals(
+                projection.EntityType,
+                PublicCloudProjectionEntityTypes.QuizAttempt,
+                StringComparison.OrdinalIgnoreCase);
+        if (!isLocalFinalize && !isPublicCloudProjection)
             return;
 
         void ScheduleRefresh() =>
@@ -2298,7 +2311,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         if (IsDisposed
             || SelectedSession is not { } session
             || notification.SessionId != session.Id
-            || !IsRelevantSubmissionEvent(session, notification.EventName))
+            || !IsRelevantSubmissionEvent(session, notification))
             return;
 
         void ScheduleRefresh() =>
@@ -2312,10 +2325,17 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
 
     private static bool IsRelevantSubmissionEvent(
         SessionSummaryDto session,
-        string eventName) =>
+        StudentRealtimeNotification notification) =>
         session.DeliveryType == ExamDeliveryType.MultipleChoice
-            ? eventName == RealtimeEvents.QuizAttemptFinalized
-            : eventName is RealtimeEvents.SubmissionStarted
+            ? notification.EventName == RealtimeEvents.QuizAttemptFinalized
+                || (session.AccessMode == SessionAccessMode.PublicCloud
+                    && notification.EventName == RealtimeEvents.PublicCloudProjectionUpdated
+                    && notification.ProjectionUpdated?.SessionId == session.Id
+                    && string.Equals(
+                        notification.ProjectionUpdated.EntityType,
+                        PublicCloudProjectionEntityTypes.QuizAttempt,
+                        StringComparison.OrdinalIgnoreCase))
+            : notification.EventName is RealtimeEvents.SubmissionStarted
                 or RealtimeEvents.SubmissionAccepted
                 or RealtimeEvents.SubmissionRejected;
 

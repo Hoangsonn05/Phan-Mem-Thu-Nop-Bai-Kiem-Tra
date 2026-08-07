@@ -49,13 +49,12 @@ public sealed class QuizService(
             .Include(x => x.Exam)
             .SingleOrDefaultAsync(x => x.Id == sessionId, cancellationToken)
             ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phiên thi.", 404);
-        if (session.AccessMode != SessionAccessMode.LanOnly
-            || session.DeliveryTypeSnapshot != ExamDeliveryType.MultipleChoice
+        if (session.DeliveryTypeSnapshot != ExamDeliveryType.MultipleChoice
             || session.Exam.DeliveryType != ExamDeliveryType.MultipleChoice)
         {
             throw new ApiException(
                 ErrorCodes.NotFound,
-                "Không tìm thấy danh sách bài trắc nghiệm OnlyLAN.",
+                "Không tìm thấy danh sách bài trắc nghiệm.",
                 404);
         }
         if (!await CanAccessExamAsync(session.Exam, actor, cancellationToken))
@@ -70,16 +69,20 @@ public sealed class QuizService(
             .Where(x => x.ParticipantId == x.Participant.Id
                 && x.Participant.SessionId == sessionId
                 && x.ExamVersion == session.ExamVersionSnapshot
-                && !string.Equals(
-                    x.SourceMode,
-                    "PublicCloud",
-                    StringComparison.OrdinalIgnoreCase))
+                && MatchesSessionSource(session.AccessMode, x.SourceMode))
             .OrderByDescending(x => x.FinalizedAtUtc)
             .ThenBy(x => x.Participant.StudentCode, StringComparer.Ordinal)
             .ThenBy(x => x.Id)
             .Select(ToTeacherSummary)
             .ToArray();
     }
+
+    private static bool MatchesSessionSource(
+        SessionAccessMode accessMode,
+        string sourceMode) =>
+        accessMode == SessionAccessMode.PublicCloud
+            ? string.Equals(sourceMode, "PublicCloud", StringComparison.OrdinalIgnoreCase)
+            : !string.Equals(sourceMode, "PublicCloud", StringComparison.OrdinalIgnoreCase);
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan OfflineSyncGrace = TimeSpan.FromMinutes(15);

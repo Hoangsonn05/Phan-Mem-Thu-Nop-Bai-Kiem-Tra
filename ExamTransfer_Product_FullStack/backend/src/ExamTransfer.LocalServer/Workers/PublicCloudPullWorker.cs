@@ -154,7 +154,10 @@ public sealed class PublicCloudPullWorker(
 
             if (page.Records.Count == 0)
             {
-                await PublishProjectionUpdatesAsync(committedProjectionVersions, cancellationToken);
+                await PublishProjectionUpdatesAsync(
+                    entityName,
+                    committedProjectionVersions,
+                    cancellationToken);
                 return;
             }
 
@@ -192,11 +195,18 @@ public sealed class PublicCloudPullWorker(
                     }
 
                     long? previousParticipantVersion = null;
+                    long? previousQuizAttemptVersion = null;
                     if (record.EntityName == "session_participants"
                         && Guid.TryParse(record.EntityId, out var participantId))
                     {
                         previousParticipantVersion = (await db.SessionParticipantsSet
                             .FindAsync([participantId], cancellationToken))?.CloudVersion;
+                    }
+                    else if (record.EntityName == "quiz_attempts"
+                        && Guid.TryParse(record.EntityId, out var attemptId))
+                    {
+                        previousQuizAttemptVersion = (await db.QuizAttemptsSet
+                            .FindAsync([attemptId], cancellationToken))?.CloudVersion;
                     }
 
                     var localId = await ApplyTeacherProjectionAsync(db, logger, record, cancellationToken);
@@ -238,6 +248,30 @@ public sealed class PublicCloudPullWorker(
                                 pageProjectionVersions[participant.SessionId] =
                                     Math.Max(
                                         pageProjectionVersions.GetValueOrDefault(participant.SessionId),
+                                        record.CloudVersion);
+                            }
+                        }
+                    }
+
+                    if (record.EntityName == "quiz_attempts"
+                        && localId.HasValue
+                        && (!previousQuizAttemptVersion.HasValue
+                            || record.CloudVersion > previousQuizAttemptVersion.Value))
+                    {
+                        var attempt = await db.QuizAttemptsSet
+                            .FindAsync([localId.Value], cancellationToken);
+                        if (attempt is not null
+                            && attempt.CloudVersion == record.CloudVersion)
+                        {
+                            var accessMode = await db.ExamSessionsSet
+                                .Where(x => x.Id == attempt.SessionId)
+                                .Select(x => (SessionAccessMode?)x.AccessMode)
+                                .SingleOrDefaultAsync(cancellationToken);
+                            if (accessMode == SessionAccessMode.PublicCloud)
+                            {
+                                pageProjectionVersions[attempt.SessionId] =
+                                    Math.Max(
+                                        pageProjectionVersions.GetValueOrDefault(attempt.SessionId),
                                         record.CloudVersion);
                             }
                         }
@@ -340,19 +374,32 @@ public sealed class PublicCloudPullWorker(
             }
             if (!page.HasMore)
             {
-                await PublishProjectionUpdatesAsync(committedProjectionVersions, cancellationToken);
+                await PublishProjectionUpdatesAsync(
+                    entityName,
+                    committedProjectionVersions,
+                    cancellationToken);
                 return;
             }
         }
 
-        await PublishProjectionUpdatesAsync(committedProjectionVersions, cancellationToken);
+        await PublishProjectionUpdatesAsync(
+            entityName,
+            committedProjectionVersions,
+            cancellationToken);
     }
 
     private async Task PublishProjectionUpdatesAsync(
+        string entityName,
         IReadOnlyDictionary<Guid, long> projectionVersions,
         CancellationToken cancellationToken)
     {
-        if (realtime is null)
+        var entityType = entityName switch
+        {
+            "session_participants" => PublicCloudProjectionEntityTypes.SessionParticipant,
+            "quiz_attempts" => PublicCloudProjectionEntityTypes.QuizAttempt,
+            _ => null
+        };
+        if (realtime is null || entityType is null)
             return;
 
         foreach (var update in projectionVersions.OrderBy(x => x.Key))
@@ -361,7 +408,7 @@ public sealed class PublicCloudPullWorker(
             {
                 var payload = new PublicCloudProjectionUpdatedEvent(
                     update.Key,
-                    PublicCloudProjectionEntityTypes.SessionParticipant,
+                    entityType,
                     update.Value);
                 await realtime.PublishSessionAsync(
                     update.Key,
@@ -380,7 +427,7 @@ public sealed class PublicCloudPullWorker(
                     ex,
                     "PublicCloud projection publish failed after local commit. SessionId={SessionId}; EntityType={EntityType}; ProjectionVersion={ProjectionVersion}",
                     update.Key,
-                    PublicCloudProjectionEntityTypes.SessionParticipant,
+                    entityType,
                     update.Value);
             }
         }

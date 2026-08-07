@@ -37,6 +37,7 @@ public static class RealtimeEvents
 public static class PublicCloudProjectionEntityTypes
 {
     public const string SessionParticipant = nameof(SessionParticipant);
+    public const string QuizAttempt = nameof(QuizAttempt);
 }
 
 public sealed record PublicCloudProjectionUpdatedEvent(

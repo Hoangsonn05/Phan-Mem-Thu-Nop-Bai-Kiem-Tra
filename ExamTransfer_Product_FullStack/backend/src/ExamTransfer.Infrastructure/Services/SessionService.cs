@@ -537,7 +537,11 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
                 && db.ExamSessionsSet.Any(session =>
                     session.Id == x.SessionId
                     && session.DeliveryTypeSnapshot == ExamDeliveryType.MultipleChoice
-                    && session.ExamVersionSnapshot == x.ExamVersion))
+                    && session.ExamVersionSnapshot == x.ExamVersion
+                    && ((session.AccessMode == SessionAccessMode.PublicCloud
+                            && x.SourceMode == "PublicCloud")
+                        || (session.AccessMode == SessionAccessMode.LanOnly
+                            && x.SourceMode != "PublicCloud"))))
             .GroupBy(x => x.SessionId)
             .Select(group => new
             {
