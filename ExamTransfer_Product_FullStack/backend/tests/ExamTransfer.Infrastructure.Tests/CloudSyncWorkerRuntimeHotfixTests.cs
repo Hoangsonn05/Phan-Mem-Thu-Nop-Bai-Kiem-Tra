@@ -65,6 +65,48 @@ public sealed class CloudSyncWorkerRuntimeHotfixTests
     }
 
     [Fact]
+    public async Task CloudSyncWorker_LargeQuiz252ProjectionRows_DrainsToReady()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var fixture = await SeedQuizGraphAsync(
+            database.Context,
+            questionCount: 50,
+            choicesPerQuestion: 4);
+        AddProjectionRows(database.Context, fixture);
+        await database.Context.SaveChangesAsync();
+
+        var signal = new CloudSyncSignal();
+        var cloud = new RecordingPushCloud();
+        var options = WorkerOptions(batchSize: 20);
+        await using var provider = CreateProvider(database.Path, cloud);
+        using var worker = CreateWorker(provider, options, signal);
+
+        await worker.StartAsync(default);
+        signal.Pulse();
+        try
+        {
+            await WaitUntilAsync(async () =>
+            {
+                await using var verify = database.CreateContext();
+                return await verify.SyncQueueSet.CountAsync(
+                    item => item.Status == SyncStatus.Synced) == 252;
+            }, TimeSpan.FromSeconds(15));
+        }
+        finally
+        {
+            await worker.StopAsync(default);
+        }
+
+        await using var readinessContext = database.CreateContext();
+        var readiness = await new PublicCloudProjectionExecution(readinessContext)
+            .GetProjectionReadinessAsync(fixture.Session.Id, default);
+        Assert.True(readiness.Ready);
+        Assert.Equal("PUBLICCLOUD_QUIZ_PROJECTION_READY", readiness.Code);
+        Assert.Equal(252, cloud.PushCount);
+        Assert.Equal(252, cloud.PushedEntities.Distinct().Count());
+    }
+
+    [Fact]
     public async Task CloudSyncWorker_BacklogLargerThanTwoBatches_DrainsBoundedly()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
@@ -427,10 +469,12 @@ public sealed class CloudSyncWorkerRuntimeHotfixTests
             signal,
             NullLogger<CloudSyncWorker>.Instance);
 
-    private static async Task WaitUntilAsync(Func<Task<bool>> condition)
+    private static async Task WaitUntilAsync(
+        Func<Task<bool>> condition,
+        TimeSpan? maximumWait = null)
     {
         var timeout = Stopwatch.StartNew();
-        while (timeout.Elapsed < TimeSpan.FromSeconds(3))
+        while (timeout.Elapsed < (maximumWait ?? TimeSpan.FromSeconds(3)))
         {
             if (await condition()) return;
             await Task.Delay(20);

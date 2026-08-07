@@ -964,6 +964,9 @@ public sealed class ExamManagementViewModel : ProductPageBase
 
 public sealed class SessionManagementViewModel : ProductPageBase
 {
+    private const int ProjectionMonitorAttempts = 120;
+    private const string ProjectionReadFailedCode = "PUBLICCLOUD_PROJECTION_READ_FAILED";
+    private static readonly TimeSpan ProjectionMonitorInterval = TimeSpan.FromSeconds(2);
     private readonly IBackendClient api;
     private readonly IDialogService archiveDialogs;
     private readonly IRealtimeService realtime;
@@ -979,6 +982,11 @@ public sealed class SessionManagementViewModel : ProductPageBase
     private bool allVisibleChecked;
     private readonly Func<TimeSpan, CancellationToken, Task> projectionDelay;
     private readonly int projectionPollAttempts;
+    private readonly object projectionMonitorGate = new();
+    private CancellationTokenSource? projectionMonitorCts;
+    private Task? projectionMonitorTask;
+    private Guid? projectionMonitorSessionId;
+    private long projectionMonitorSelectionVersion;
     private bool suppressProjectionSelectionRefresh;
     private long projectionSelectionVersion;
     private Guid? projectionSessionId;
@@ -1041,7 +1049,12 @@ public sealed class SessionManagementViewModel : ProductPageBase
         get => selectedSession;
         set
         {
+            var preserveProjectionState = selectedSession?.Id == value?.Id
+                && selectedSession?.AccessMode == SessionAccessMode.PublicCloud
+                && value?.AccessMode == SessionAccessMode.PublicCloud
+                && projectionSessionId == value?.Id;
             if (!Set(ref selectedSession, value)) return;
+            CancelProjectionMonitor();
             realtimeBinding
                 .SelectAsync(value?.Id, DisposeToken)
                 .SafeFireAndForget("SessionManagement.SelectRealtimeSession");
@@ -1056,14 +1069,17 @@ public sealed class SessionManagementViewModel : ProductPageBase
                     projectionSessionId = value.Id;
                     projectionRowVersion = value.RowVersion;
                     projectionRoomCode = value.RoomCode;
-                    ApplyProjection(new(
-                        value.Id,
-                        true,
-                        false,
-                        SyncStatus.Pending,
-                        "PUBLICCLOUD_PROJECTION_PENDING",
-                        "Đang kiểm tra trạng thái PublicCloud trước khi chia sẻ mã phòng.",
-                        0));
+                    if (!preserveProjectionState)
+                    {
+                        ApplyProjection(new(
+                            value.Id,
+                            true,
+                            false,
+                            SyncStatus.Pending,
+                            "PUBLICCLOUD_PROJECTION_PENDING",
+                            "Đang kiểm tra trạng thái PublicCloud trước khi chia sẻ mã phòng.",
+                            0));
+                    }
                     if (!suppressProjectionSelectionRefresh)
                         _ = RefreshProjectionForSelectionAsync(
                             value.Id,
@@ -1103,7 +1119,10 @@ public sealed class SessionManagementViewModel : ProductPageBase
             if (!Set(ref accessMode, value))
                 return;
             if (value == SessionAccessMode.LanOnly)
+            {
+                CancelProjectionMonitor();
                 ApplyLanProjection(SelectedSession?.Id ?? Guid.Empty);
+            }
         }
     }
     public string ProjectionStatus => projectionStatus;
@@ -1374,45 +1393,44 @@ public sealed class SessionManagementViewModel : ProductPageBase
             var response = await api.GetAsync<CloudProjectionReadinessView>(
                 $"api/v1/sessions/{sessionId}/cloud-projection",
                 cancellationToken);
-            if (selectionVersion != projectionSelectionVersion
-                || SelectedSession?.Id != sessionId
-                || SelectedSession.AccessMode != SessionAccessMode.PublicCloud)
+            if (!IsCurrentProjectionSelection(sessionId, selectionVersion))
                 return;
             if (response is null)
             {
-                ApplyProjection(new(
-                    sessionId,
-                    true,
-                    false,
-                    SyncStatus.Pending,
-                    "PUBLICCLOUD_PROJECTION_UNAVAILABLE",
-                    "Chưa đọc được trạng thái PublicCloud; không chia sẻ mã phòng.",
-                    0));
+                ApplyTemporaryProjectionUnavailable(sessionId);
+                StartProjectionMonitor(sessionId, selectionVersion);
                 return;
             }
-            ApplyProjection(ApiGuard.Require(response));
+            var readiness = ApiGuard.Require(response);
+            ApplyProjection(readiness);
+            if (IsTerminalProjection(readiness))
+                CancelProjectionMonitor();
+            else
+                StartProjectionMonitor(sessionId, selectionVersion);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+        catch (Exception ex) when (IsTransientProjectionReadFailure(ex))
+        {
+            FrontendLogger.Log(ex, nameof(RefreshProjectionForSelectionAsync));
+            if (IsCurrentProjectionSelection(sessionId, selectionVersion))
+            {
+                ApplyTemporaryProjectionUnavailable(sessionId);
+                StartProjectionMonitor(sessionId, selectionVersion);
+            }
+        }
         catch (Exception ex)
         {
             FrontendLogger.Log(ex, nameof(RefreshProjectionForSelectionAsync));
-            if (selectionVersion == projectionSelectionVersion
-                && SelectedSession?.Id == sessionId)
-                ApplyProjection(new(
-                    sessionId,
-                    true,
-                    false,
-                    SyncStatus.Failed,
-                    "PUBLICCLOUD_PROJECTION_UNAVAILABLE",
-                    "Không đọc được trạng thái PublicCloud; không chia sẻ mã phòng.",
-                    0));
+            if (IsCurrentProjectionSelection(sessionId, selectionVersion))
+                ApplyProjectionReadFailure(sessionId, ex);
         }
     }
 
     private void ClearProjectionIdentity()
     {
+        CancelProjectionMonitor();
         projectionSessionId = null;
         projectionRowVersion = null;
         projectionRoomCode = null;
@@ -1431,23 +1449,196 @@ public sealed class SessionManagementViewModel : ProductPageBase
     {
         for (var attempt = 0; attempt < projectionPollAttempts; attempt++)
         {
-            var readiness = ApiGuard.Require(await api.GetAsync<CloudProjectionReadinessView>(
-                $"api/v1/sessions/{sessionId}/cloud-projection",
-                cancellationToken));
-            ApplyProjection(readiness);
-            if (readiness.Ready || readiness.Status is SyncStatus.Failed or SyncStatus.Conflict)
+            CloudProjectionReadinessView readiness;
+            try
+            {
+                readiness = ApiGuard.Require(await api.GetAsync<CloudProjectionReadinessView>(
+                    $"api/v1/sessions/{sessionId}/cloud-projection",
+                    cancellationToken));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsTransientProjectionReadFailure(ex))
+            {
+                FrontendLogger.Log(ex, nameof(AwaitProjectionAsync));
+                ApplyTemporaryProjectionUnavailable(sessionId);
+                StartProjectionMonitor(sessionId, projectionSelectionVersion);
                 return;
+            }
+            ApplyProjection(readiness);
+            if (IsTerminalProjection(readiness))
+            {
+                CancelProjectionMonitor();
+                return;
+            }
             if (attempt + 1 < projectionPollAttempts)
                 await projectionDelay(TimeSpan.FromMilliseconds(500), cancellationToken);
         }
+        StartProjectionMonitor(sessionId, projectionSelectionVersion);
+    }
+
+    private void StartProjectionMonitor(Guid sessionId, long selectionVersion)
+    {
+        if (!IsCurrentProjectionSelection(sessionId, selectionVersion))
+            return;
+
+        CancellationTokenSource? previous;
+        CancellationTokenSource current;
+        Task task;
+        lock (projectionMonitorGate)
+        {
+            if (projectionMonitorSessionId == sessionId
+                && projectionMonitorSelectionVersion == selectionVersion
+                && projectionMonitorTask is { IsCompleted: false })
+                return;
+
+            previous = projectionMonitorCts;
+            current = CancellationTokenSource.CreateLinkedTokenSource(DisposeToken);
+            projectionMonitorCts = current;
+            projectionMonitorSessionId = sessionId;
+            projectionMonitorSelectionVersion = selectionVersion;
+            task = ObserveProjectionAsync(sessionId, selectionVersion, current);
+            projectionMonitorTask = task;
+        }
+        TryCancel(previous);
+        task.SafeFireAndForget("SessionManagement.ObserveProjection");
+    }
+
+    private async Task ObserveProjectionAsync(
+        Guid sessionId,
+        long selectionVersion,
+        CancellationTokenSource owner)
+    {
+        await Task.Yield();
+        try
+        {
+            for (var attempt = 0; attempt < ProjectionMonitorAttempts; attempt++)
+            {
+                await projectionDelay(ProjectionMonitorInterval, owner.Token);
+                try
+                {
+                    var response = await api.GetAsync<CloudProjectionReadinessView>(
+                        $"api/v1/sessions/{sessionId}/cloud-projection",
+                        owner.Token);
+                    if (!IsCurrentProjectionSelection(sessionId, selectionVersion))
+                        return;
+                    if (response is null)
+                    {
+                        ApplyTemporaryProjectionUnavailable(sessionId);
+                        continue;
+                    }
+
+                    var readiness = ApiGuard.Require(response);
+                    ApplyProjection(readiness);
+                    if (IsTerminalProjection(readiness))
+                        return;
+                }
+                catch (OperationCanceledException) when (owner.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex) when (IsTransientProjectionReadFailure(ex))
+                {
+                    FrontendLogger.Log(ex, nameof(ObserveProjectionAsync));
+                    if (IsCurrentProjectionSelection(sessionId, selectionVersion))
+                        ApplyTemporaryProjectionUnavailable(sessionId);
+                }
+                catch (Exception ex)
+                {
+                    FrontendLogger.Log(ex, nameof(ObserveProjectionAsync));
+                    if (IsCurrentProjectionSelection(sessionId, selectionVersion))
+                        ApplyProjectionReadFailure(sessionId, ex);
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            lock (projectionMonitorGate)
+            {
+                if (ReferenceEquals(projectionMonitorCts, owner))
+                {
+                    projectionMonitorCts = null;
+                    projectionMonitorTask = null;
+                    projectionMonitorSessionId = null;
+                }
+            }
+            owner.Dispose();
+        }
+    }
+
+    private bool IsCurrentProjectionSelection(Guid sessionId, long selectionVersion) =>
+        !IsDisposed
+        && selectionVersion == projectionSelectionVersion
+        && SelectedSession?.Id == sessionId
+        && SelectedSession.AccessMode == SessionAccessMode.PublicCloud;
+
+    private void ApplyTemporaryProjectionUnavailable(Guid sessionId)
+    {
+        if (CanShareRoomCode)
+            return;
         ApplyProjection(new(
             sessionId,
             true,
             false,
             SyncStatus.Pending,
-            "PUBLICCLOUD_PROJECTION_TIMEOUT",
-            "Đang đồng bộ PublicCloud; chưa được xác nhận sẵn sàng để chia sẻ mã phòng.",
+            "PUBLICCLOUD_PROJECTION_UNAVAILABLE",
+            "Tạm thời chưa đọc được trạng thái PublicCloud; hệ thống sẽ kiểm tra lại.",
             0));
+    }
+
+    private void ApplyProjectionReadFailure(Guid sessionId, Exception exception)
+    {
+        var detail = exception is BackendApiException backend
+            ? $" ({backend.ApiCode})"
+            : string.Empty;
+        ApplyProjection(new(
+            sessionId,
+            true,
+            false,
+            SyncStatus.Failed,
+            ProjectionReadFailedCode,
+            $"Không đọc được trạng thái PublicCloud{detail}; không chia sẻ mã phòng.",
+            0));
+    }
+
+    private static bool IsTerminalProjection(CloudProjectionReadinessView readiness) =>
+        readiness.Ready || readiness.Status is SyncStatus.Failed or SyncStatus.Conflict;
+
+    private static bool IsTransientProjectionReadFailure(Exception exception) =>
+        exception is HttpRequestException or IOException
+        || exception is TaskCanceledException
+        || exception is BackendApiException backend
+            && (backend.HttpStatusCode is null or 408 or 429
+                || backend.HttpStatusCode >= 500
+                || backend.ApiCode == "INVALID_SERVER_RESPONSE");
+
+    private void CancelProjectionMonitor()
+    {
+        CancellationTokenSource? current;
+        lock (projectionMonitorGate)
+        {
+            current = projectionMonitorCts;
+            projectionMonitorCts = null;
+            projectionMonitorTask = null;
+            projectionMonitorSessionId = null;
+        }
+        TryCancel(current);
+    }
+
+    private static void TryCancel(CancellationTokenSource? source)
+    {
+        if (source is null)
+            return;
+        try
+        {
+            source.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     private void ApplyProjection(CloudProjectionReadinessView readiness)
@@ -1463,8 +1654,8 @@ public sealed class SessionManagementViewModel : ProductPageBase
         canShareRoomCode = !readiness.Required || readiness.Ready;
         canRetryProjection = readiness.Required && !readiness.Ready
             && !isRoomCodeConflict
-            && (readiness.Status is SyncStatus.Failed or SyncStatus.Conflict
-                || readiness.Code == "PUBLICCLOUD_PROJECTION_TIMEOUT");
+            && readiness.Code != ProjectionReadFailedCode
+            && readiness.Status is SyncStatus.Failed or SyncStatus.Conflict;
         canRecoverRoomCode = readiness.Required && !readiness.Ready
             && isRoomCodeConflict
             && projectionSessionId.HasValue
@@ -1636,6 +1827,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
         realtimeBinding
             .StopAsync()
             .SafeFireAndForget("SessionManagement.DisconnectRealtime");
+        CancelProjectionMonitor();
         base.Dispose();
     }
 

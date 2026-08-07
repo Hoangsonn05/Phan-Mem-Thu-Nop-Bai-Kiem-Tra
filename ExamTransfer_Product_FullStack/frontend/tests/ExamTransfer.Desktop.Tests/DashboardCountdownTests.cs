@@ -323,8 +323,10 @@ internal sealed class RecordingBackendClient(
     public ParticipantDto? ParticipantResponse { get; set; }
     public IReadOnlyList<ClassSummaryDto>? ClassResponses { get; init; }
     public IReadOnlyList<ExamSummaryDto>? ExamResponses { get; init; }
-    public IReadOnlyList<SessionSummaryDto>? SessionResponses { get; init; }
+    public IReadOnlyList<SessionSummaryDto>? SessionResponses { get; set; }
     public Queue<CloudProjectionReadinessView> ProjectionResponses { get; } = [];
+    public Func<string, CancellationToken, Task<ApiResponse<CloudProjectionReadinessView>?>>?
+        ProjectionHandler { get; set; }
     public List<string> PostPaths { get; } = [];
     public List<string> GetPaths { get; } = [];
     public List<object?> PostRequests { get; } = [];
@@ -454,10 +456,18 @@ internal sealed class RecordingBackendClient(
         if (StudentQuizReviewResponse is not null && typeof(T) == typeof(StudentQuizReviewDto))
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)StudentQuizReviewResponse, "test"));
+        if (typeof(T) == typeof(CloudProjectionReadinessView) && ProjectionHandler is not null)
+            return GetProjectionAsync<T>(path, ct);
         if (typeof(T) == typeof(CloudProjectionReadinessView) && ProjectionResponses.Count > 0)
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ProjectionResponses.Dequeue(), "test"));
         return Task.FromResult<ApiResponse<T>?>(null);
+    }
+
+    private async Task<ApiResponse<T>?> GetProjectionAsync<T>(string path, CancellationToken ct)
+    {
+        var response = await ProjectionHandler!(path, ct);
+        return response is null ? null : (ApiResponse<T>)(object)response;
     }
     public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
     {

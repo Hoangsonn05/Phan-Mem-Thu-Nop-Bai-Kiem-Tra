@@ -125,7 +125,7 @@ public sealed class PublicCloudProjectionExecution(
             return await GetProjectionReadinessAsync(id, cancellationToken);
 
         var retryItems = projection.Items
-            .Where(x => x.Status != SyncStatus.Synced)
+            .Where(x => x.Status is not (SyncStatus.Synced or SyncStatus.Syncing))
             .ToList();
         if (retryItems.Count == 0 && projection.MissingRows.Count == 0)
             return await GetProjectionReadinessAsync(id, cancellationToken);

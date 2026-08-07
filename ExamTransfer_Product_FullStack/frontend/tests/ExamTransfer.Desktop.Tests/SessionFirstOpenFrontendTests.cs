@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net.Http;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Desktop.ViewModels;
 using ExamTransfer.Shared.Contracts;
@@ -150,6 +151,310 @@ public sealed class SessionFirstOpenFrontendTests
         Assert.False(quick.AutoApprove);
         Assert.Equal("{\"autoApprove\":false}", quick.SettingsJson);
     }
+
+    [Fact]
+    public async Task LargePublicCloudQuiz_HealthyPendingBeyondInitialWait_EventuallyBecomesReadyWithoutManualRetry()
+    {
+        var exam = new ExamSummaryDto(
+            Guid.NewGuid(),
+            null,
+            "Bai trac nghiem lon",
+            "Tin",
+            45,
+            ExamDeliveryType.MultipleChoice,
+            ExamStatus.Published,
+            1,
+            50,
+            "exam-rv");
+        var sessionId = Guid.NewGuid();
+        var session = new SessionSummaryDto(
+            sessionId,
+            exam.Id,
+            exam.Title,
+            "LARGEQUIZ",
+            SessionStatus.Waiting,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null,
+            new(0, 0, 0, 0, 0, 0, 0),
+            1,
+            "session-rv",
+            SessionAccessMode.PublicCloud,
+            AdmissionMode: SessionAdmissionMode.OpenRequest);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [exam],
+            SessionResponses = [],
+            SessionDetailResponse = new(session, [], "{}", Capacity: 36)
+        };
+        for (var index = 0; index < 3; index++)
+        {
+            api.ProjectionResponses.Enqueue(new(
+                sessionId,
+                true,
+                false,
+                SyncStatus.Pending,
+                "PUBLICCLOUD_QUIZ_PROJECTION_PENDING",
+                "Dang dong bo noi dung trac nghiem len PublicCloud.",
+                0));
+        }
+        api.ProjectionResponses.Enqueue(new(
+            sessionId,
+            true,
+            true,
+            SyncStatus.Synced,
+            "PUBLICCLOUD_QUIZ_PROJECTION_READY",
+            "Noi dung trac nghiem da san sang tren PublicCloud.",
+            0));
+        using var viewModel = new SessionManagementViewModel(
+            api,
+            projectionDelay: (_, _) => Task.CompletedTask,
+            projectionPollAttempts: 3);
+        await viewModel.InitializeAsync(CancellationToken.None);
+        api.SessionResponses = [session];
+        viewModel.AccessMode = SessionAccessMode.PublicCloud;
+
+        viewModel.CreateCommand.Execute(null);
+
+        Assert.True(SpinWait.SpinUntil(
+            () => viewModel.CanShareRoomCode,
+            TimeSpan.FromSeconds(2)));
+        Assert.Equal(
+            "Noi dung trac nghiem da san sang tren PublicCloud.",
+            viewModel.ProjectionStatus);
+        Assert.Single(api.PostPaths, path => path == "api/v1/sessions/create-and-open");
+        Assert.DoesNotContain(
+            api.PostPaths,
+            path => path.EndsWith("/cloud-projection/retry", StringComparison.Ordinal));
+        Assert.Equal(
+            4,
+            api.GetPaths.Count(path => path.EndsWith("/cloud-projection", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task ManualRefresh_TransientReadFailure_PreservesReadyAndRecoversWithoutRetry()
+    {
+        var exam = new ExamSummaryDto(
+            Guid.NewGuid(),
+            null,
+            "Bai trac nghiem",
+            "Tin",
+            30,
+            ExamDeliveryType.MultipleChoice,
+            ExamStatus.Published,
+            1,
+            20,
+            "exam-rv");
+        var sessionId = Guid.NewGuid();
+        var session = new SessionSummaryDto(
+            sessionId,
+            exam.Id,
+            exam.Title,
+            "READYROOM",
+            SessionStatus.Waiting,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null,
+            new(0, 0, 0, 0, 0, 0, 0),
+            1,
+            "session-rv",
+            SessionAccessMode.PublicCloud,
+            AdmissionMode: SessionAdmissionMode.OpenRequest);
+        var calls = 0;
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [exam],
+            SessionResponses = [session]
+        };
+        api.ProjectionHandler = (_, _) => ++calls switch
+        {
+            1 => Task.FromResult<ApiResponse<CloudProjectionReadinessView>?>(
+                ApiResponse<CloudProjectionReadinessView>.Ok(new(
+                    sessionId,
+                    true,
+                    true,
+                    SyncStatus.Synced,
+                    "PUBLICCLOUD_QUIZ_PROJECTION_READY",
+                    "Ready before refresh.",
+                    0), "test")),
+            2 => Task.FromException<ApiResponse<CloudProjectionReadinessView>?>(
+                new HttpRequestException("temporary network failure")),
+            _ => Task.FromResult<ApiResponse<CloudProjectionReadinessView>?>(
+                ApiResponse<CloudProjectionReadinessView>.Ok(new(
+                    sessionId,
+                    true,
+                    true,
+                    SyncStatus.Synced,
+                    "PUBLICCLOUD_QUIZ_PROJECTION_READY",
+                    "Ready after transient refresh failure.",
+                    0), "test"))
+        };
+        using var viewModel = new SessionManagementViewModel(
+            api,
+            projectionDelay: (_, _) => Task.CompletedTask,
+            projectionPollAttempts: 1);
+        await viewModel.InitializeAsync(CancellationToken.None);
+        Assert.True(viewModel.CanShareRoomCode);
+
+        viewModel.RefreshCommand.Execute(null);
+
+        Assert.True(SpinWait.SpinUntil(
+            () => calls >= 3 && viewModel.CanShareRoomCode,
+            TimeSpan.FromSeconds(2)));
+        Assert.Equal("Ready after transient refresh failure.", viewModel.ProjectionStatus);
+        Assert.DoesNotContain(
+            api.PostPaths,
+            path => path.EndsWith("/cloud-projection/retry", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ProjectionMonitor_SessionSwitchIgnoresLateReadyFromOldSession()
+    {
+        var exam = new ExamSummaryDto(
+            Guid.NewGuid(),
+            null,
+            "Bai trac nghiem",
+            "Tin",
+            30,
+            ExamDeliveryType.MultipleChoice,
+            ExamStatus.Published,
+            1,
+            20,
+            "exam-rv");
+        var first = PublicCloudSession(exam, "FIRSTROOM");
+        var second = PublicCloudSession(exam, "SECONDROOM");
+        var firstCalls = 0;
+        var secondCalls = 0;
+        var lateFirstReady = new TaskCompletionSource<ApiResponse<CloudProjectionReadinessView>?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [exam],
+            SessionResponses = [first, second]
+        };
+        api.ProjectionHandler = (path, _) =>
+        {
+            if (path.Contains(first.Id.ToString(), StringComparison.Ordinal))
+            {
+                firstCalls++;
+                if (firstCalls == 1)
+                {
+                    return Task.FromResult<ApiResponse<CloudProjectionReadinessView>?>(
+                        ApiResponse<CloudProjectionReadinessView>.Ok(new(
+                            first.Id,
+                            true,
+                            false,
+                            SyncStatus.Pending,
+                            "PUBLICCLOUD_QUIZ_PROJECTION_PENDING",
+                            "First pending.",
+                            0), "test"));
+                }
+                return lateFirstReady.Task;
+            }
+
+            secondCalls++;
+            return Task.FromResult<ApiResponse<CloudProjectionReadinessView>?>(
+                ApiResponse<CloudProjectionReadinessView>.Ok(new(
+                    second.Id,
+                    true,
+                    true,
+                    SyncStatus.Synced,
+                    "PUBLICCLOUD_QUIZ_PROJECTION_READY",
+                    "Second ready.",
+                    0), "test"));
+        };
+        using var viewModel = new SessionManagementViewModel(
+            api,
+            projectionDelay: (_, _) => Task.CompletedTask,
+            projectionPollAttempts: 1);
+        await viewModel.InitializeAsync(CancellationToken.None);
+        Assert.True(SpinWait.SpinUntil(() => firstCalls == 2, TimeSpan.FromSeconds(2)));
+
+        viewModel.SelectedSession = viewModel.Sessions.Single(row => row.Id == second.Id);
+
+        Assert.True(SpinWait.SpinUntil(
+            () => secondCalls == 1 && viewModel.CanShareRoomCode,
+            TimeSpan.FromSeconds(2)));
+        Assert.Equal("Second ready.", viewModel.ProjectionStatus);
+        lateFirstReady.SetResult(ApiResponse<CloudProjectionReadinessView>.Ok(new(
+            first.Id,
+            true,
+            true,
+            SyncStatus.Synced,
+            "PUBLICCLOUD_QUIZ_PROJECTION_READY",
+            "Late first ready.",
+            0), "test"));
+        await Task.Delay(50);
+
+        Assert.Equal(second.Id, viewModel.SelectedSession?.Id);
+        Assert.True(viewModel.CanShareRoomCode);
+        Assert.Equal("Second ready.", viewModel.ProjectionStatus);
+        Assert.Equal(2, firstCalls);
+        Assert.Equal(1, secondCalls);
+    }
+
+    [Fact]
+    public async Task ProjectionRead_ForbiddenFailureIsTypedAndDoesNotEnableRetry()
+    {
+        var exam = new ExamSummaryDto(
+            Guid.NewGuid(),
+            null,
+            "Bai trac nghiem",
+            "Tin",
+            30,
+            ExamDeliveryType.MultipleChoice,
+            ExamStatus.Published,
+            1,
+            20,
+            "exam-rv");
+        var session = PublicCloudSession(exam, "FORBIDDENROOM");
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [exam],
+            SessionResponses = [session]
+        };
+        api.ProjectionHandler = (path, _) =>
+            Task.FromResult<ApiResponse<CloudProjectionReadinessView>?>(new(
+                false,
+                null,
+                new ApiError(
+                    "FORBIDDEN",
+                    "Projection read is forbidden.",
+                    Details: new BackendTransportDetails(403, path, null, false)),
+                "test",
+                ContractInfo.SchemaVersion));
+        using var viewModel = new SessionManagementViewModel(
+            api,
+            projectionDelay: (_, _) => Task.CompletedTask,
+            projectionPollAttempts: 1);
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.False(viewModel.CanShareRoomCode);
+        Assert.False(viewModel.CanRetryProjection);
+        Assert.Equal("danger", viewModel.ProjectionTone);
+        Assert.Contains("FORBIDDEN", viewModel.ProjectionStatus, StringComparison.Ordinal);
+        Assert.Single(api.GetPaths, path => path.EndsWith("/cloud-projection", StringComparison.Ordinal));
+    }
+
+    private static SessionSummaryDto PublicCloudSession(ExamSummaryDto exam, string roomCode) =>
+        new(
+            Guid.NewGuid(),
+            exam.Id,
+            exam.Title,
+            roomCode,
+            SessionStatus.Waiting,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null,
+            new(0, 0, 0, 0, 0, 0, 0),
+            1,
+            $"{roomCode}-rv",
+            SessionAccessMode.PublicCloud,
+            AdmissionMode: SessionAdmissionMode.OpenRequest);
 
     [Fact]
     public async Task PublicCloudRoomConflict_RequiresNewCodeAndStaysUnshareableUntilReady()

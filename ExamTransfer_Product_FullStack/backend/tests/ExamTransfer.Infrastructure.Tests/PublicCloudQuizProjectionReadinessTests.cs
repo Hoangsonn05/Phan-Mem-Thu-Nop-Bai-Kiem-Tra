@@ -376,6 +376,34 @@ public sealed class PublicCloudQuizProjectionReadinessTests
     }
 
     [Fact]
+    public async Task RetryProjection_ActiveHealthySyncing_DoesNotResetInFlightLease()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var fixture = await SeedQuizAsync(database.Context);
+        AddGraphRows(database.Context, fixture, SyncStatus.Synced);
+        var active = AddRow(
+            database.Context,
+            "quiz_questions",
+            fixture.Questions[0].Id,
+            SyncStatus.Syncing,
+            1);
+        active.LeaseUntilUtc = DateTimeOffset.UtcNow.AddMinutes(5);
+        active.LastAttemptAtUtc = DateTimeOffset.UtcNow;
+        await database.Context.SaveChangesAsync();
+        var signal = new RecordingSignal();
+        var expectedLease = active.LeaseUntilUtc;
+
+        var readiness = await Execution(database.Context, signal)
+            .RetryProjectionAsync(fixture.Session.Id, default);
+
+        Assert.False(readiness.Ready);
+        Assert.Equal(SyncStatus.Syncing, readiness.Status);
+        Assert.Equal(SyncStatus.Syncing, active.Status);
+        Assert.Equal(expectedLease, active.LeaseUntilUtc);
+        Assert.Equal(0, signal.PulseCount);
+    }
+
+    [Fact]
     public async Task RetryProjection_RetriesFailedSessionAndGraphWithOneSignal()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
