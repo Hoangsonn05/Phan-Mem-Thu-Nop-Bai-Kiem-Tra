@@ -21,12 +21,18 @@ public sealed class LoginViewModel : ObservableObject
         IBackendClient api,
         AppAuthSessionState authState,
         Func<Task> authenticated,
-        IUnifiedAuthenticationService? authentication = null)
+        IUnifiedAuthenticationService? authentication = null,
+        string? initialStatus = null)
     {
         this.api = api;
         this.authState = authState;
         this.authenticated = authenticated;
         this.authentication = authentication ?? AppServices.Authentication;
+        if (!string.IsNullOrWhiteSpace(initialStatus))
+        {
+            status = initialStatus.Trim();
+            statusTone = "danger";
+        }
         DeviceId = EnsureDeviceId();
         LoginCommand = new AsyncRelayCommand(LoginAsync, CanLogin);
     }

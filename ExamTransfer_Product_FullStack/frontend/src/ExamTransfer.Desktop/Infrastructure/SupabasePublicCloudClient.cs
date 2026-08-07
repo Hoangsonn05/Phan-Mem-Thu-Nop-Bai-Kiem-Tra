@@ -197,8 +197,9 @@ public interface ISupabaseAccessTokenProvider
 public sealed class PublicCloudApiException(
     string code,
     string message,
-    HttpStatusCode statusCode)
-    : HttpRequestException(message, null, statusCode)
+    HttpStatusCode statusCode,
+    Exception? innerException = null)
+    : HttpRequestException(message, innerException, statusCode)
 {
     public string Code { get; } = code;
 }
@@ -884,28 +885,31 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
     }
 
     public async Task<SupabaseAuthenticatedAccount> ChangeOwnPasswordAsync(
-        string account,
+        CurrentAccountDto account,
         string currentPassword,
         string newPassword,
         string confirmPassword,
         string deviceId,
         CancellationToken cancellationToken)
     {
-        if (!string.Equals(newPassword, confirmPassword, StringComparison.Ordinal)
-            || string.Equals(currentPassword, newPassword, StringComparison.Ordinal)
-            || newPassword.Length is < 8 or > 72
-            || !newPassword.Any(char.IsUpper)
-            || !newPassword.Any(char.IsLower)
-            || !newPassword.Any(char.IsDigit)
-            || !newPassword.Any(ch => !char.IsLetterOrDigit(ch)))
-        {
-            throw new PublicCloudApiException(
-                "PASSWORD_POLICY_REJECTED",
-                "Mật khẩu mới không hợp lệ hoặc xác nhận không khớp.",
-                HttpStatusCode.UnprocessableEntity);
-        }
+        ValidateStudentPasswordChange(
+            account,
+            currentPassword,
+            newPassword,
+            confirmPassword);
 
-        await LoginAsync(account, currentPassword, cancellationToken);
+        var accountIdentifier = new[]
+        {
+            account.Email,
+            account.StudentCode,
+            account.Username
+        }
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+            ?.Trim();
+        if (string.IsNullOrWhiteSpace(accountIdentifier))
+            throw InvalidAuthenticatedRole("Student account identifier is missing.");
+
+        await LoginAsync(accountIdentifier, currentPassword, cancellationToken);
         using var update = ProjectRequest(HttpMethod.Put, "/auth/v1/user");
         update.Content = JsonContent.Create(new { password = newPassword });
         using var updateResponse = await SendAsync(update, cancellationToken);
@@ -914,29 +918,78 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             "Supabase password change",
             cancellationToken);
 
-        var completed = await RpcAsync<bool>(
-            "complete_own_password_change",
-            new { },
-            cancellationToken);
-        if (!completed)
+        try
+        {
+            var completed = await RpcAsync<bool>(
+                "complete_own_password_change",
+                new { },
+                cancellationToken);
+            if (!completed)
+                throw new InvalidOperationException(
+                    "Supabase profile did not confirm the password change.");
+
+            var current = await ReadAuthoritativeAccountAsync(
+                deviceId,
+                cancellationToken);
+            if (current.MustChangePassword)
+                throw new InvalidOperationException(
+                    "Supabase profile still requires a password change.");
+            return new(
+                current,
+                accessToken
+                    ?? throw new InvalidOperationException(
+                        "Supabase password change returned no access token."));
+        }
+        catch (Exception ex)
         {
             Logout();
             throw new PublicCloudApiException(
-                "PASSWORD_CHANGE_FAILED",
-                "Supabase profile did not confirm the password change.",
-                HttpStatusCode.ServiceUnavailable);
+                ErrorCodes.PasswordChangeFailed,
+                "Mật khẩu Supabase Auth đã được cập nhật nhưng hồ sơ chưa hoàn tất. Hãy dùng mật khẩu mới cho lần thử tiếp theo; chức năng học sinh vẫn bị khóa.",
+                HttpStatusCode.ServiceUnavailable,
+                ex);
         }
+    }
 
-        var current = await ReadAuthoritativeAccountAsync(
-            deviceId,
-            cancellationToken);
-        return new(
-            current,
-            accessToken
-                ?? throw new PublicCloudApiException(
-                    "PUBLICCLOUD_AUTH_INVALID",
-                    "Supabase password change returned no access token.",
-                    HttpStatusCode.Unauthorized));
+    public async Task<SupabaseAuthenticatedAccount> RestoreAuthenticatedAccountAsync(
+        string token,
+        string expectedProviderUserId,
+        DateTimeOffset expiresAt,
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        await authenticationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!TryRestoreAccessToken(token, expectedProviderUserId, expiresAt))
+                throw new PublicCloudApiException(
+                    "OFFLINE_AUTH_CACHE_INVALID",
+                    "Phiên PublicCloud đã hết hạn hoặc không khớp tài khoản.",
+                    HttpStatusCode.Unauthorized);
+
+            var current = await ReadAuthoritativeAccountAsync(
+                deviceId,
+                cancellationToken);
+            if (current.Role != UserRole.Student)
+                throw InvalidAuthenticatedRole(
+                    "Restored Supabase session is not an authoritative Student profile.");
+            return new(
+                current,
+                accessToken
+                    ?? throw new PublicCloudApiException(
+                        "PUBLICCLOUD_AUTH_INVALID",
+                        "Supabase session restore returned no access token.",
+                        HttpStatusCode.Unauthorized));
+        }
+        catch
+        {
+            Logout();
+            throw;
+        }
+        finally
+        {
+            authenticationGate.Release();
+        }
     }
 
     public bool TryRestoreAccessToken(
@@ -957,6 +1010,73 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         providerUserId = subject;
         expiresAtUtc = expiresAt < jwtExpiresAt ? expiresAt : jwtExpiresAt;
         return true;
+    }
+
+    private static void ValidateStudentPasswordChange(
+        CurrentAccountDto account,
+        string currentPassword,
+        string newPassword,
+        string confirmPassword)
+    {
+        if (account.Role != UserRole.Student)
+            throw InvalidAuthenticatedRole(
+                "Direct Supabase password change requires an authoritative Student account.");
+
+        if (string.IsNullOrWhiteSpace(currentPassword)
+            || string.IsNullOrWhiteSpace(newPassword)
+            || string.IsNullOrWhiteSpace(confirmPassword))
+        {
+            throw new PublicCloudApiException(
+                ErrorCodes.PasswordPolicyRejected,
+                "Mật khẩu hiện tại, mật khẩu mới và xác nhận mật khẩu là bắt buộc.",
+                HttpStatusCode.UnprocessableEntity);
+        }
+
+        if (!string.Equals(newPassword, confirmPassword, StringComparison.Ordinal))
+        {
+            throw new PublicCloudApiException(
+                ErrorCodes.PasswordPolicyRejected,
+                "Mật khẩu xác nhận không khớp.",
+                HttpStatusCode.UnprocessableEntity);
+        }
+
+        if (string.Equals(currentPassword, newPassword, StringComparison.Ordinal))
+        {
+            throw new PublicCloudApiException(
+                ErrorCodes.PasswordPolicyRejected,
+                "Mật khẩu mới phải khác mật khẩu hiện tại.",
+                HttpStatusCode.UnprocessableEntity);
+        }
+
+        if (newPassword.Length is < 8 or > 72
+            || !newPassword.Any(char.IsUpper)
+            || !newPassword.Any(char.IsLower)
+            || !newPassword.Any(char.IsDigit)
+            || !newPassword.Any(ch => !char.IsLetterOrDigit(ch)))
+        {
+            throw new PublicCloudApiException(
+                ErrorCodes.PasswordPolicyRejected,
+                "Mật khẩu mới phải dài 8-72 ký tự và có chữ hoa, chữ thường, chữ số, ký tự đặc biệt.",
+                HttpStatusCode.UnprocessableEntity);
+        }
+
+        var normalizedPassword = newPassword.ToLowerInvariant();
+        if (normalizedPassword.Contains("uneti", StringComparison.Ordinal)
+            || (!string.IsNullOrWhiteSpace(account.StudentCode)
+                && normalizedPassword.Contains(
+                    account.StudentCode.Trim().ToLowerInvariant(),
+                    StringComparison.Ordinal))
+            || (!string.IsNullOrWhiteSpace(account.Username)
+                && account.Username.Length >= 5
+                && normalizedPassword.Contains(
+                    account.Username.Trim().ToLowerInvariant(),
+                    StringComparison.Ordinal)))
+        {
+            throw new PublicCloudApiException(
+                ErrorCodes.PasswordPolicyRejected,
+                "Mật khẩu mới không được chứa từ uneti, mã sinh viên hoặc tên tài khoản.",
+                HttpStatusCode.UnprocessableEntity);
+        }
     }
 
     public void Logout()

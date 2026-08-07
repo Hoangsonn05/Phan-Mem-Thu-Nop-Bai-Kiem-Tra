@@ -242,17 +242,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     "RESTORED_AUTH_ORGANIZATION_MISMATCH");
 
             CurrentAccountDto current;
+            var currentAccessToken = restored.AccessToken;
             if (restored.Authority == AuthSessionAuthority.Supabase)
             {
                 if (restored.Account.Role != UserRole.Student
-                    || string.IsNullOrWhiteSpace(restored.Account.ProviderUserId)
-                    || !AppServices.PublicCloud.TryRestoreAccessToken(
-                        restored.AccessToken,
-                        restored.Account.ProviderUserId,
-                        restored.Account.ExpiresAtUtc))
+                    || string.IsNullOrWhiteSpace(restored.Account.ProviderUserId))
                     throw new InvalidOperationException("OFFLINE_AUTH_CACHE_INVALID");
+                var refreshed = await AppServices.PublicCloud.RestoreAuthenticatedAccountAsync(
+                    restored.AccessToken,
+                    restored.Account.ProviderUserId,
+                    restored.Account.ExpiresAtUtc,
+                    restored.Account.DeviceId,
+                    CancellationToken.None);
                 api.SetAccountToken(null);
-                current = restored.Account;
+                current = refreshed.Account;
+                currentAccessToken = refreshed.AccessToken;
             }
             else
             {
@@ -281,7 +285,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 authState.SetAuthenticated(
                     current,
-                    restored.AccessToken,
+                    currentAccessToken,
                     restored.Authority);
                 CompleteAuthenticatedShell();
             });
@@ -289,7 +293,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             FrontendLogger.Log(ex, "MainViewModel.RestoreAuthAsync");
-            await RunOnUiAsync(() => ClearAuthToLogin());
+            await RunOnUiAsync(() => ClearAuthToLogin(
+                "Không thể xác minh phiên đăng nhập đã lưu. Vui lòng đăng nhập lại."));
         }
     }
 
@@ -441,6 +446,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     private void ClearAuthToLogin()
+        => ClearAuthToLogin(null);
+
+    private void ClearAuthToLogin(string? statusMessage)
     {
         accountHeartbeatCts?.Cancel();
         accountHeartbeatCts?.Dispose();
@@ -457,12 +465,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Navigation.Clear();
         Set(ref selected, null, nameof(Selected));
         mode = AppMode.None;
-        CurrentPage = CreateLoginPage();
+        CurrentPage = CreateLoginPage(statusMessage);
         RaiseAuthProperties();
         RaisePageProperties();
     }
 
-    private LoginViewModel CreateLoginPage() => new(api, authState, OnAuthenticatedAsync);
+    private LoginViewModel CreateLoginPage(string? statusMessage = null) =>
+        new(
+            api,
+            authState,
+            OnAuthenticatedAsync,
+            initialStatus: statusMessage);
 
     private ChangePasswordViewModel CreatePasswordChangePage() =>
         new(api, authState, OnPasswordChangedAsync);
