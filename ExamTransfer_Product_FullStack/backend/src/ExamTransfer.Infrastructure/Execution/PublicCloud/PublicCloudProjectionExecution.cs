@@ -34,7 +34,7 @@ public sealed class PublicCloudProjectionExecution(
                 "Phiên LAN không cần PublicCloud projection.",
                 0);
 
-        if (session.DeliveryType != ExamDeliveryType.MultipleChoice)
+        if (session.DeliveryTypeSnapshot != ExamDeliveryType.MultipleChoice)
             return await GetFileSubmissionReadinessAsync(id, cancellationToken);
 
         var graph = await LoadQuizGraphAsync(session, cancellationToken);
@@ -111,7 +111,7 @@ public sealed class PublicCloudProjectionExecution(
         if (session.AccessMode != SessionAccessMode.PublicCloud)
             return await GetProjectionReadinessAsync(id, cancellationToken);
 
-        if (session.DeliveryType != ExamDeliveryType.MultipleChoice)
+        if (session.DeliveryTypeSnapshot != ExamDeliveryType.MultipleChoice)
             return await RetryFileSubmissionProjectionAsync(id, cancellationToken);
 
         var graph = await LoadQuizGraphAsync(session, cancellationToken);
@@ -124,18 +124,47 @@ public sealed class PublicCloudProjectionExecution(
             && IsRoomCodeConflict(projection.SessionItem))
             return await GetProjectionReadinessAsync(id, cancellationToken);
 
-        var changed = false;
-        foreach (var item in projection.Items.Where(x => x.Status != SyncStatus.Synced))
-        {
-            PrepareRetry(item);
-            changed = true;
-        }
+        var retryItems = projection.Items
+            .Where(x => x.Status != SyncStatus.Synced)
+            .ToList();
+        if (retryItems.Count == 0 && projection.MissingRows.Count == 0)
+            return await GetProjectionReadinessAsync(id, cancellationToken);
 
-        if (changed)
+        var missingPayloads = await LoadMissingPayloadsAsync(
+            session,
+            graph,
+            projection.MissingRows,
+            cancellationToken);
+        await using var transaction = await db.BeginTransactionAsync(cancellationToken);
+        try
         {
+            foreach (var item in retryItems)
+                PrepareRetry(item);
+
+            foreach (var missing in projection.MissingRows)
+            {
+                db.SyncQueueSet.Add(new SyncQueueItem
+                {
+                    EntityType = missing.EntityType,
+                    EntityId = missing.EntityId.ToString(),
+                    Operation = "upsert",
+                    PayloadJson = JsonSerializer.Serialize(
+                        missingPayloads[(missing.EntityType, missing.EntityId)],
+                        JsonOptions),
+                    Status = SyncStatus.Pending,
+                    NextRetryAtUtc = DateTimeOffset.UtcNow
+                });
+            }
+
             await db.SaveChangesAsync(cancellationToken);
-            cloudSyncSignal?.Pulse();
+            await transaction.CommitAsync(cancellationToken);
         }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+        cloudSyncSignal?.Pulse();
 
         return await GetProjectionReadinessAsync(id, cancellationToken);
     }
@@ -147,19 +176,12 @@ public sealed class PublicCloudProjectionExecution(
             ErrorCodes.RoomCodeConflict,
             StringComparison.Ordinal);
 
-    private async Task<SessionProjectionScope> LoadSessionScopeAsync(
+    private async Task<ExamSession> LoadSessionScopeAsync(
         Guid id,
         CancellationToken cancellationToken) =>
         await db.ExamSessionsSet
             .AsNoTracking()
-            .Where(x => x.Id == id)
-            .Select(x => new SessionProjectionScope(
-                x.Id,
-                x.ExamId,
-                x.ExamVersionSnapshot,
-                x.AccessMode,
-                x.DeliveryTypeSnapshot))
-            .FirstOrDefaultAsync(cancellationToken)
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken)
         ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy phòng thi.", 404);
 
     private async Task<CloudProjectionReadiness> GetFileSubmissionReadinessAsync(
@@ -242,28 +264,31 @@ public sealed class PublicCloudProjectionExecution(
     }
 
     private async Task<QuizGraph> LoadQuizGraphAsync(
-        SessionProjectionScope session,
+        ExamSession session,
         CancellationToken cancellationToken)
     {
-        var questionIds = await db.QuizQuestionsSet
+        var questions = await db.QuizQuestionsSet
             .AsNoTracking()
             .Where(x => x.ExamId == session.ExamId
-                && x.Version == session.ExamVersion)
-            .Select(x => x.Id)
+                && x.Version == session.ExamVersionSnapshot)
             .ToListAsync(cancellationToken);
+        var questionIds = questions.Select(x => x.Id).ToList();
         if (questionIds.Count == 0)
-            return new([], []);
+            return new([], [], [], []);
 
-        var choiceIds = await db.QuizChoicesSet
+        var choices = await db.QuizChoicesSet
             .AsNoTracking()
             .Where(x => questionIds.Contains(x.QuestionId))
-            .Select(x => x.Id)
             .ToListAsync(cancellationToken);
-        return new(questionIds, choiceIds);
+        return new(
+            questions,
+            choices,
+            questionIds,
+            choices.Select(x => x.Id).ToList());
     }
 
     private async Task<QuizProjection> LoadQuizProjectionAsync(
-        SessionProjectionScope session,
+        ExamSession session,
         QuizGraph graph,
         bool tracked,
         CancellationToken cancellationToken)
@@ -291,15 +316,16 @@ public sealed class PublicCloudProjectionExecution(
 
         var items = new List<SyncQueueItem>(
             2 + graph.QuestionIds.Count + graph.ChoiceIds.Count);
-        var hasMissingRows = false;
-        AddExpected(examItems, [session.ExamId]);
-        AddExpected(questionItems, graph.QuestionIds);
-        AddExpected(choiceItems, graph.ChoiceIds);
-        AddExpected(sessionItems, [session.Id]);
+        var missingRows = new List<MissingProjectionRow>();
+        AddExpected(ExamsEntityType, examItems, [session.ExamId]);
+        AddExpected(QuestionsEntityType, questionItems, graph.QuestionIds);
+        AddExpected(ChoicesEntityType, choiceItems, graph.ChoiceIds);
+        AddExpected(SessionsEntityType, sessionItems, [session.Id]);
         sessionItems.TryGetValue(session.Id.ToString(), out var sessionItem);
-        return new(items, hasMissingRows, sessionItem);
+        return new(items, missingRows, sessionItem);
 
         void AddExpected(
+            string entityType,
             IReadOnlyDictionary<string, SyncQueueItem> latest,
             IReadOnlyCollection<Guid> expectedIds)
         {
@@ -308,10 +334,53 @@ public sealed class PublicCloudProjectionExecution(
                 if (latest.TryGetValue(expectedId.ToString(), out var item))
                     items.Add(item);
                 else
-                    hasMissingRows = true;
+                    missingRows.Add(new(entityType, expectedId));
             }
         }
     }
+
+    private async Task<IReadOnlyDictionary<(string EntityType, Guid EntityId), object>>
+        LoadMissingPayloadsAsync(
+            ExamSession session,
+            QuizGraph graph,
+            IReadOnlyCollection<MissingProjectionRow> missingRows,
+            CancellationToken cancellationToken)
+    {
+        var payloads = new Dictionary<(string EntityType, Guid EntityId), object>();
+        var questions = graph.Questions.ToDictionary(x => x.Id);
+        var choices = graph.Choices.ToDictionary(x => x.Id);
+        Exam? exam = null;
+        if (missingRows.Any(x => x.EntityType == ExamsEntityType))
+        {
+            exam = await db.ExamsSet
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Id == session.ExamId, cancellationToken)
+                ?? throw MissingLocalEntity(ExamsEntityType, session.ExamId);
+        }
+
+        foreach (var missing in missingRows)
+        {
+            payloads[(missing.EntityType, missing.EntityId)] = missing.EntityType switch
+            {
+                ExamsEntityType when exam is not null =>
+                    PublicCloudProjectionPayloads.Exam(exam),
+                QuestionsEntityType when questions.TryGetValue(missing.EntityId, out var question) =>
+                    PublicCloudProjectionPayloads.Question(question),
+                ChoicesEntityType when choices.TryGetValue(missing.EntityId, out var choice) =>
+                    PublicCloudProjectionPayloads.Choice(choice),
+                SessionsEntityType when missing.EntityId == session.Id =>
+                    PublicCloudProjectionPayloads.Session(session),
+                _ => throw MissingLocalEntity(missing.EntityType, missing.EntityId)
+            };
+        }
+        return payloads;
+    }
+
+    private static ApiException MissingLocalEntity(string entityType, Guid entityId) =>
+        new(
+            ErrorCodes.PublicCloudQuizProjectionNotReady,
+            $"Không tìm thấy dữ liệu local bắt buộc cho projection {entityType}/{entityId}.",
+            409);
 
     private async Task<IReadOnlyDictionary<string, SyncQueueItem>> LoadLatestItemsAsync(
         string entityType,
@@ -382,19 +451,19 @@ public sealed class PublicCloudProjectionExecution(
         }
     }
 
-    private sealed record SessionProjectionScope(
-        Guid Id,
-        Guid ExamId,
-        int ExamVersion,
-        SessionAccessMode AccessMode,
-        ExamDeliveryType DeliveryType);
-
     private sealed record QuizGraph(
+        IReadOnlyList<QuizQuestion> Questions,
+        IReadOnlyList<QuizChoice> Choices,
         IReadOnlyList<Guid> QuestionIds,
         IReadOnlyList<Guid> ChoiceIds);
 
     private sealed record QuizProjection(
         IReadOnlyList<SyncQueueItem> Items,
-        bool HasMissingRows,
-        SyncQueueItem? SessionItem);
+        IReadOnlyList<MissingProjectionRow> MissingRows,
+        SyncQueueItem? SessionItem)
+    {
+        public bool HasMissingRows => MissingRows.Count > 0;
+    }
+
+    private sealed record MissingProjectionRow(string EntityType, Guid EntityId);
 }

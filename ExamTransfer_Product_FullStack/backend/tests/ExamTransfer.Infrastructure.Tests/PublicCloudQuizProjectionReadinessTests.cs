@@ -82,6 +82,52 @@ public sealed class PublicCloudQuizProjectionReadinessTests
         Assert.Equal(ErrorCodes.PublicCloudQuizProjectionNotReady, readiness.Code);
     }
 
+    [Theory]
+    [InlineData("exams")]
+    [InlineData("quiz_questions")]
+    [InlineData("quiz_choices")]
+    [InlineData("exam_sessions")]
+    public async Task RetryProjection_MissingRequiredOutbox_RecreatesAuthoritativeRow(
+        string missingEntityType)
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var fixture = await SeedQuizAsync(database.Context);
+        var missingId = missingEntityType switch
+        {
+            "exams" => fixture.Exam.Id,
+            "quiz_questions" => fixture.Questions[0].Id,
+            "quiz_choices" => fixture.Choices[0].Id,
+            "exam_sessions" => fixture.Session.Id,
+            _ => throw new ArgumentOutOfRangeException(nameof(missingEntityType))
+        };
+        AddGraphRows(database.Context, fixture, SyncStatus.Synced, missingId);
+        await database.Context.SaveChangesAsync();
+        var signal = new RecordingSignal();
+
+        var readiness = await Execution(database.Context, signal)
+            .RetryProjectionAsync(fixture.Session.Id, default);
+
+        Assert.False(readiness.Ready);
+        Assert.Equal("PUBLICCLOUD_QUIZ_PROJECTION_PENDING", readiness.Code);
+        Assert.Equal(1, signal.PulseCount);
+        var recreated = await database.Context.SyncQueueSet.SingleAsync(row =>
+            row.EntityType == missingEntityType
+            && row.EntityId == missingId.ToString());
+        Assert.Equal("upsert", recreated.Operation);
+        Assert.Equal(SyncStatus.Pending, recreated.Status);
+        AssertProjectionPayload(recreated.PayloadJson, missingEntityType, fixture, missingId);
+
+        await Execution(database.Context, signal)
+            .RetryProjectionAsync(fixture.Session.Id, default);
+
+        Assert.Equal(
+            1,
+            await database.Context.SyncQueueSet.CountAsync(row =>
+                row.EntityType == missingEntityType
+                && row.EntityId == missingId.ToString()));
+        Assert.Equal(2, signal.PulseCount);
+    }
+
     [Fact]
     public async Task QuizGraph_OtherExamVersionPending_DoesNotAffectCurrentSession()
     {
@@ -106,6 +152,124 @@ public sealed class PublicCloudQuizProjectionReadinessTests
 
         Assert.True(readiness.Ready);
         Assert.Equal("PUBLICCLOUD_QUIZ_PROJECTION_READY", readiness.Code);
+    }
+
+    [Fact]
+    public async Task RetryProjection_MissingCurrentVersionQuestion_DoesNotEnqueueOtherVersion()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var fixture = await SeedQuizAsync(database.Context, version: 3);
+        AddGraphRows(
+            database.Context,
+            fixture,
+            SyncStatus.Synced,
+            fixture.Questions[0].Id);
+        var otherVersionQuestion = new QuizQuestion
+        {
+            ExamId = fixture.Exam.Id,
+            Version = 4,
+            Order = 1,
+            Text = "Other version",
+            Points = 10,
+            Multiple = false
+        };
+        database.Context.QuizQuestionsSet.Add(otherVersionQuestion);
+        await database.Context.SaveChangesAsync();
+
+        await Execution(database.Context)
+            .RetryProjectionAsync(fixture.Session.Id, default);
+
+        Assert.True(await database.Context.SyncQueueSet.AnyAsync(row =>
+            row.EntityType == "quiz_questions"
+            && row.EntityId == fixture.Questions[0].Id.ToString()));
+        Assert.False(await database.Context.SyncQueueSet.AnyAsync(row =>
+            row.EntityType == "quiz_questions"
+            && row.EntityId == otherVersionQuestion.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task CreateAndOpen_PublicCloudQuizShuffleFalse_ProjectsAndCanStartWhenSynced()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var fixture = await SeedQuizAsync(database.Context);
+        foreach (var entity in GraphEntities(fixture).Where(x => x.EntityType != "exam_sessions"))
+            AddRow(database.Context, entity.EntityType, entity.Id, SyncStatus.Synced);
+        await database.Context.SaveChangesAsync();
+        var service = PublicCloudTestHarness.CreateSessionService(
+            database.Context,
+            new RecordingCloudAdapter());
+
+        var created = await service.CreateAndOpenAsync(
+            new(
+                fixture.Exam.Id,
+                null,
+                null,
+                "{}",
+                false,
+                40,
+                "PCQUIZ01",
+                SessionAccessMode.PublicCloud,
+                SessionAdmissionMode.OpenRequest),
+            "host",
+            default);
+
+        Assert.Equal(SessionStatus.Waiting, created.Summary.Status);
+        Assert.False(created.Summary.QuizShuffleEnabled);
+        var pending = await service.GetProjectionReadinessAsync(created.Summary.Id, default);
+        Assert.Equal("PUBLICCLOUD_QUIZ_PROJECTION_PENDING", pending.Code);
+        Assert.False(pending.Ready);
+        var sessionRow = await database.Context.SyncQueueSet.SingleAsync(row =>
+            row.EntityType == "exam_sessions"
+            && row.EntityId == created.Summary.Id.ToString());
+        sessionRow.Status = SyncStatus.Synced;
+        sessionRow.CompletedAtUtc = DateTimeOffset.UtcNow;
+        await database.Context.SaveChangesAsync();
+
+        var ready = await service.GetProjectionReadinessAsync(created.Summary.Id, default);
+        var started = await service.TransitionAsync(
+            created.Summary.Id,
+            SessionStatus.InProgress,
+            null,
+            default);
+
+        Assert.True(ready.Ready);
+        Assert.Equal("PUBLICCLOUD_QUIZ_PROJECTION_READY", ready.Code);
+        Assert.Equal(SessionStatus.InProgress, started.Summary.Status);
+    }
+
+    [Fact]
+    public async Task CreateAndOpen_PublicCloudQuizShuffleTrue_FailsClosedWithoutPartialRows()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var fixture = await SeedQuizAsync(database.Context);
+        fixture.Exam.QuizShuffleEnabled = true;
+        await database.Context.SaveChangesAsync();
+        var sessionCount = await database.Context.ExamSessionsSet.CountAsync();
+        var queueCount = await database.Context.SyncQueueSet.CountAsync();
+        var service = PublicCloudTestHarness.CreateSessionService(
+            database.Context,
+            new RecordingCloudAdapter());
+
+        var error = await Assert.ThrowsAsync<ApiException>(() =>
+            service.CreateAndOpenAsync(
+                new(
+                    fixture.Exam.Id,
+                    null,
+                    null,
+                    "{}",
+                    false,
+                    40,
+                    "PCQUIZ02",
+                    SessionAccessMode.PublicCloud,
+                    SessionAdmissionMode.OpenRequest),
+                "host",
+                default));
+
+        Assert.Equal(ErrorCodes.ValidationFailed, error.Code);
+        Assert.Equal(422, error.StatusCode);
+        Assert.Contains("OnlyLAN", error.Message, StringComparison.Ordinal);
+        Assert.Equal(sessionCount, await database.Context.ExamSessionsSet.CountAsync());
+        Assert.Equal(queueCount, await database.Context.SyncQueueSet.CountAsync());
     }
 
     [Fact]
@@ -226,6 +390,25 @@ public sealed class PublicCloudQuizProjectionReadinessTests
         Assert.All(database.Context.SyncQueueSet.Local, item =>
             Assert.Equal(SyncStatus.Pending, item.Status));
         Assert.Equal(1, signal.PulseCount);
+    }
+
+    [Fact]
+    public async Task RetryProjection_AllRowsSynced_DoesNotMutateOrPulse()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var fixture = await SeedQuizAsync(database.Context);
+        AddGraphRows(database.Context, fixture, SyncStatus.Synced);
+        await database.Context.SaveChangesAsync();
+        var signal = new RecordingSignal();
+        var queueCount = await database.Context.SyncQueueSet.CountAsync();
+
+        var readiness = await Execution(database.Context, signal)
+            .RetryProjectionAsync(fixture.Session.Id, default);
+
+        Assert.True(readiness.Ready);
+        Assert.Equal("PUBLICCLOUD_QUIZ_PROJECTION_READY", readiness.Code);
+        Assert.Equal(queueCount, await database.Context.SyncQueueSet.CountAsync());
+        Assert.Equal(0, signal.PulseCount);
     }
 
     [Fact]
@@ -474,6 +657,42 @@ public sealed class PublicCloudQuizProjectionReadinessTests
             .OrderByDescending(x => x.CreatedAtUtc)
             .ThenByDescending(x => x.Id)
             .First();
+
+    private static void AssertProjectionPayload(
+        string payloadJson,
+        string entityType,
+        QuizFixture fixture,
+        Guid entityId)
+    {
+        using var payload = JsonDocument.Parse(payloadJson);
+        var root = payload.RootElement;
+        Assert.Equal(entityId, root.GetProperty("id").GetGuid());
+        switch (entityType)
+        {
+            case "exams":
+                Assert.Equal("MultipleChoice", root.GetProperty("delivery_type").GetString());
+                Assert.Equal("Published", root.GetProperty("status").GetString());
+                Assert.Equal(fixture.Exam.Version, root.GetProperty("version").GetInt32());
+                break;
+            case "quiz_questions":
+                Assert.Equal(fixture.Exam.Id, root.GetProperty("exam_id").GetGuid());
+                Assert.Equal(fixture.Exam.Version, root.GetProperty("version").GetInt32());
+                Assert.Equal(fixture.Questions[0].Order, root.GetProperty("sort_order").GetInt32());
+                Assert.Equal(fixture.Questions[0].Points, root.GetProperty("points").GetDecimal());
+                break;
+            case "quiz_choices":
+                Assert.Equal(fixture.Questions[0].Id, root.GetProperty("question_id").GetGuid());
+                Assert.Equal(fixture.Choices[0].Order, root.GetProperty("sort_order").GetInt32());
+                Assert.Equal(fixture.Choices[0].IsCorrect, root.GetProperty("is_correct").GetBoolean());
+                break;
+            case "exam_sessions":
+                Assert.Equal(fixture.Exam.Id, root.GetProperty("exam_id").GetGuid());
+                Assert.Equal("Waiting", root.GetProperty("status").GetString());
+                Assert.Equal("PublicCloud", root.GetProperty("access_mode").GetString());
+                Assert.Equal(fixture.Exam.Version, root.GetProperty("exam_version").GetInt32());
+                break;
+        }
+    }
 
     private sealed record QuizFixture(
         Exam Exam,

@@ -82,8 +82,8 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
         return await InTransactionAsync(async () =>
         {
             var session = await CreateCoreAsync(request, hostDeviceId, cancellationToken);
-            await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, ToCloud(session), cancellationToken);
-            await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", ToCloud(session), cancellationToken: cancellationToken);
+            await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, PublicCloudProjectionPayloads.Session(session), cancellationToken);
+            await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", PublicCloudProjectionPayloads.Session(session), cancellationToken: cancellationToken);
             return ToDetail(session);
         }, cancellationToken);
     }
@@ -93,7 +93,7 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
         var detail = await InTransactionAsync(async () =>
         {
             var session = await CreateCoreAsync(request, hostDeviceId, cancellationToken);
-            await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, ToCloud(session), cancellationToken);
+            await audit.WriteAsync("SessionCreated", nameof(ExamSession), session.Id.ToString(), session.Id, null, PublicCloudProjectionPayloads.Session(session), cancellationToken);
             var before = session.Status;
             session.TransitionTo(SessionStatus.Waiting);
             await db.SaveChangesAsync(cancellationToken);
@@ -109,7 +109,7 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
                 "exam_sessions",
                 session.Id.ToString(),
                 "upsert",
-                ToCloud(session),
+                PublicCloudProjectionPayloads.Session(session),
                 cancellationToken: cancellationToken);
             return ToDetail(session);
         }, cancellationToken);
@@ -207,7 +207,7 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
             session.RoomCode = nextRoomCode;
             await db.SaveChangesAsync(cancellationToken);
 
-            projection.PayloadJson = JsonSerializer.Serialize(ToCloud(session), JsonOptions);
+            projection.PayloadJson = JsonSerializer.Serialize(PublicCloudProjectionPayloads.Session(session), JsonOptions);
             projection.Status = SyncStatus.Pending;
             projection.RetryCount = 0;
             projection.NextRetryAtUtc = DateTimeOffset.UtcNow;
@@ -253,12 +253,12 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
         }
         session.Capacity = request.Capacity;
         await db.SaveChangesAsync(cancellationToken);
-        await audit.WriteAsync("SessionUpdated", nameof(ExamSession), session.Id.ToString(), session.Id, null, ToCloud(session), cancellationToken);
+        await audit.WriteAsync("SessionUpdated", nameof(ExamSession), session.Id.ToString(), session.Id, null, PublicCloudProjectionPayloads.Session(session), cancellationToken);
         await outbox.EnqueueAsync(
             "exam_sessions",
             session.Id.ToString(),
             "upsert",
-            ToCloud(session),
+            PublicCloudProjectionPayloads.Session(session),
             cancellationToken: cancellationToken);
         return ToDetail(session);
     }
@@ -298,7 +298,7 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
             session.TransitionTo(target);
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("SessionStateChanged", nameof(ExamSession), session.Id.ToString(), session.Id, new { status = before }, new { status = session.Status, reason = endRequest?.Reason }, cancellationToken);
-            await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", ToCloud(session), cancellationToken: cancellationToken);
+            await outbox.EnqueueAsync("exam_sessions", session.Id.ToString(), "upsert", PublicCloudProjectionPayloads.Session(session), cancellationToken: cancellationToken);
             var quizSubmittedCounts = await GetQuizSubmittedCountsAsync([session.Id], cancellationToken);
             return ToDetail(session, quizSubmittedCounts.GetValueOrDefault(session.Id));
         }, cancellationToken);
@@ -371,7 +371,7 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
                     "exam_sessions",
                     session.Id.ToString(),
                     "upsert",
-                    ToCloud(session),
+                    PublicCloudProjectionPayloads.Session(session),
                     cancellationToken: cancellationToken);
                 archivedDetails.Add(ToDetail(
                     session,
@@ -559,32 +559,6 @@ public sealed class SessionService(AppDbContext db, IAuditService audit, IOutbox
         }
         throw new ApiException(ErrorCodes.RoomCodeConflict, "Không thể sinh mã phòng không trùng.", 500);
     }
-    private static object ToCloud(ExamSession x) => new
-    {
-        id = x.Id,
-        exam_id = x.ExamId,
-        class_id = x.ClassId,
-        room_code = x.RoomCode,
-        status = x.Status.ToString(),
-        host_device_id = x.HostDeviceId,
-        planned_start_at = x.PlannedStartUtc,
-        started_at = x.StartedAtUtc,
-        ended_at = x.EndedAtUtc,
-        delivery_type = x.DeliveryTypeSnapshot.ToString(),
-        supervision_mode = x.SupervisionModeSnapshot.ToString(),
-        quiz_result_policy = x.QuizResultPolicySnapshot.ToString(),
-        exam_version = x.ExamVersionSnapshot,
-        settings_json = x.SettingsJson,
-        auto_approve = x.AutoApprove,
-        access_mode = x.AccessMode.ToString(),
-        admission_mode = x.AdmissionMode.ToString(),
-        capacity = x.Capacity,
-        accepting_participants = x.AcceptingParticipants,
-        sequence = x.Sequence,
-        created_at = x.CreatedAtUtc,
-        updated_at = x.UpdatedAtUtc
-    };
-
     private async Task PublishSessionStateSafeAsync(SessionDetailDto detail, CancellationToken cancellationToken)
     {
         try

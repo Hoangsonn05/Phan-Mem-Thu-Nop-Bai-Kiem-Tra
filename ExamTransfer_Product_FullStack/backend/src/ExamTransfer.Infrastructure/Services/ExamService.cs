@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
+using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Storage;
 using ExamTransfer.Shared.Contracts;
@@ -110,7 +111,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             };
             db.ExamsSet.Add(exam); await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamCreated", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
-            await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
+            await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", PublicCloudProjectionPayloads.Exam(exam), cancellationToken: cancellationToken);
             return ToDetail(exam);
         }, cancellationToken);
     }
@@ -150,7 +151,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             exam.SupervisionMode = policy.SupervisionMode;
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamUpdated", nameof(Exam), exam.Id.ToString(), null, before, ToAudit(exam), cancellationToken);
-            await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
+            await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", PublicCloudProjectionPayloads.Exam(exam), cancellationToken: cancellationToken);
             return ToDetail(exam);
         }, cancellationToken);
         await NotifyActiveSessionsAsync(detail.Id, detail.Version, RealtimeEvents.ExamUpdated, cancellationToken);
@@ -174,7 +175,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             exam.Status = ExamStatus.Published;
             await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamPublished", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
-            await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", ToCloud(exam), cancellationToken: cancellationToken);
+            await outbox.EnqueueAsync("exams", exam.Id.ToString(), "upsert", PublicCloudProjectionPayloads.Exam(exam), cancellationToken: cancellationToken);
             return ToDetail(exam);
         }, cancellationToken);
         await NotifyActiveSessionsAsync(detail.Id, detail.Version, RealtimeEvents.ExamPublished, cancellationToken);
@@ -249,7 +250,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                     "exams",
                     exam.Id.ToString(),
                     "upsert",
-                    ToCloud(exam),
+                    PublicCloudProjectionPayloads.Exam(exam),
                     cancellationToken: cancellationToken);
             }
 
@@ -317,7 +318,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
             "exams",
             clone.Id.ToString(),
             "upsert",
-            ToCloud(clone),
+            PublicCloudProjectionPayloads.Exam(clone),
             cancellationToken: cancellationToken);
         foreach (var question in clone.QuizQuestions.OrderBy(x => x.Order))
         {
@@ -325,14 +326,14 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                 "quiz_questions",
                 question.Id.ToString(),
                 "upsert",
-                QuizQuestionToCloud(question),
+                PublicCloudProjectionPayloads.Question(question),
                 cancellationToken: cancellationToken);
             foreach (var choice in question.Choices.OrderBy(x => x.Order))
                 await outbox.EnqueueAsync(
                     "quiz_choices",
                     choice.Id.ToString(),
                     "upsert",
-                    QuizChoiceToCloud(choice),
+                    PublicCloudProjectionPayloads.Choice(choice),
                     cancellationToken: cancellationToken);
         }
         foreach (var sourceDocument in clone.QuizImportSources
@@ -345,7 +346,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                 "quiz_import_sources",
                 sourceDocument.Id.ToString(),
                 "upsert",
-                QuizSourceToCloud(sourceDocument),
+                PublicCloudProjectionPayloads.Source(sourceDocument),
                 sourcePath,
                 cancellationToken);
         }
@@ -435,7 +436,7 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                         "exams",
                         exam.Id.ToString(),
                         "upsert",
-                        ToCloud(exam),
+                        PublicCloudProjectionPayloads.Exam(exam),
                         cancellationToken: cancellationToken);
 
                     foreach (var copied in copiedFiles)
@@ -911,65 +912,6 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         updated_at = x.UpdatedAtUtc,
         row_version = x.RowVersion
     };
-    private static object ToCloud(Exam x) => new
-    {
-        id = x.Id,
-        class_id = x.ClassId,
-        title = x.Title,
-        subject = x.Subject,
-        description = x.Description,
-        duration_minutes = x.DurationMinutes,
-        delivery_type = x.DeliveryType.ToString(),
-        quiz_result_policy = x.QuizResultPolicy.ToString(),
-        supervision_mode = x.SupervisionMode.ToString(),
-        file_rule_json = x.FileRuleJson,
-        status = x.Status.ToString(),
-        version = x.Version,
-        created_by = x.CreatedBy,
-        created_at = x.CreatedAtUtc,
-        updated_at = x.UpdatedAtUtc
-    };
-
-    private static object QuizQuestionToCloud(QuizQuestion x) => new
-    {
-        id = x.Id,
-        exam_id = x.ExamId,
-        version = x.Version,
-        sort_order = x.Order,
-        question_text = x.Text,
-        points = x.Points,
-        multiple = x.Multiple,
-        created_at = x.CreatedAtUtc,
-        updated_at = x.UpdatedAtUtc
-    };
-
-    private static object QuizChoiceToCloud(QuizChoice x) => new
-    {
-        id = x.Id,
-        question_id = x.QuestionId,
-        sort_order = x.Order,
-        choice_text = x.Text,
-        is_correct = x.IsCorrect,
-        created_at = x.CreatedAtUtc,
-        updated_at = x.UpdatedAtUtc
-    };
-
-    private static object QuizSourceToCloud(QuizImportSource x) => new
-    {
-        id = x.Id,
-        exam_id = x.ExamId,
-        exam_version = x.ExamVersion,
-        original_name = x.OriginalName,
-        mime_type = x.MimeType,
-        size_bytes = x.SizeBytes,
-        sha256 = x.Sha256,
-        status = x.Status,
-        created_by = x.CreatedBy,
-        imported_at = x.ImportedAtUtc,
-        created_at = x.CreatedAtUtc,
-        updated_at = x.UpdatedAtUtc
-    };
-
     private static object ToCloud(ExamFile x) => new
     {
         id = x.Id,
