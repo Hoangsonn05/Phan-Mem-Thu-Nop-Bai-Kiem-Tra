@@ -1,14 +1,20 @@
+using System.Globalization;
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
+using ExamTransfer.Infrastructure.Cloud;
 using ExamTransfer.Infrastructure.Execution.PublicCloud;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.LocalServer.Workers;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace ExamTransfer.Infrastructure.Tests;
@@ -244,6 +250,129 @@ public sealed class PublicCloudTeacherProjectionTests
     }
 
     [Fact]
+    public async Task TeacherQuizAttempt_Schema33RpcResponse_FlowsThroughAdapterWorkerAndTeacherProjection()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var seed = await SeedQuizSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud,
+            QuizResultPolicy.ShowAfterSubmission);
+        var organizationId = Guid.NewGuid();
+        seed.Teacher.OrganizationId = organizationId.ToString();
+        seed.Session.ExamVersionSnapshot = 1;
+        await database.Context.SaveChangesAsync();
+
+        var missingParentAttemptId = Guid.Parse("5d9fb772-aeea-4611-9269-0a3b352f3954");
+        var attemptId = Guid.Parse("7797663f-c11f-4277-a03d-551c1d848ec5");
+        var startedAt = DateTimeOffset.Parse(
+            "2026-08-07T15:10:35.860941+00:00",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind);
+        var finalizedAt = DateTimeOffset.Parse(
+            "2026-08-07T15:10:48.436997+00:00",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind);
+        var handler = new Schema33QuizAttemptHandler(JsonSerializer.Serialize(new object[]
+        {
+            RpcAttempt(
+                missingParentAttemptId,
+                Guid.Parse("bddb6a8d-41cb-4b3f-b655-913633513db2"),
+                Guid.Parse("85426e4a-2866-4fea-96cb-75f85b440ce5"),
+                organizationId,
+                276,
+                startedAt.AddHours(-6),
+                finalizedAt.AddHours(-6),
+                0m),
+            RpcAttempt(
+                attemptId,
+                seed.Session.Id,
+                seed.Participant.Id,
+                organizationId,
+                329,
+                startedAt,
+                finalizedAt,
+                0.6m)
+        }));
+        var stateRoot = Path.Combine(
+            Path.GetTempPath(),
+            "ExamTransfer.TeacherQuizAttempt.Schema33",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stateRoot);
+        try
+        {
+            var options = Options.Create(new ExamTransferOptions
+            {
+                Cloud = new CloudOptions
+                {
+                    Enabled = true,
+                    SupabaseUrl = "https://schema33-quiz-attempt.example.test",
+                    PublishableKey = "test-publishable-key",
+                    OrganizationId = organizationId.ToString(),
+                    Schema = "public",
+                    AccessMode = CloudAccessModes.UserSession
+                }
+            });
+            var state = new CloudSessionState(
+                new EphemeralDataProtectionProvider(),
+                new TestStoragePaths(stateRoot));
+            state.Set(
+                new CloudSessionSnapshot(
+                    "test-access-token",
+                    "test-refresh-token",
+                    DateTimeOffset.UtcNow.AddHours(1),
+                    seed.Teacher.Id.ToString(),
+                    "teacher@example.test",
+                    organizationId.ToString(),
+                    UserRole.Teacher.ToString()),
+                persist: false);
+            var adapter = new SupabaseCloudAdapter(
+                new HttpClient(handler),
+                options,
+                state);
+
+            await RunPullOnceAsync(database.Path, adapter, new RecordingRealtimePublisher());
+
+            await using var verify = database.CreateContext();
+            var attempt = await verify.QuizAttemptsSet.SingleAsync(x => x.Id == attemptId);
+            Assert.Equal(QuizAttemptStatus.Finalized, attempt.Status);
+            Assert.Equal("PublicCloud", attempt.SourceMode);
+            Assert.Equal(seed.Session.ExamVersionSnapshot, attempt.ExamVersion);
+            Assert.Equal(0.6m, attempt.Score);
+            Assert.Equal(10m, attempt.MaxScore);
+            Assert.Equal(startedAt, attempt.StartedAtUtc);
+            Assert.Equal(finalizedAt, attempt.FinalizedAtUtc);
+            Assert.False(await verify.QuizAttemptsSet.AnyAsync(
+                x => x.Id == missingParentAttemptId));
+            Assert.Equal(329, (await verify.PublicCloudPullCursorsSet.SingleAsync(
+                x => x.EntityName == "quiz_attempts")).LastCloudVersion);
+            Assert.False(await verify.PublicCloudPullFailuresSet.AnyAsync(
+                x => x.EntityName == "quiz_attempts" && x.ResolvedAtUtc == null));
+
+            var detail = await PublicCloudTestHarness.CreateSessionService(verify, adapter)
+                .GetAsync(seed.Session.Id, CancellationToken.None);
+            Assert.Equal(1, detail.Summary.Counts.Submitted);
+            var row = Assert.Single(await CreateQuizService(verify)
+                .ListTeacherSubmissionsForSessionAsync(
+                    seed.Session.Id,
+                    seed.Teacher.Id,
+                    seed.Teacher.OrganizationId,
+                    CancellationToken.None));
+            Assert.Equal(seed.Participant.Id, row.ParticipantId);
+            Assert.Equal(0.6m, row.Score);
+            Assert.Equal(10m, row.MaxScore);
+            Assert.Equal(startedAt, row.StartedAtUtc);
+            Assert.Equal(finalizedAt, row.FinalizedAtUtc);
+            Assert.True(handler.UsedTeacherQuizAttemptRpc);
+            Assert.True(handler.UsedBearerAuthorization);
+        }
+        finally
+        {
+            if (Directory.Exists(stateRoot))
+                Directory.Delete(stateRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task PullQuizAttempt_NewerCloudVersion_PublishesTeacherRefreshAfterCommit()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
@@ -445,6 +574,44 @@ public sealed class PublicCloudTeacherProjectionTests
                 finalize_idempotency_key = "pc4-finalize"
             }));
 
+    private static object RpcAttempt(
+        Guid attemptId,
+        Guid sessionId,
+        Guid participantId,
+        Guid organizationId,
+        long cloudVersion,
+        DateTimeOffset startedAt,
+        DateTimeOffset finalizedAt,
+        decimal score) =>
+        new
+        {
+            id = attemptId,
+            organization_id = organizationId,
+            session_id = sessionId,
+            participant_id = participantId,
+            exam_version = 1,
+            status = "Finalized",
+            started_at = startedAt,
+            deadline_at = finalizedAt.AddMinutes(10),
+            finalized_at = finalizedAt,
+            score,
+            max_score = 10m,
+            snapshot_json = new { questions = Array.Empty<object>() },
+            finalize_idempotency_key = "schema33-finalize",
+            created_at = startedAt,
+            updated_at = finalizedAt,
+            source_mode = "PublicCloud",
+            cloud_version = cloudVersion,
+            result_policy = "ShowAfterSubmission",
+            auto_score = score,
+            grading_status = "Graded",
+            general_comment = (string?)null,
+            grader_id = (Guid?)null,
+            graded_at = finalizedAt,
+            returned_at = (DateTimeOffset?)null,
+            attempt_number = 1
+        };
+
     private static async Task RunPullOnceAsync(
         string databasePath,
         ICloudAdapter cloud,
@@ -488,6 +655,71 @@ public sealed class PublicCloudTeacherProjectionTests
             long sequence,
             T payload,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    private sealed class Schema33QuizAttemptHandler(string responseJson) : HttpMessageHandler
+    {
+        public bool UsedTeacherQuizAttemptRpc { get; private set; }
+        public bool UsedBearerAuthorization { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            UsedBearerAuthorization |= string.Equals(
+                request.Headers.Authorization?.Scheme,
+                "Bearer",
+                StringComparison.Ordinal);
+            var path = request.RequestUri?.AbsolutePath;
+            string body;
+            if (string.Equals(
+                    path,
+                    "/rest/v1/rpc/get_examtransfer_cloud_capabilities",
+                    StringComparison.Ordinal))
+            {
+                body = JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 33,
+                    criticalRpcs = CloudSchemaCompatibility.CriticalRpcs,
+                    buckets = new[] { "exam-archives", "public-submission-archives" }
+                });
+            }
+            else if (string.Equals(
+                         path,
+                         "/rest/v1/rpc/pull_teacher_quiz_attempts",
+                         StringComparison.Ordinal))
+            {
+                UsedTeacherQuizAttemptRpc = true;
+                body = responseJson;
+            }
+            else
+            {
+                body = "[]";
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            });
+        }
+    }
+
+    private sealed class TestStoragePaths(string root) : IStoragePaths
+    {
+        public string RootPath { get; } = root;
+        public string DatabasePath => Path.Combine(RootPath, "database.db");
+        public string BackupRoot => Path.Combine(RootPath, "backups");
+        public string ExportRoot => Path.Combine(RootPath, "exports");
+        public string TemporaryRoot => Path.Combine(RootPath, "temp");
+        public string ExamVersionRoot(Guid examId, int version) =>
+            Path.Combine(RootPath, "exams", examId.ToString("N"), version.ToString());
+        public string SessionRoot(Guid sessionId) =>
+            Path.Combine(RootPath, "sessions", sessionId.ToString("N"));
+        public string SubmissionRoot(Guid sessionId, string studentCode, Guid submissionId) =>
+            Path.Combine(SessionRoot(sessionId), studentCode, submissionId.ToString("N"));
+        public string ReceiptRoot(Guid sessionId) =>
+            Path.Combine(SessionRoot(sessionId), "receipts");
+        public void EnsureCreated() => Directory.CreateDirectory(RootPath);
     }
 
     private sealed record Seed(

@@ -675,6 +675,24 @@ public sealed class PublicCloudPullWorker(
             }
             case "quiz_attempts":
             {
+                var sessionId = GuidValue(row, "session_id");
+                if (!await db.ExamSessionsSet.AnyAsync(x => x.Id == sessionId, cancellationToken))
+                {
+                    logger.LogWarning(
+                        "ProjectionSkippedMissingLocalParent: EntityName={EntityName}, EntityId={EntityId}, ParentType={ParentType}, ParentId={ParentId}, CloudVersion={CloudVersion}",
+                        record.EntityName, id, "exam_sessions", sessionId, record.CloudVersion);
+                    return null;
+                }
+                var participantId = GuidValue(row, "participant_id");
+                if (!await db.SessionParticipantsSet.AnyAsync(
+                        x => x.Id == participantId && x.SessionId == sessionId,
+                        cancellationToken))
+                {
+                    logger.LogWarning(
+                        "ProjectionSkippedMissingLocalParent: EntityName={EntityName}, EntityId={EntityId}, ParentType={ParentType}, ParentId={ParentId}, CloudVersion={CloudVersion}",
+                        record.EntityName, id, "session_participants", participantId, record.CloudVersion);
+                    return null;
+                }
                 var incomingStatus = EnumValue<QuizAttemptStatus>(row, "status");
                 var entity = await db.QuizAttemptsSet.FindAsync([id], cancellationToken);
                 if (entity is not null && entity.CloudVersion >= record.CloudVersion) return entity.Id;
@@ -683,8 +701,8 @@ public sealed class PublicCloudPullWorker(
                     return entity.Id;
                 entity ??= new QuizAttempt { Id = id };
                 if (db.Entry(entity).State == EntityState.Detached) db.QuizAttemptsSet.Add(entity);
-                entity.SessionId = GuidValue(row, "session_id");
-                entity.ParticipantId = GuidValue(row, "participant_id");
+                entity.SessionId = sessionId;
+                entity.ParticipantId = participantId;
                 entity.AttemptNumber = IntValue(row, "attempt_number");
                 entity.ExamVersion = IntValue(row, "exam_version");
                 entity.Status = incomingStatus;
