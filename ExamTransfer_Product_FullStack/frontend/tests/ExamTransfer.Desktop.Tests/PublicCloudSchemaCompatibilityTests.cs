@@ -23,20 +23,20 @@ public sealed class PublicCloudSchemaCompatibilityTests
     }
 
     [Fact]
-    public async Task SchemaVersion32_WithCriticalRpcs_IsAccepted()
+    public async Task SchemaVersion33_WithCriticalRpcs_IsAccepted()
     {
         var client = await AuthenticatedClientAsync(
-            32,
+            33,
             RequiredCriticalRpcs());
 
         await client.EnsureSchemaCompatibleAsync(default);
     }
 
     [Fact]
-    public async Task SchemaVersion32_MissingCriticalRpc_IsRejected()
+    public async Task SchemaVersion33_MissingCriticalRpc_IsRejected()
     {
         var client = await AuthenticatedClientAsync(
-            32,
+            33,
             [
                 "get_public_student_notification_events",
                 "send_public_teacher_message"

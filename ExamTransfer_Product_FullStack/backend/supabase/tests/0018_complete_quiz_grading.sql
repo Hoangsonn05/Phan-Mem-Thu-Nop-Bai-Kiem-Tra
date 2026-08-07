@@ -1,7 +1,7 @@
 begin;
 select plan(47);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),32,
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),33,
   'A-09 Quiz grading remains available at schema 29');
 select has_function('private','calculate_public_quiz_grade',array['uuid'],
   'authoritative Quiz calculator exists');

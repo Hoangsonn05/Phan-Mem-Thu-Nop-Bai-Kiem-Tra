@@ -2,7 +2,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select plan(22);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),32,
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),33,
   'Quiz grading and score-10 invariants remain available at schema 29');
 select has_column('public','quiz_attempts','auto_score','quiz attempts store immutable auto score');
 select has_column('public','quiz_attempts','grading_status','quiz attempts store grading status');

@@ -3,7 +3,7 @@ create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 select plan(33);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),32,
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),33,
   'PC3 score and history behavior is available at cloud schema 32');
 
 insert into auth.users(id,email) values

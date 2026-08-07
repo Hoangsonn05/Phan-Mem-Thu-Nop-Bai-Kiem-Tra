@@ -261,10 +261,14 @@ public sealed class SupabaseCloudAdapter(
             ? "&source_mode=eq.PublicCloud"
             : string.Empty;
         var organizationId = Uri.EscapeDataString(GetRequiredOrganizationId().ToString());
-        var path = $"/rest/v1/{table}?select=*&organization_id=eq.{organizationId}" +
-            $"{sourceFilter}&cloud_version=gte.{cursor.CloudVersion}" +
-            $"&order=cloud_version.asc,updated_at.asc,{keyColumn}.asc&limit={boundedLimit}";
-        using var request = await CreateSyncRequestAsync(HttpMethod.Get, path, cancellationToken);
+        using var request = await CreatePullRequestAsync(
+            table,
+            keyColumn,
+            organizationId,
+            sourceFilter,
+            cursor,
+            boundedLimit,
+            cancellationToken);
         using var response = await httpClient.SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, $"Supabase pull {table}", cancellationToken);
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -287,6 +291,43 @@ public sealed class SupabaseCloudAdapter(
                 records.Add(new CloudPullRecord(table, id, cloudVersion, updatedAt, row.GetRawText()));
         }
         return new CloudPullPage(records, rawRows.Count == boundedLimit);
+    }
+
+    private async Task<HttpRequestMessage> CreatePullRequestAsync(
+        string table,
+        string keyColumn,
+        string escapedOrganizationId,
+        string sourceFilter,
+        CloudPullCursorValue cursor,
+        int boundedLimit,
+        CancellationToken cancellationToken)
+    {
+        if (table == "quiz_attempts" && !UsesTrustedServer)
+        {
+            var request = await CreateSyncRequestAsync(
+                HttpMethod.Post,
+                "/rest/v1/rpc/pull_teacher_quiz_attempts",
+                cancellationToken);
+            request.Content = JsonContent.Create(new
+            {
+                p_organization_id = GetRequiredOrganizationId(),
+                p_cloud_version = cursor.CloudVersion,
+                p_updated_at = cursor.UpdatedAtUtc,
+                p_id = Guid.TryParse(cursor.EntityId, out var entityId)
+                    ? entityId
+                    : (Guid?)null,
+                p_limit = boundedLimit
+            });
+            return request;
+        }
+
+        var path = $"/rest/v1/{table}?select=*&organization_id=eq.{escapedOrganizationId}" +
+            $"{sourceFilter}&cloud_version=gte.{cursor.CloudVersion}" +
+            $"&order=cloud_version.asc,updated_at.asc,{keyColumn}.asc&limit={boundedLimit}";
+        return await CreateSyncRequestAsync(
+            HttpMethod.Get,
+            path,
+            cancellationToken);
     }
 
     public async Task<CloudParticipantMutationResult> ApprovePublicParticipantAsync(

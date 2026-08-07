@@ -308,7 +308,7 @@ public sealed class FinalCloudSourceCompatibilityTests
                 $"/quiz-sources/{sourceId}/source.bin",
                 firstPath,
                 StringComparison.Ordinal);
-            Assert.Equal(32, CloudSchemaCompatibility.RequiredVersion);
+            Assert.Equal(33, CloudSchemaCompatibility.RequiredVersion);
         }
         finally
         {
@@ -320,7 +320,8 @@ public sealed class FinalCloudSourceCompatibilityTests
     [Fact]
     public void PublicCloudCapability_RequiresCurrentSchemaAndCriticalRpcs()
     {
-        Assert.Equal(32, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(33, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Contains("pull_teacher_quiz_attempts", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("save_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("return_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("reopen_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
@@ -337,8 +338,93 @@ public sealed class FinalCloudSourceCompatibilityTests
         Assert.Contains("'return_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'reopen_public_quiz_grade'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'get_public_quiz_attempt_review'", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("'pull_teacher_quiz_attempts'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'report_public_violation'", script, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("'ack_public_device_command'", script, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task QuizAttemptPull_UsesGuardedTeacherReplicaRpcWithCursor()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "ExamTransfer.QuizAttemptPull.Tests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            var organizationId = Guid.NewGuid();
+            var attemptId = Guid.NewGuid();
+            var cursorId = Guid.NewGuid();
+            var updatedAt = new DateTimeOffset(2026, 8, 7, 9, 12, 51, TimeSpan.Zero);
+            var handler = new TeacherRpcErrorHandler(
+                HttpStatusCode.OK,
+                JsonSerializer.Serialize(new[]
+                {
+                    new
+                    {
+                        id = attemptId,
+                        cloud_version = 276,
+                        updated_at = updatedAt
+                    }
+                }));
+            var options = Options.Create(new ExamTransferOptions
+            {
+                Cloud = new CloudOptions
+                {
+                    Enabled = true,
+                    SupabaseUrl = "https://quiz-pull.example.test",
+                    PublishableKey = "test-publishable-key",
+                    OrganizationId = organizationId.ToString(),
+                    Schema = "public",
+                    AccessMode = CloudAccessModes.UserSession
+                }
+            });
+            var state = new CloudSessionState(
+                new EphemeralDataProtectionProvider(),
+                new CloudSourcePaths(root));
+            state.Set(
+                new CloudSessionSnapshot(
+                    "test-access-token",
+                    "test-refresh-token",
+                    DateTimeOffset.UtcNow.AddHours(1),
+                    Guid.NewGuid().ToString(),
+                    "teacher@example.test",
+                    organizationId.ToString(),
+                    UserRole.Teacher.ToString()),
+                persist: false);
+            var adapter = new SupabaseCloudAdapter(
+                new HttpClient(handler),
+                options,
+                state);
+
+            var page = await adapter.PullAsync(
+                "quiz_attempts",
+                new CloudPullCursorValue(275, updatedAt.AddSeconds(-1), cursorId.ToString()),
+                100,
+                CancellationToken.None);
+
+            var record = Assert.Single(page.Records);
+            Assert.Equal(attemptId.ToString(), record.EntityId);
+            Assert.Equal(276, record.CloudVersion);
+            Assert.Equal(HttpMethod.Post, handler.RequestMethod);
+            Assert.Equal(
+                "/rest/v1/rpc/pull_teacher_quiz_attempts",
+                handler.RequestPath);
+            Assert.True(handler.HasBearerAuthorization);
+            using var payload = JsonDocument.Parse(
+                Assert.IsType<string>(handler.RequestBody));
+            Assert.Equal(
+                organizationId,
+                payload.RootElement.GetProperty("p_organization_id").GetGuid());
+            Assert.Equal(275, payload.RootElement.GetProperty("p_cloud_version").GetInt64());
+            Assert.Equal(cursorId, payload.RootElement.GetProperty("p_id").GetGuid());
+            Assert.Equal(100, payload.RootElement.GetProperty("p_limit").GetInt32());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
     }
 
     private sealed class CloudSourcePaths(string root) : IStoragePaths
@@ -363,14 +449,21 @@ public sealed class FinalCloudSourceCompatibilityTests
         HttpStatusCode status,
         string responseBody) : HttpMessageHandler
     {
+        public HttpMethod? RequestMethod { get; private set; }
         public string? RequestPath { get; private set; }
         public string? RequestBody { get; private set; }
+        public bool HasBearerAuthorization { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            RequestMethod = request.Method;
             RequestPath = request.RequestUri?.AbsolutePath;
+            HasBearerAuthorization = string.Equals(
+                request.Headers.Authorization?.Scheme,
+                "Bearer",
+                StringComparison.Ordinal);
             RequestBody = request.Content is null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken);
@@ -390,10 +483,10 @@ public sealed class PublicCloudSchemaContractTests
     [Fact]
     public void RequiredSchemaVersion_MatchesCanonicalMigrationAndAcceptanceScript()
     {
-        Assert.Equal(32, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(33, CloudSchemaCompatibility.RequiredVersion);
 
         var migration = PublicCloudTestHarness.ReadRepositoryFile(
-            "backend/supabase/migrations/20260807054739_public_quiz_score_history.sql");
+            "backend/supabase/migrations/20260807133059_teacher_quiz_attempt_replica_pull.sql");
         var migrationVersion = Regex.Match(
             migration,
             @"\bset\s+schema_version\s*=\s*(\d+)\b",
@@ -420,9 +513,9 @@ public sealed class PublicCloudSchemaContractTests
     }
 
     [Fact]
-    public async Task RemoteSchema32_PassesHealthAndPreflight()
+    public async Task RemoteSchema33_PassesHealthAndPreflight()
     {
-        using var fixture = SchemaAdapterFixture.Create(32);
+        using var fixture = SchemaAdapterFixture.Create(33);
 
         Assert.True(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
         var preflight = await fixture.Adapter.PreflightAsync(CancellationToken.None);
@@ -435,17 +528,17 @@ public sealed class PublicCloudSchemaContractTests
     }
 
     [Fact]
-    public async Task RemoteSchema31_IsRejectedAsStale()
+    public async Task RemoteSchema32_IsRejectedAsStale()
     {
-        using var fixture = SchemaAdapterFixture.Create(31);
+        using var fixture = SchemaAdapterFixture.Create(32);
 
         Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
     }
 
     [Fact]
-    public async Task RemoteSchema33_IsRejectedByExactMatchContract()
+    public async Task RemoteSchema34_IsRejectedByExactMatchContract()
     {
-        using var fixture = SchemaAdapterFixture.Create(33);
+        using var fixture = SchemaAdapterFixture.Create(34);
 
         Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
     }
@@ -469,10 +562,10 @@ public sealed class PublicCloudSchemaContractTests
     }
 
     [Fact]
-    public async Task RemoteSchema32_UnblocksCloudWorkerAndPublicCloudPullPreflight()
+    public async Task RemoteSchema33_UnblocksCloudWorkerAndPublicCloudPullPreflight()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
-        using var fixture = SchemaAdapterFixture.Create(32);
+        using var fixture = SchemaAdapterFixture.Create(33);
         var services = new ServiceCollection();
         services.AddDbContext<AppDbContext>(builder =>
             builder.UseSqlite($"Data Source={database.Path}"));

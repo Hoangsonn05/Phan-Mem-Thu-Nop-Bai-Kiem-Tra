@@ -5,7 +5,7 @@ param(
 )
 . "$PSScriptRoot/acceptance-common.ps1"
 $traceId = New-AcceptanceTraceId
-$requiredSchemaVersion = 32
+$requiredSchemaVersion = 33
 try {
     $headers = @{ apikey=$PublishableKey; Authorization="Bearer $TeacherOrServiceJwt"; 'Content-Type'='application/json' }
     $result = Invoke-RestMethod -Method Post -Uri "$($SupabaseUrl.TrimEnd('/'))/rest/v1/rpc/get_examtransfer_cloud_capabilities" -Headers $headers -Body '{}'
@@ -15,6 +15,7 @@ try {
         'upsert_public_device_heartbeat','ack_public_device_command','report_public_violation',
         'start_public_quiz_attempt','save_public_quiz_answers','finalize_public_quiz_attempt',
         'get_public_quiz_attempt','get_public_quiz_attempt_review','get_teacher_quiz_attempts',
+        'pull_teacher_quiz_attempts',
         'save_public_quiz_grade','return_public_quiz_grade','reopen_public_quiz_grade',
         'verify_public_submission_archive','get_public_exam_manifest',
         'get_public_exam_file_download',

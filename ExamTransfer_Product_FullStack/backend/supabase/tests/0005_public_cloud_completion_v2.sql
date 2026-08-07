@@ -1,7 +1,7 @@
 begin;
 select plan(14);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),32,
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),33,
   'cloud schema compatibility version includes ET-PC-SUBMISSION-DOWNLOAD-R1 fix');
 select has_function('public', 'verify_public_submission_archive',
   array['uuid','uuid','text','bigint','text'], 'transactional archive verification RPC exists');

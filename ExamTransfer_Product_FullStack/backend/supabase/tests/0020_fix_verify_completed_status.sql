@@ -5,8 +5,8 @@ select plan(19);
 
 -- 1. Schema version includes the PublicCloud quiz runtime gate.
 select is(
-  (select schema_version from public.examtransfer_cloud_meta where id=1),32,
-  'schema version is 32 after the PublicCloud quiz score/history fix');
+  (select schema_version from public.examtransfer_cloud_meta where id=1),33,
+  'schema version is 33 after the teacher quiz replica pull fix');
 
 -- 2. The active function carries the correct 'Completed' assignment.
 select ok(

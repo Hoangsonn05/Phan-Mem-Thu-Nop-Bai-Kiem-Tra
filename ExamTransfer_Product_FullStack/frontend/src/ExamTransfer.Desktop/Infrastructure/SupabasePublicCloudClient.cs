@@ -219,7 +219,7 @@ public sealed record SupabaseAuthenticatedAccount(
 
 public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider, IPublicCloudHeartbeatClient
 {
-    internal const int MinimumSupportedCloudSchemaVersion = 32;
+    internal const int MinimumSupportedCloudSchemaVersion = 33;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions NotificationJson = CreateNotificationJson();
     private readonly HttpClient http;
