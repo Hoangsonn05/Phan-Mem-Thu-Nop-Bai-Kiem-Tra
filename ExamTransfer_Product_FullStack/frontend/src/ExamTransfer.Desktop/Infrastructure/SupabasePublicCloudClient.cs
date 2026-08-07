@@ -210,7 +210,7 @@ public sealed record SupabaseAuthenticatedAccount(
 
 public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
 {
-    internal const int MinimumSupportedCloudSchemaVersion = 30;
+    internal const int MinimumSupportedCloudSchemaVersion = 31;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions NotificationJson = CreateNotificationJson();
     private readonly HttpClient http;
@@ -509,10 +509,9 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         IReadOnlyList<QuizAnswerDto> answers,
         CancellationToken cancellationToken)
     {
-        var accepted = new List<QuizAnswerDto>(answers.Count);
         foreach (var answer in answers.OrderBy(x => x.QuestionId))
         {
-            var revision = await RpcAsync<long>("save_public_quiz_answers", new
+            _ = await RpcAsync<long>("save_public_quiz_answers", new
             {
                 p_attempt_id = attemptId,
                 p_question_id = answer.QuestionId,
@@ -520,12 +519,15 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
                 p_revision = answer.Revision,
                 p_client_updated_at = answer.ClientUpdatedAtUtc
             }, cancellationToken);
-            accepted.Add(answer with { Revision = revision });
         }
         var timeline = await GetStudentTimelineAsync(sessionId, cancellationToken);
         if (timeline.AttemptId != attemptId)
             throw new InvalidDataException("PublicCloud timeline does not match the active quiz attempt.");
-        return new SyncQuizAnswersResultDto(attemptId, accepted, timeline.ServerNowUtc);
+        var authoritativeAttempt = await GetQuizAttemptAsync(attemptId, cancellationToken);
+        return new SyncQuizAnswersResultDto(
+            attemptId,
+            authoritativeAttempt.Answers,
+            timeline.ServerNowUtc);
     }
 
     public async Task<QuizAttemptDto> FinalizeQuizAttemptAsync(

@@ -240,27 +240,27 @@ public sealed class StudentQuizViewModel : ProductPageBase
             return; // leave server snapshot — do NOT clear questions
         }
 
-        // Merge: local answer wins only if its revision is higher.
-        var changed = false;
-        foreach (var answer in stored)
-        {
-            if (!localAnswers.TryGetValue(answer.QuestionId, out var current)
-                || answer.Revision > current.Revision)
-            {
-                localAnswers[answer.QuestionId] = answer;
-                changed = true;
-            }
-        }
-
-        if (!changed) return;
-
-        // Re-apply selections on the UI thread without rebuilding the full list.
-        // Guard: if Attempt changed (e.g. finalized) while we were loading, skip.
-        if (IsDisposed || Attempt?.Id != attemptId) return;
-
+        var needsResync = false;
         RunOnUiThread(() =>
         {
             if (IsDisposed || Attempt?.Id != attemptId) return;
+            foreach (var answer in stored)
+            {
+                if (!IsValidLocalAnswer(Attempt, answer))
+                {
+                    FrontendLogger.LogWarning(
+                        $"Quiz.LocalHydrate: ignored invalid local answer for attempt {attemptId}, question {answer.QuestionId}.",
+                        "StudentQuizViewModel.HydrateLocalAnswers");
+                    continue;
+                }
+                if (!localAnswers.TryGetValue(answer.QuestionId, out var current)
+                    || answer.Revision > current.Revision)
+                {
+                    localAnswers[answer.QuestionId] = answer;
+                    needsResync = true;
+                }
+            }
+            if (!needsResync) return;
             applying = true;
             foreach (var row in Questions)
             {
@@ -275,6 +275,21 @@ public sealed class StudentQuizViewModel : ProductPageBase
             Raise(nameof(ProgressText));
             RaiseCommands();
         });
+        if (needsResync && !IsDisposed && Attempt?.Id == attemptId)
+            await SyncAsync(ct, false);
+    }
+
+    private static bool IsValidLocalAnswer(QuizAttemptDto attempt, QuizAnswerDto answer)
+    {
+        if (answer.Revision <= 0)
+            return false;
+        var question = attempt.Questions.FirstOrDefault(candidate => candidate.Id == answer.QuestionId);
+        if (question is null
+            || (!question.Multiple && answer.ChoiceIds.Count > 1)
+            || answer.ChoiceIds.Count != answer.ChoiceIds.Distinct().Count())
+            return false;
+        var validChoices = question.Choices.Select(choice => choice.Id).ToHashSet();
+        return answer.ChoiceIds.All(validChoices.Contains);
     }
 
     protected override void ReportFailure(Exception exception)
@@ -361,30 +376,67 @@ public sealed class StudentQuizViewModel : ProductPageBase
 
     private async Task SyncAsync(CancellationToken ct, bool showStatus)
     {
-        if (Attempt is null || Attempt.Status != QuizAttemptStatus.InProgress) return;
+        var requestedAttempt = Attempt;
+        if (requestedAttempt is null || requestedAttempt.Status != QuizAttemptStatus.InProgress) return;
         await syncGate.WaitAsync(ct);
         try
         {
+            requestedAttempt = Attempt;
+            if (requestedAttempt is null || requestedAttempt.Status != QuizAttemptStatus.InProgress) return;
             var payload = localAnswers.Values.OrderBy(x => x.QuestionId).ToList();
             var response = session.AccessMode == SessionAccessMode.PublicCloud
                 ? await AppServices.PublicCloud.SaveQuizAnswersAsync(
                     session.SessionId!.Value,
-                    Attempt.Id,
+                    requestedAttempt.Id,
                     payload,
                     ct)
                 : ApiGuard.Require(await api.PutAsync<SyncQuizAnswersRequest, SyncQuizAnswersResultDto>(
-                    $"api/v1/student/quiz/attempts/{Attempt.Id}/answers", new(payload), ct));
+                    $"api/v1/student/quiz/attempts/{requestedAttempt.Id}/answers", new(payload), ct));
+            if (response.AttemptId != requestedAttempt.Id)
+                throw new InvalidDataException("Quiz sync response does not match the requested attempt.");
+            if (Attempt?.Id != requestedAttempt.Id)
+                return;
             serverClock.Synchronize(response.ServerNowUtc);
-            foreach (var answer in response.Answers) localAnswers[answer.QuestionId] = answer;
-            await localStore.SaveAsync(Attempt.Id, localAnswers.Values, ct);
+            foreach (var answer in response.Answers)
+            {
+                if (!IsValidLocalAnswer(requestedAttempt, answer))
+                    throw new InvalidDataException("Quiz sync response contains an invalid answer snapshot.");
+                if (!localAnswers.TryGetValue(answer.QuestionId, out var current)
+                    || answer.Revision >= current.Revision)
+                    localAnswers[answer.QuestionId] = answer;
+            }
+            await localStore.SaveAsync(requestedAttempt.Id, localAnswers.Values, ct);
             UpdateCountdown();
             if (showStatus) { Status = "Đã đồng bộ đáp án với máy chủ"; StatusTone = "success"; }
         }
-        catch when (!showStatus)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex) when (!showStatus && IsTransientSyncFailure(ex))
         {
             Status = "Đang ngoại tuyến · đáp án vẫn được lưu trên máy này"; StatusTone = "warning";
         }
+        catch (Exception ex) when (!showStatus)
+        {
+            ReportFailure(ex);
+        }
         finally { syncGate.Release(); }
+    }
+
+    private static bool IsTransientSyncFailure(Exception exception)
+    {
+        if (exception is TimeoutException or TaskCanceledException)
+            return true;
+        if (exception is BackendApiException { HttpStatusCode: { } backendStatus })
+            return backendStatus == 408 || backendStatus is >= 500 and <= 599;
+        if (exception is HttpRequestException transport)
+        {
+            if (!transport.StatusCode.HasValue)
+                return true;
+            var status = (int)transport.StatusCode.Value;
+            return status == 408 || status is >= 500 and <= 599;
+        }
+        return false;
     }
 
     private Task FinalizeAsync() => RunAsync("Đang chốt bài", "Bài trắc nghiệm đã được chấm trên máy chủ", async ct =>

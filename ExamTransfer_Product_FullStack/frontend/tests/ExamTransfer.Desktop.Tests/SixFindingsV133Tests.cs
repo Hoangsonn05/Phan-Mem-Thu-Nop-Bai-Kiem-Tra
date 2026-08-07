@@ -423,7 +423,7 @@ public sealed class SixFindingsV133Tests
             if (path.EndsWith("/auth/v1/token", StringComparison.Ordinal))
                 return Task.FromResult(Json("""{"access_token":"token","refresh_token":"refresh","expires_in":3600}"""));
             if (path.EndsWith("/rpc/get_examtransfer_cloud_capabilities", StringComparison.Ordinal))
-                return Task.FromResult(Json("""{"schemaVersion":30,"criticalRpcs":["get_public_student_notification_events","send_public_teacher_message","get_student_results"]}"""));
+                return Task.FromResult(Json("""{"schemaVersion":31,"criticalRpcs":["get_public_student_notification_events","send_public_teacher_message","get_student_results"]}"""));
 
             JoinCalls++;
             if (terminalCode is not null)

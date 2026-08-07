@@ -310,7 +310,7 @@ internal sealed class RecordingBackendClient(
     public DashboardSummaryDto? DashboardResponse { get; init; }
     public QuizAttemptDto? QuizAttemptResponse { get; init; }
     public StudentQuizReviewDto? StudentQuizReviewResponse { get; init; }
-    public SyncQuizAnswersResultDto? SyncQuizAnswersResultResponse { get; init; }
+    public SyncQuizAnswersResultDto? SyncQuizAnswersResultResponse { get; set; }
     public QuizImportResultDto? QuizImportResultResponse { get; set; }
     public ClassDetailDto? ClassDetailResponse { get; init; }
     public ExamSummaryDto? ExamSummaryResponse { get; init; }
@@ -318,6 +318,8 @@ internal sealed class RecordingBackendClient(
     public ExamManifestDto? ExamManifestResponse { get; init; }
     public SessionDetailDto? SessionDetailResponse { get; set; }
     public ApiError? PostErrorResponse { get; set; }
+    public ApiError? PutErrorResponse { get; set; }
+    public Func<SyncQuizAnswersRequest, CancellationToken, Task<SyncQuizAnswersResultDto>>? SyncQuizAnswersHandler { get; set; }
     public ParticipantDto? ParticipantResponse { get; set; }
     public IReadOnlyList<ClassSummaryDto>? ClassResponses { get; init; }
     public IReadOnlyList<ExamSummaryDto>? ExamResponses { get; init; }
@@ -488,20 +490,26 @@ internal sealed class RecordingBackendClient(
         }
         return Task.FromResult<ApiResponse<TResponse>?>(null);
     }
-    public Task<ApiResponse<TResponse>?> PutAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
+    public async Task<ApiResponse<TResponse>?> PutAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
     {
         PutPaths.Add(path);
         PutRequests.Add(request);
+        if (PutErrorResponse is not null)
+            return ApiResponse<TResponse>.Fail(PutErrorResponse, "backend-trace");
+        if (request is SyncQuizAnswersRequest syncRequest
+            && SyncQuizAnswersHandler is not null
+            && typeof(TResponse) == typeof(SyncQuizAnswersResultDto))
+        {
+            var result = await SyncQuizAnswersHandler(syncRequest, ct);
+            return ApiResponse<TResponse>.Ok((TResponse)(object)result, "test");
+        }
         if (ExamDetailResponse is not null && typeof(TResponse) == typeof(ExamDetailDto))
-            return Task.FromResult<ApiResponse<TResponse>?>(
-                ApiResponse<TResponse>.Ok((TResponse)(object)ExamDetailResponse, "test"));
+            return ApiResponse<TResponse>.Ok((TResponse)(object)ExamDetailResponse, "test");
         if (SessionDetailResponse is not null && typeof(TResponse) == typeof(SessionDetailDto))
-            return Task.FromResult<ApiResponse<TResponse>?>(
-                ApiResponse<TResponse>.Ok((TResponse)(object)SessionDetailResponse, "test"));
+            return ApiResponse<TResponse>.Ok((TResponse)(object)SessionDetailResponse, "test");
         if (SyncQuizAnswersResultResponse is not null && typeof(TResponse) == typeof(SyncQuizAnswersResultDto))
-            return Task.FromResult<ApiResponse<TResponse>?>(
-                ApiResponse<TResponse>.Ok((TResponse)(object)SyncQuizAnswersResultResponse, "test"));
-        return Task.FromResult<ApiResponse<TResponse>?>(null);
+            return ApiResponse<TResponse>.Ok((TResponse)(object)SyncQuizAnswersResultResponse, "test");
+        return null;
     }
     public Task<ApiResponse<TResponse>?> DeleteAsync<TResponse>(string path, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);
     public Task<ApiResponse<object>?> UploadChunkAsync(string path, Stream content, long contentLength, string? sha256 = null, CancellationToken ct = default) => Task.FromResult<ApiResponse<object>?>(null);

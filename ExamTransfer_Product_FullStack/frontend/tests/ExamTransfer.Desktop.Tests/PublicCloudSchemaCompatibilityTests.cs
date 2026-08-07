@@ -9,10 +9,10 @@ namespace ExamTransfer.Desktop.Tests;
 public sealed class PublicCloudSchemaCompatibilityTests
 {
     [Fact]
-    public async Task SchemaVersion29_IsRejected()
+    public async Task SchemaVersion30_IsRejected()
     {
         var client = await AuthenticatedClientAsync(
-            29,
+            30,
             RequiredCriticalRpcs());
 
         var error = await Assert.ThrowsAsync<PublicCloudApiException>(() =>
@@ -23,20 +23,20 @@ public sealed class PublicCloudSchemaCompatibilityTests
     }
 
     [Fact]
-    public async Task SchemaVersion30_WithCriticalRpcs_IsAccepted()
+    public async Task SchemaVersion31_WithCriticalRpcs_IsAccepted()
     {
         var client = await AuthenticatedClientAsync(
-            30,
+            31,
             RequiredCriticalRpcs());
 
         await client.EnsureSchemaCompatibleAsync(default);
     }
 
     [Fact]
-    public async Task SchemaVersion30_MissingCriticalRpc_IsRejected()
+    public async Task SchemaVersion31_MissingCriticalRpc_IsRejected()
     {
         var client = await AuthenticatedClientAsync(
-            30,
+            31,
             [
                 "get_public_student_notification_events",
                 "send_public_teacher_message"

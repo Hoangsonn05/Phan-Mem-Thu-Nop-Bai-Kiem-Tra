@@ -1,7 +1,7 @@
 begin;
 select plan(41);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),30,
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),31,
   'A-10 remains available at PublicCloud schema 29');
 select has_function('public','get_student_results',array['integer','timestamp with time zone','text','uuid'],
   'typed student results RPC exists');
