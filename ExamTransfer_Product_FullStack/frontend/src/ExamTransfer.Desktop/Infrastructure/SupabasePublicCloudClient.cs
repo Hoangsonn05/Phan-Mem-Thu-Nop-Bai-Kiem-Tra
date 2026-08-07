@@ -194,6 +194,15 @@ public interface ISupabaseAccessTokenProvider
         CancellationToken cancellationToken);
 }
 
+public interface IPublicCloudHeartbeatClient
+{
+    Task<Guid> UpsertDeviceHeartbeatAsync(
+        Guid sessionId,
+        string deviceId,
+        ConnectionState connectionState,
+        CancellationToken cancellationToken);
+}
+
 public sealed class PublicCloudApiException(
     string code,
     string message,
@@ -208,7 +217,7 @@ public sealed record SupabaseAuthenticatedAccount(
     CurrentAccountDto Account,
     string AccessToken);
 
-public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
+public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider, IPublicCloudHeartbeatClient
 {
     internal const int MinimumSupportedCloudSchemaVersion = 32;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -396,6 +405,29 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         if (rows.Count != 1 || !Enum.TryParse<ParticipantStatus>(rows[0].Status, true, out var status))
             throw new InvalidDataException("PublicCloud participant snapshot is invalid.");
         return status;
+    }
+
+    public Task<Guid> UpsertDeviceHeartbeatAsync(
+        Guid sessionId,
+        string deviceId,
+        ConnectionState connectionState,
+        CancellationToken cancellationToken)
+    {
+        if (sessionId == Guid.Empty)
+            throw new ArgumentException("PublicCloud heartbeat requires a session id.", nameof(sessionId));
+        if (string.IsNullOrWhiteSpace(deviceId))
+            throw new ArgumentException("PublicCloud heartbeat requires a device id.", nameof(deviceId));
+
+        return RpcAsync<Guid>(
+            "upsert_public_device_heartbeat",
+            new
+            {
+                p_session_id = sessionId,
+                p_device_id = deviceId.Trim(),
+                p_connection_state = connectionState.ToString(),
+                p_app_version = ReleaseIdentity.SemanticVersion
+            },
+            cancellationToken);
     }
 
     public async Task<PublicExamFileUrl> GetExamFileUrlAsync(Guid sessionId, Guid fileId, CancellationToken cancellationToken)

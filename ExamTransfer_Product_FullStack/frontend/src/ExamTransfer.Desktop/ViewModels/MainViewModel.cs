@@ -869,7 +869,11 @@ public static class AppServices
     public static IStudentExamFlowCoordinator StudentExamFlow { get; } =
         new StudentExamFlowCoordinator(Backend, PublicCloud, StudentState, Toasts);
     public static IStudentHeartbeatService StudentHeartbeat { get; } =
-        new ExamTransfer.Desktop.Infrastructure.StudentHeartbeatService(Backend, StudentState, ServerClock);
+        new ExamTransfer.Desktop.Infrastructure.StudentHeartbeatService(
+            Backend,
+            PublicCloud,
+            StudentState,
+            ServerClock);
     public static IStudentRealtimeService StudentRealtime { get; } =
         new ExamTransfer.Desktop.Infrastructure.StudentRealtimeService(
             Backend,

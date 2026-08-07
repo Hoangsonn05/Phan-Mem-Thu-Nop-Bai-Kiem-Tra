@@ -16,17 +16,30 @@ public sealed class StudentHeartbeatService : IStudentHeartbeatService
     ];
 
     private readonly IBackendClient api;
+    private readonly IPublicCloudHeartbeatClient publicCloud;
     private readonly StudentSessionState session;
     private readonly IServerClock serverClock;
+    private readonly Func<string> deviceId;
+    private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly object gate = new();
     private CancellationTokenSource? loopCts;
     private StudentConnectionState state = StudentConnectionState.Stopped;
 
-    public StudentHeartbeatService(IBackendClient api, StudentSessionState session, IServerClock serverClock)
+    public StudentHeartbeatService(
+        IBackendClient api,
+        IPublicCloudHeartbeatClient publicCloud,
+        StudentSessionState session,
+        IServerClock serverClock,
+        Func<string>? deviceId = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         this.api = api;
+        this.publicCloud = publicCloud;
         this.session = session;
         this.serverClock = serverClock;
+        this.deviceId = deviceId
+            ?? (() => Environment.MachineName + "-" + Environment.UserName);
+        this.delay = delay ?? Task.Delay;
         session.SessionChanged += OnSessionChanged;
     }
 
@@ -56,18 +69,7 @@ public sealed class StudentHeartbeatService : IStudentHeartbeatService
 
     public async Task<bool> ProbeNowAsync(CancellationToken ct = default)
     {
-        if (!session.SessionId.HasValue || !session.ParticipantId.HasValue || string.IsNullOrWhiteSpace(session.AccessToken))
-            return false;
-        api.SetParticipantToken(session.AccessToken);
-        var response = await api.PostAsync<HeartbeatRequest, HeartbeatResponse>(
-            $"api/v1/sessions/{session.SessionId}/participants/{session.ParticipantId}/heartbeat",
-            new HeartbeatRequest("Ready", ClientNowUtc(), 0), ct);
-        if (response?.Success == true && response.Data is not null)
-        {
-            serverClock.Synchronize(response.Data.ServerNowUtc);
-            return true;
-        }
-        return false;
+        return await SendHeartbeatAsync(ct) == HeartbeatAttemptResult.Success;
     }
 
     private async Task RunAsync(CancellationToken ct)
@@ -78,20 +80,22 @@ public sealed class StudentHeartbeatService : IStudentHeartbeatService
             try
             {
                 if (!session.HasSession || string.IsNullOrWhiteSpace(session.AccessToken)) break;
-                api.SetParticipantToken(session.AccessToken);
-                var response = await api.PostAsync<HeartbeatRequest, HeartbeatResponse>(
-                    $"api/v1/sessions/{session.SessionId}/participants/{session.ParticipantId}/heartbeat",
-                    new HeartbeatRequest("Ready", ClientNowUtc(), 0), ct);
-                if (response?.Success == true && response.Data is not null)
+                var result = await SendHeartbeatAsync(ct);
+                if (result == HeartbeatAttemptResult.Success)
                 {
-                    serverClock.Synchronize(response.Data.ServerNowUtc);
                     failures = 0;
                     SetState(StudentConnectionState.Online);
-                    await Task.Delay(HealthyInterval, ct);
+                    await delay(HealthyInterval, ct);
                     continue;
                 }
-
-                if (response?.Error?.Code is ErrorCodes.Unauthorized or ErrorCodes.ParticipantTokenRequired)
+                if (result == HeartbeatAttemptResult.NotActive)
+                {
+                    failures = 0;
+                    SetState(StudentConnectionState.Connecting);
+                    await delay(HealthyInterval, ct);
+                    continue;
+                }
+                if (result == HeartbeatAttemptResult.AuthenticationExpired)
                 {
                     SetState(StudentConnectionState.AuthenticationExpired);
                     break;
@@ -108,8 +112,62 @@ public sealed class StudentHeartbeatService : IStudentHeartbeatService
 
             failures++;
             SetState(failures >= 3 ? StudentConnectionState.Offline : StudentConnectionState.Reconnecting);
-            await Task.Delay(RetryDelays[Math.Min(failures - 1, RetryDelays.Length - 1)], ct);
+            try
+            {
+                await delay(RetryDelays[Math.Min(failures - 1, RetryDelays.Length - 1)], ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
         }
+    }
+
+    private async Task<HeartbeatAttemptResult> SendHeartbeatAsync(CancellationToken ct)
+    {
+        if (!session.SessionId.HasValue
+            || !session.ParticipantId.HasValue
+            || string.IsNullOrWhiteSpace(session.AccessToken))
+            return HeartbeatAttemptResult.Retry;
+
+        if (session.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            if (session.ParticipantStatus is not (
+                    ParticipantStatus.Approved or ParticipantStatus.Disconnected))
+                return HeartbeatAttemptResult.NotActive;
+            try
+            {
+                _ = await publicCloud.UpsertDeviceHeartbeatAsync(
+                    session.SessionId.Value,
+                    deviceId(),
+                    ConnectionState.Online,
+                    ct);
+                return HeartbeatAttemptResult.Success;
+            }
+            catch (PublicCloudApiException ex) when (
+                ex.Code is "PUBLICCLOUD_AUTH_EXPIRED" or "PUBLICCLOUD_AUTH_INVALID"
+                || ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                return HeartbeatAttemptResult.AuthenticationExpired;
+            }
+        }
+
+        if (session.AccessMode != SessionAccessMode.LanOnly)
+            throw new InvalidOperationException(
+                $"Unsupported student heartbeat access mode: {session.AccessMode}.");
+
+        api.SetParticipantToken(session.AccessToken);
+        var response = await api.PostAsync<HeartbeatRequest, HeartbeatResponse>(
+            $"api/v1/sessions/{session.SessionId}/participants/{session.ParticipantId}/heartbeat",
+            new HeartbeatRequest("Ready", ClientNowUtc(), 0), ct);
+        if (response?.Success == true && response.Data is not null)
+        {
+            serverClock.Synchronize(response.Data.ServerNowUtc);
+            return HeartbeatAttemptResult.Success;
+        }
+        return response?.Error?.Code is ErrorCodes.Unauthorized or ErrorCodes.ParticipantTokenRequired
+            ? HeartbeatAttemptResult.AuthenticationExpired
+            : HeartbeatAttemptResult.Retry;
     }
 
     private void OnSessionChanged(object? sender, EventArgs e)
@@ -143,5 +201,13 @@ public sealed class StudentHeartbeatService : IStudentHeartbeatService
     {
         session.SessionChanged -= OnSessionChanged;
         Stop();
+    }
+
+    private enum HeartbeatAttemptResult
+    {
+        Success,
+        Retry,
+        NotActive,
+        AuthenticationExpired
     }
 }
