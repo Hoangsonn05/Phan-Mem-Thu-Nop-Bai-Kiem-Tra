@@ -1974,7 +1974,11 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             () => !IsBusy
                 && SelectedSession is not null
                 && SelectedSubmission?.CanAllowResubmit == true);
-        CopyReceiptCommand = new RelayCommand(CopyReceipt);
+        CopyReceiptCommand = new RelayCommand(
+            CopyReceipt,
+            () => !IsBusy
+                && SelectedSubmission?.IsFileSubmission == true
+                && !string.IsNullOrWhiteSpace(SelectedSubmission.ReceiptCode));
         SelectAllCommand = new RelayCommand(
             SelectAll,
             () => !IsBusy && Submissions.Count > 0 && !AllVisibleSelected);
@@ -1999,6 +2003,8 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             Submissions.Clear();
             SelectedSubmission = null;
             Raise(nameof(IsFileSubmissionSession));
+            Raise(nameof(IsMultipleChoiceSession));
+            RaiseKpiState();
             RaiseSelectionState();
             realtimeBinding
                 .SelectAsync(value?.Id, DisposeToken)
@@ -2016,6 +2022,31 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     public bool HasNoSubmissions => Submissions.Count == 0;
     public bool IsFileSubmissionSession =>
         SelectedSession?.DeliveryType == ExamDeliveryType.FileSubmission;
+    public bool IsMultipleChoiceSession =>
+        SelectedSession?.DeliveryType == ExamDeliveryType.MultipleChoice;
+    public int SubmittedCount => KpiRows()
+        .Select(row => row.ParticipantId)
+        .Distinct()
+        .Count();
+    public int NotSubmittedCount => SelectedSession is null
+        ? 0
+        : Math.Max(0, SelectedSession.Counts.Total - SubmittedCount);
+    public int LateCount => KpiRows()
+        .Where(row => row.IsLate)
+        .Select(row => row.ParticipantId)
+        .Distinct()
+        .Count();
+    public int IssueCount => KpiRows()
+        .Where(HasDataIssue)
+        .Select(row => row.ParticipantId)
+        .Distinct()
+        .Count();
+    public string IssueKpiLabel => SelectedSession?.DeliveryType switch
+    {
+        ExamDeliveryType.FileSubmission => "LỖI / THIẾU FILE",
+        ExamDeliveryType.MultipleChoice => "LỖI DỮ LIỆU",
+        _ => "LỖI / DỮ LIỆU"
+    };
     public bool AllVisibleSelected =>
         Submissions.Any(row => row.CanSelect)
         && Submissions.Where(row => row.CanSelect).All(row => row.IsSelected);
@@ -2112,7 +2143,39 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             ? Submissions.FirstOrDefault(row => row.ItemId == focusedId.Value)
                 ?? Submissions.FirstOrDefault()
             : Submissions.FirstOrDefault();
+        RaiseKpiState();
         RaiseSelectionState();
+    }
+
+    private IEnumerable<SubmissionSelectionRow> KpiRows()
+    {
+        if (SelectedSession is null)
+            return [];
+
+        return IsFileSubmissionSession
+            ? Submissions.Where(row => row.IsFileSubmission && row.IsOfficial)
+            : Submissions.Where(row => row.IsQuizAttempt);
+    }
+
+    private static bool HasDataIssue(SubmissionSelectionRow row)
+    {
+        if (row.QuizAttempt is not null)
+            return !string.IsNullOrWhiteSpace(row.DataIssue);
+
+        return row.Submission is { } submission
+            && (submission.Status == SubmissionStatus.Failed
+                || submission.Files.Count == 0
+                || submission.Files.Any(file =>
+                    file.TransferStatus is TransferStatus.Failed or TransferStatus.Cancelled));
+    }
+
+    private void RaiseKpiState()
+    {
+        Raise(nameof(SubmittedCount));
+        Raise(nameof(NotSubmittedCount));
+        Raise(nameof(LateCount));
+        Raise(nameof(IssueCount));
+        Raise(nameof(IssueKpiLabel));
     }
 
     private Task RejectAsync() => RunAsync("Đang từ chối bài", "Bài nộp đã bị từ chối và vẫn được lưu lịch sử", async ct =>
@@ -2273,7 +2336,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     {
         foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, DownloadSelectedCommand }.OfType<AsyncRelayCommand>())
             command.RaiseCanExecuteChanged();
-        foreach (var command in new[] { SelectAllCommand, ClearSelectionCommand }.OfType<RelayCommand>())
+        foreach (var command in new[] { CopyReceiptCommand, SelectAllCommand, ClearSelectionCommand }.OfType<RelayCommand>())
             command.RaiseCanExecuteChanged();
     }
 }

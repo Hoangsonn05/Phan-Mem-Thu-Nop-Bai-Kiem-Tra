@@ -66,6 +66,7 @@ public sealed class SubmissionSelectionTests
         Assert.Equal("Học sinh Quiz", row.StudentName);
         Assert.Equal("8", row.ScoreText);
         Assert.Equal("10", row.MaxScoreText);
+        Assert.Equal("8 / 10", row.ScoreSummaryText);
         Assert.Equal("00:05:00", row.DurationText);
         Assert.False(row.CanSelect);
         Assert.False(row.CanDownload);
@@ -73,6 +74,137 @@ public sealed class SubmissionSelectionTests
         Assert.False(viewModel.RejectCommand.CanExecute(null));
         Assert.False(viewModel.ResubmitCommand.CanExecute(null));
         Assert.False(viewModel.DownloadSelectedCommand.CanExecute(null));
+        Assert.False(viewModel.CopyReceiptCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task FileSubmissionKpis_CountDistinctOfficialParticipantsAndFileIssues()
+    {
+        var session = MakeSession();
+        var firstParticipantId = Guid.NewGuid();
+        var officialLate = MakeSubmission(
+            "HS001",
+            isLate: true,
+            DateTimeOffset.UtcNow,
+            TransferStatus.Completed) with
+        {
+            ParticipantId = firstParticipantId
+        };
+        var supersededAttempt = MakeSubmission(
+            "HS001",
+            isLate: false,
+            DateTimeOffset.UtcNow,
+            TransferStatus.Failed) with
+        {
+            ParticipantId = firstParticipantId,
+            IsOfficial = false
+        };
+        var failedOfficial = MakeSubmission(
+            "HS002",
+            isLate: false,
+            DateTimeOffset.UtcNow,
+            TransferStatus.Failed) with
+        {
+            Status = SubmissionStatus.Failed
+        };
+        var api = new SubmissionBackendClient(session)
+        {
+            Submissions = [officialLate, supersededAttempt, failedOfficial]
+        };
+        using var viewModel = new SubmissionCenterViewModel(api, new SilentRealtimeService());
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.Equal(2, viewModel.SubmittedCount);
+        Assert.Equal(2, viewModel.NotSubmittedCount);
+        Assert.Equal(1, viewModel.LateCount);
+        Assert.Equal(1, viewModel.IssueCount);
+        Assert.Equal("LỖI / THIẾU FILE", viewModel.IssueKpiLabel);
+    }
+
+    [Fact]
+    public async Task QuizKpisAndModeSwitch_ClearRowsSelectionAndRecalculate()
+    {
+        var fileSession = MakeSession();
+        var quizSession = MakeSession() with
+        {
+            Id = Guid.NewGuid(),
+            DeliveryType = ExamDeliveryType.MultipleChoice
+        };
+        var fileSubmission = MakeSubmission(
+            "HS-FILE",
+            isLate: false,
+            DateTimeOffset.UtcNow,
+            TransferStatus.Completed);
+        var quizParticipantId = Guid.NewGuid();
+        var startedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var lateIssueAttempt = new TeacherQuizAttemptSummaryDto(
+            Guid.NewGuid(),
+            quizSession.Id,
+            quizParticipantId,
+            "HS-QUIZ-1",
+            "Hoc sinh Quiz 1",
+            1,
+            QuizAttemptStatus.Finalized,
+            GradingStatus.Graded,
+            8m,
+            10m,
+            startedAt,
+            startedAt.AddMinutes(5),
+            300,
+            true,
+            "Projection data mismatch");
+        var duplicateParticipantAttempt = lateIssueAttempt with
+        {
+            Id = Guid.NewGuid(),
+            AttemptNumber = 2,
+            IsLate = false,
+            DataIssue = null
+        };
+        var api = new SubmissionBackendClient(fileSession)
+        {
+            Submissions = [fileSubmission],
+            QuizAttempts = [lateIssueAttempt, duplicateParticipantAttempt]
+        };
+        using var viewModel = new SubmissionCenterViewModel(api, new SilentRealtimeService());
+        await viewModel.InitializeAsync(CancellationToken.None);
+        viewModel.Submissions[0].IsSelected = true;
+
+        viewModel.SelectedSession = quizSession;
+
+        Assert.Empty(viewModel.Submissions);
+        Assert.Null(viewModel.SelectedSubmission);
+        Assert.Equal(0, viewModel.SelectedCount);
+        Assert.Equal(0, viewModel.SubmittedCount);
+        Assert.True(viewModel.IsMultipleChoiceSession);
+        Assert.False(viewModel.IsFileSubmissionSession);
+
+        viewModel.LoadCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => api.QuizAttemptRequests == 1 && !viewModel.IsBusy,
+            TimeSpan.FromSeconds(3)));
+
+        Assert.Equal(1, viewModel.SubmittedCount);
+        Assert.Equal(3, viewModel.NotSubmittedCount);
+        Assert.Equal(1, viewModel.LateCount);
+        Assert.Equal(1, viewModel.IssueCount);
+        Assert.Equal("LỖI DỮ LIỆU", viewModel.IssueKpiLabel);
+        Assert.False(viewModel.CopyReceiptCommand.CanExecute(null));
+
+        viewModel.SelectedSession = fileSession;
+        Assert.Empty(viewModel.Submissions);
+        Assert.Equal(0, viewModel.SubmittedCount);
+        Assert.True(viewModel.IsFileSubmissionSession);
+
+        viewModel.LoadCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => api.SubmissionRequests == 2 && !viewModel.IsBusy,
+            TimeSpan.FromSeconds(3)));
+
+        Assert.Single(viewModel.Submissions);
+        Assert.Equal(1, viewModel.SubmittedCount);
+        Assert.Equal(3, viewModel.NotSubmittedCount);
+        Assert.Equal(0, viewModel.SelectedCount);
     }
 
     [Fact]
@@ -340,7 +472,7 @@ public sealed class SubmissionSelectionTests
         Assert.Contains("ClearSelectionCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("Đã chọn", xaml, StringComparison.Ordinal);
         Assert.Contains("SelectedCount", xaml, StringComparison.Ordinal);
-        Assert.Contains("Binding=\"{Binding ScoreText}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding ScoreSummaryText}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Binding=\"{Binding DurationText}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("IsFileSubmissionSession", xaml, StringComparison.Ordinal);
     }

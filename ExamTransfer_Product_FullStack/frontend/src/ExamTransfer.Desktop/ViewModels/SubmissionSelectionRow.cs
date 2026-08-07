@@ -61,10 +61,15 @@ public sealed class SubmissionSelectionRow : ObservableObject
             ? QuizAttempt.Score.Value.ToString("0.##", CultureInfo.CurrentCulture)
             : "Không hợp lệ";
     public string MaxScoreText => QuizAttempt?.MaxScore?.ToString("0.##", CultureInfo.CurrentCulture) ?? string.Empty;
+    public string ScoreSummaryText => QuizAttempt is null
+        ? string.Empty
+        : string.IsNullOrWhiteSpace(MaxScoreText)
+            ? ScoreText
+            : $"{ScoreText} / {MaxScoreText}";
     public string StartedAtText => QuizAttempt is null
         ? string.Empty
-        : QuizAttempt.StartedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.CurrentCulture);
-    public string FinalizedAtText => QuizAttempt?.FinalizedAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.CurrentCulture) ?? string.Empty;
+        : QuizAttempt.StartedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm", CultureInfo.CurrentCulture);
+    public string FinalizedAtText => QuizAttempt?.FinalizedAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm", CultureInfo.CurrentCulture) ?? string.Empty;
     public string DurationText => DurationSeconds.HasValue
         ? TimeSpan.FromSeconds(DurationSeconds.Value).ToString(@"hh\:mm\:ss", CultureInfo.CurrentCulture)
         : string.Empty;

@@ -3,6 +3,27 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
              beh:EntranceAnimation.IsEnabled="True">
+    <UserControl.Resources>
+        <Style x:Key="SubmissionGridColumnHeaderStyle"
+               TargetType="{x:Type DataGridColumnHeader}"
+               BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="ContentTemplate">
+                <Setter.Value>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}"
+                                   TextWrapping="NoWrap"
+                                   TextTrimming="CharacterEllipsis" />
+                    </DataTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SubmissionGridCellTextStyle" TargetType="{x:Type TextBlock}">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextWrapping" Value="NoWrap" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+    </UserControl.Resources>
     <Grid Margin="28,24,28,20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -78,7 +99,7 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="16"
                                    Foreground="{DynamicResource SuccessBrush}" Margin="0,0,6,0" />
-                        <TextBlock Text="—" FontSize="22" FontWeight="Bold"
+                        <TextBlock Text="{Binding SubmittedCount}" FontSize="22" FontWeight="Bold"
                                    Foreground="{DynamicResource SuccessBrush}" />
                     </StackPanel>
                 </StackPanel>
@@ -90,7 +111,7 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xE823;" Style="{StaticResource IconText}" FontSize="16"
                                    Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,6,0" />
-                        <TextBlock Text="—" FontSize="22" FontWeight="Bold"
+                        <TextBlock Text="{Binding NotSubmittedCount}" FontSize="22" FontWeight="Bold"
                                    Foreground="{DynamicResource TextSecondaryBrush}" />
                     </StackPanel>
                 </StackPanel>
@@ -108,7 +129,7 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#x23F1;" FontFamily="Segoe UI Symbol" FontSize="17"
                                    Foreground="{DynamicResource WarningBrush}" Margin="0,0,6,0" />
-                        <TextBlock Text="—" FontSize="22" FontWeight="Bold"
+                        <TextBlock Text="{Binding LateCount}" FontSize="22" FontWeight="Bold"
                                    Foreground="{DynamicResource WarningBrush}" />
                     </StackPanel>
                 </StackPanel>
@@ -121,12 +142,12 @@
                     CornerRadius="8"
                     Padding="16,12">
                 <StackPanel>
-                    <TextBlock Text="LỖI / THIẾU FILE" Style="{StaticResource LabelText}"
+                    <TextBlock Text="{Binding IssueKpiLabel}" Style="{StaticResource LabelText}"
                                Foreground="{DynamicResource DangerBrush}" Margin="0,0,0,4" />
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="&#xEA39;" Style="{StaticResource IconText}" FontSize="16"
                                    Foreground="{DynamicResource DangerBrush}" Margin="0,0,6,0" />
-                        <TextBlock Text="—" FontSize="22" FontWeight="Bold"
+                        <TextBlock Text="{Binding IssueCount}" FontSize="22" FontWeight="Bold"
                                    Foreground="{DynamicResource DangerBrush}" />
                     </StackPanel>
                 </StackPanel>
@@ -135,169 +156,269 @@
 
         <!-- ═══ Main content ═══ -->
         <Grid Grid.Row="4">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.4*" />
-                <ColumnDefinition Width="16" />
-                <ColumnDefinition Width="0.75*" />
-            </Grid.ColumnDefinitions>
+            <Grid x:Name="FileSubmissionLayout"
+                  Visibility="{Binding IsFileSubmissionSession, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="0.75*" MinWidth="300" MaxWidth="340" />
+                </Grid.ColumnDefinitions>
 
-            <!-- Submission list -->
-            <Border Grid.Column="0" Style="{StaticResource Card}" Padding="0">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-                    <Grid Margin="18,16,18,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="&#xE7B8;"
-                                       Style="{StaticResource IconText}"
-                                       FontSize="15"
-                                       Foreground="{DynamicResource PrimaryBrush}"
-                                       Margin="0,0,8,0" />
-                            <TextBlock Text="Bài nộp theo phiên"
-                                        Style="{StaticResource SectionTitleText}" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="1"
-                                    Orientation="Horizontal"
-                                    VerticalAlignment="Center">
-                            <CheckBox Content="Chọn tất cả"
-                                      IsChecked="{Binding AllVisibleSelected, Mode=OneWay}"
-                                      Command="{Binding SelectAllCommand}"
-                                      VerticalAlignment="Center" />
-                            <Button Content="Bỏ chọn"
-                                    Command="{Binding ClearSelectionCommand}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    MinHeight="32"
-                                    Margin="12,0,0,0" />
-                            <TextBlock Margin="12,0,0,0"
-                                       VerticalAlignment="Center"
-                                       Style="{StaticResource BodyText}">
-                                <Run Text="Đã chọn " />
-                                <Run Text="{Binding SelectedCount, Mode=OneWay}" FontWeight="SemiBold" />
-                                <Run Text=" bài" />
-                            </TextBlock>
-                        </StackPanel>
-                    </Grid>
-                    <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
-                    <DataGrid Grid.Row="1"
-                              ItemsSource="{Binding Submissions}"
-                              SelectedItem="{Binding SelectedSubmission}">
-                        <DataGrid.Columns>
-                            <DataGridTemplateColumn Header="CHỌN" Width="60">
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                  IsEnabled="{Binding CanSelect}"
-                                                  HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center" />
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                            </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="MÃ" Binding="{Binding StudentCode}" Width="80" />
-                            <DataGridTextColumn Header="HỌ TÊN" Binding="{Binding StudentName}" Width="*" />
-                            <DataGridTextColumn Header="LẦN" Binding="{Binding AttemptNumber}" Width="55" />
-                            <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding StatusText}" Width="110" />
-                            <DataGridTextColumn Header="CHẤM" Binding="{Binding GradingStatusText}" Width="90" />
-                            <DataGridTextColumn Header="ĐIỂM" Binding="{Binding ScoreText}" Width="70" />
-                            <DataGridTextColumn Header="TỐI ĐA" Binding="{Binding MaxScoreText}" Width="70" />
-                            <DataGridTextColumn Header="BẮT ĐẦU" Binding="{Binding StartedAtText}" Width="145" />
-                            <DataGridTextColumn Header="CHỐT BÀI" Binding="{Binding FinalizedAtText}" Width="145" />
-                            <DataGridTextColumn Header="THỜI GIAN" Binding="{Binding DurationText}" Width="90" />
-                            <DataGridCheckBoxColumn Header="MUỘN"
-                                                    Binding="{Binding IsLate, Mode=OneWay}"
-                                                    IsReadOnly="True"
-                                                    Width="55" />
-                            <DataGridTextColumn Header="BIÊN NHẬN" Binding="{Binding ReceiptCode}" Width="120" />
-                            <DataGridTextColumn Header="DỮ LIỆU" Binding="{Binding DataIssue}" Width="180" />
-                        </DataGrid.Columns>
-                    </DataGrid>
-                    <TextBlock Grid.Row="1"
-                               Text="Chưa có bài đã nộp trong phiên này."
-                               Style="{StaticResource BodyText}"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               IsHitTestVisible="False"
-                               Visibility="{Binding HasNoSubmissions, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                </Grid>
-            </Border>
-
-            <!-- Action panel -->
-            <ScrollViewer Grid.Column="2"
-                          VerticalScrollBarVisibility="Auto"
-                          Visibility="{Binding IsFileSubmissionSession, Converter={StaticResource BooleanToVisibilityConverter}}">
-                <StackPanel>
-                    <Border Style="{StaticResource Card}">
-                        <StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                                <TextBlock Text="&#xE90F;"
+                <Border Grid.Column="0" Style="{StaticResource Card}" Padding="0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid Margin="18,16,18,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="&#xE7B8;"
                                            Style="{StaticResource IconText}"
                                            FontSize="15"
                                            Foreground="{DynamicResource PrimaryBrush}"
                                            Margin="0,0,8,0" />
-                                <TextBlock Text="Xử lý bài nộp"
+                                <TextBlock Text="Bài nộp theo phiên"
                                            Style="{StaticResource SectionTitleText}" />
                             </StackPanel>
-                            <TextBlock Text="Lý do" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
-                            <TextBox Text="{Binding Reason}" Height="80" AcceptsReturn="True" />
-                            <Separator Margin="0,14" />
-                            <Button Content="Tải bài đã chọn"
-                                    Command="{Binding DownloadSelectedCommand}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    Margin="0,0,0,8" />
-                            <Button Content="Sao chép mã biên nhận"
-                                    Command="{Binding CopyReceiptCommand}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    Margin="0,0,0,8" />
-                            <Button Content="Cho nộp lại"
-                                    Command="{Binding ResubmitCommand}"
-                                    Style="{StaticResource PrimaryButton}"
-                                    MinHeight="42" />
-                            <Border Background="{DynamicResource DangerSoftBrush}"
-                                    BorderBrush="{DynamicResource DangerBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="8"
-                                    Padding="12,10"
-                                    Margin="0,16,0,0">
-                                <StackPanel>
-                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                        <TextBlock Text="&#xE7BA;"
-                                                   Style="{StaticResource IconText}"
-                                                   FontSize="13"
-                                                   Foreground="{DynamicResource DangerBrush}"
-                                                   Margin="0,0,6,0" />
-                                        <TextBlock Text="Hành động không thể hoàn tác"
-                                                   FontSize="12" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource DangerBrush}" />
-                                    </StackPanel>
-                                    <Button Content="Từ chối attempt"
-                                            Command="{Binding RejectCommand}"
-                                            Style="{StaticResource DangerButton}"
-                                            MinHeight="42" />
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
-                    </Border>
+                            <StackPanel Grid.Column="1"
+                                        Orientation="Horizontal"
+                                        VerticalAlignment="Center">
+                                <CheckBox Content="Chọn tất cả"
+                                          IsChecked="{Binding AllVisibleSelected, Mode=OneWay}"
+                                          Command="{Binding SelectAllCommand}"
+                                          VerticalAlignment="Center" />
+                                <Button Content="Bỏ chọn"
+                                        Command="{Binding ClearSelectionCommand}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        MinHeight="32"
+                                        Margin="12,0,0,0" />
+                                <TextBlock Margin="12,0,0,0"
+                                           VerticalAlignment="Center"
+                                           Style="{StaticResource BodyText}">
+                                    <Run Text="Đã chọn " />
+                                    <Run Text="{Binding SelectedCount, Mode=OneWay}" FontWeight="SemiBold" />
+                                    <Run Text=" bài" />
+                                </TextBlock>
+                            </StackPanel>
+                        </Grid>
+                        <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
+                        <DataGrid x:Name="FileSubmissionGrid"
+                                  Grid.Row="1"
+                                  ItemsSource="{Binding Submissions}"
+                                  SelectedItem="{Binding SelectedSubmission}"
+                                  AutoGenerateColumns="False"
+                                  ColumnHeaderStyle="{StaticResource SubmissionGridColumnHeaderStyle}"
+                                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                  ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="CHỌN" Width="60" MinWidth="60">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      IsEnabled="{Binding CanSelect}"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="MÃ" Binding="{Binding StudentCode}" Width="95" MinWidth="90"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridTextColumn Header="HỌ TÊN" Binding="{Binding StudentName}" Width="*" MinWidth="170"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridTextColumn Header="LẦN" Binding="{Binding AttemptNumber}" Width="60" MinWidth="55"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding StatusText}" Width="120" MinWidth="110"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridCheckBoxColumn Header="MUỘN"
+                                                        Binding="{Binding IsLate, Mode=OneWay}"
+                                                        IsReadOnly="True"
+                                                        Width="65"
+                                                        MinWidth="60" />
+                                <DataGridTextColumn Header="BIÊN NHẬN" Binding="{Binding ReceiptCode}" Width="145" MinWidth="125"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <TextBlock Grid.Row="1"
+                                   Text="Chưa có bài đã nộp trong phiên này."
+                                   Style="{StaticResource BodyText}"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   Visibility="{Binding HasNoSubmissions, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    </Grid>
+                </Border>
 
-                    <Border Style="{StaticResource SubtleCard}" Margin="0,14,0,0">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE946;"
-                                       Style="{StaticResource IconText}"
-                                       FontSize="14"
-                                       Foreground="{DynamicResource AccentBrush}"
-                                       Margin="0,0,8,0"
-                                       VerticalAlignment="Top" />
-                            <TextBlock Text="Mọi attempt được lưu append-only. Từ chối không xóa file cũ; nộp lại sẽ tạo attempt mới."
-                                       Style="{StaticResource BodyText}"
-                                       TextWrapping="Wrap" />
-                        </StackPanel>
-                    </Border>
-                </StackPanel>
-            </ScrollViewer>
+                <ScrollViewer x:Name="FileActionPanel"
+                              Grid.Column="2"
+                              MinWidth="300"
+                              MaxWidth="340"
+                              VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                                    <TextBlock Text="&#xE90F;"
+                                               Style="{StaticResource IconText}"
+                                               FontSize="15"
+                                               Foreground="{DynamicResource PrimaryBrush}"
+                                               Margin="0,0,8,0" />
+                                    <TextBlock Text="Xử lý bài nộp"
+                                               Style="{StaticResource SectionTitleText}" />
+                                </StackPanel>
+                                <TextBlock Text="Lý do" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                                <TextBox Text="{Binding Reason}" Height="80" AcceptsReturn="True" />
+                                <Separator Margin="0,14" />
+                                <Button Content="Tải bài đã chọn"
+                                        Command="{Binding DownloadSelectedCommand}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Margin="0,0,0,8" />
+                                <Button Content="Sao chép mã biên nhận"
+                                        Command="{Binding CopyReceiptCommand}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Margin="0,0,0,8" />
+                                <Button Content="Cho nộp lại"
+                                        Command="{Binding ResubmitCommand}"
+                                        Style="{StaticResource PrimaryButton}"
+                                        MinHeight="42" />
+                                <Border Background="{DynamicResource DangerSoftBrush}"
+                                        BorderBrush="{DynamicResource DangerBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="12,10"
+                                        Margin="0,16,0,0">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            <TextBlock Text="&#xE7BA;"
+                                                       Style="{StaticResource IconText}"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource DangerBrush}"
+                                                       Margin="0,0,6,0" />
+                                            <TextBlock Text="Hành động không thể hoàn tác"
+                                                       FontSize="12"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource DangerBrush}" />
+                                        </StackPanel>
+                                        <Button Content="Từ chối attempt"
+                                                Command="{Binding RejectCommand}"
+                                                Style="{StaticResource DangerButton}"
+                                                MinHeight="42" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource SubtleCard}" Margin="0,14,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE946;"
+                                           Style="{StaticResource IconText}"
+                                           FontSize="14"
+                                           Foreground="{DynamicResource AccentBrush}"
+                                           Margin="0,0,8,0"
+                                           VerticalAlignment="Top" />
+                                <TextBlock Text="Mọi attempt được lưu append-only. Từ chối không xóa file cũ; nộp lại sẽ tạo attempt mới."
+                                           Style="{StaticResource BodyText}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <Grid x:Name="QuizSubmissionLayout"
+                  Visibility="{Binding IsMultipleChoiceSession, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <Border Style="{StaticResource Card}" Padding="0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid Margin="18,16,18,0">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="&#xE7B8;"
+                                               Style="{StaticResource IconText}"
+                                               FontSize="15"
+                                               Foreground="{DynamicResource PrimaryBrush}"
+                                               Margin="0,0,8,0" />
+                                    <TextBlock Text="Kết quả trắc nghiệm theo phiên"
+                                               Style="{StaticResource SectionTitleText}" />
+                                </StackPanel>
+                                <TextBlock Text="Thao tác tải tệp, từ chối và cho nộp lại chỉ áp dụng bài nộp tệp."
+                                           Style="{StaticResource BodyText}"
+                                           Margin="23,4,0,0" />
+                            </StackPanel>
+                        </Grid>
+                        <Separator Grid.Row="0" Margin="0" VerticalAlignment="Bottom" />
+                        <DataGrid x:Name="QuizSubmissionGrid"
+                                  Grid.Row="1"
+                                  ItemsSource="{Binding Submissions}"
+                                  SelectedItem="{Binding SelectedSubmission}"
+                                  AutoGenerateColumns="False"
+                                  IsReadOnly="True"
+                                  ColumnHeaderStyle="{StaticResource SubmissionGridColumnHeaderStyle}"
+                                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                  ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="MÃ" Binding="{Binding StudentCode}" Width="100" MinWidth="90"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridTextColumn Header="HỌ TÊN" Binding="{Binding StudentName}" Width="*" MinWidth="180"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding StatusText}" Width="115" MinWidth="105"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridTextColumn Header="CHẤM" Binding="{Binding GradingStatusText}" Width="100" MinWidth="90"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridTextColumn Header="ĐIỂM" Binding="{Binding ScoreSummaryText}" Width="100" MinWidth="90"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridTemplateColumn Header="BẮT ĐẦU" Width="140" MinWidth="130">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding StartedAtText}"
+                                                       ToolTip="{Binding StartedAtText}"
+                                                       Style="{StaticResource SubmissionGridCellTextStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="CHỐT BÀI" Width="140" MinWidth="130">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding FinalizedAtText}"
+                                                       ToolTip="{Binding FinalizedAtText}"
+                                                       Style="{StaticResource SubmissionGridCellTextStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="THỜI GIAN" Binding="{Binding DurationText}" Width="95" MinWidth="90"
+                                                    ElementStyle="{StaticResource SubmissionGridCellTextStyle}" />
+                                <DataGridCheckBoxColumn Header="MUỘN"
+                                                        Binding="{Binding IsLate, Mode=OneWay}"
+                                                        IsReadOnly="True"
+                                                        Width="65"
+                                                        MinWidth="60" />
+                                <DataGridTemplateColumn Header="DỮ LIỆU" Width="190" MinWidth="150">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding DataIssue}"
+                                                       ToolTip="{Binding DataIssue}"
+                                                       Style="{StaticResource SubmissionGridCellTextStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <TextBlock Grid.Row="1"
+                                   Text="Chưa có attempt trắc nghiệm đã chốt trong phiên này."
+                                   Style="{StaticResource BodyText}"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   Visibility="{Binding HasNoSubmissions, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                    </Grid>
+                </Border>
+            </Grid>
         </Grid>
 
         <!-- Status bar -->
