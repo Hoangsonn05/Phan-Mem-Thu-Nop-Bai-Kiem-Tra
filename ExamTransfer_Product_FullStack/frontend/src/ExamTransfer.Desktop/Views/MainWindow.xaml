@@ -4,7 +4,7 @@
         xmlns:vm="clr-namespace:ExamTransfer.Desktop.ViewModels"
         xmlns:views="clr-namespace:ExamTransfer.Desktop.Views"
         xmlns:models="clr-namespace:ExamTransfer.Desktop.Models"
-        Title="Khoa-DT-KTMT - Thu và gửi bài kiểm tra"
+        Title="Khoa-DT-KTMT"
         Width="1440"
         Height="900"
         MinWidth="1180"
