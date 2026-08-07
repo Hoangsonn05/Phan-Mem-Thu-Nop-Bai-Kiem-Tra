@@ -1,4 +1,4 @@
-﻿-- Historical migration placeholder.
+-- Historical migration placeholder.
 --
 -- Migration 20260804091500 was already applied to the linked Supabase
 -- project by an earlier source version.
