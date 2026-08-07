@@ -17,6 +17,8 @@ public sealed class CloudSyncWorker(
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
+    // Bound each wake, then self-signal so a backlog continues without an interval sleep.
+    private const int MaxBatchesPerWake = 4;
     private readonly CloudOptions cloudOptions = options.Value.Cloud;
 
     protected override async Task ExecuteAsync(
@@ -40,145 +42,38 @@ public sealed class CloudSyncWorker(
                 if (!cloud.CanSynchronize || !await cloud.CheckHealthAsync(stoppingToken))
                     continue;
 
-                var now = DateTimeOffset.UtcNow;
-                var queueCandidates = await db.SyncQueueSet
-                    .Where(x =>
-                        (x.Status == SyncStatus.Pending
-                            || x.Status == SyncStatus.Failed))
-                    .ToListAsync(stoppingToken);
-                var items = queueCandidates
-                    .Where(x =>
-                        (x.NextRetryAtUtc == null
-                            || x.NextRetryAtUtc <= now)
-                        && (x.LeaseUntilUtc == null
-                            || x.LeaseUntilUtc < now))
-                    .OrderBy(x => x.CreatedAtUtc)
-                    .Take(Math.Clamp(
-                        cloudOptions.WorkerBatchSize,
-                        1,
-                        100))
-                    .ToList();
-
-                foreach (var item in items)
+                var batchSize = Math.Clamp(
+                    cloudOptions.WorkerBatchSize,
+                    1,
+                    100);
+                var batchesProcessed = 0;
+                while (batchesProcessed < MaxBatchesPerWake
+                    && !stoppingToken.IsCancellationRequested)
                 {
-                    if (!CloudEntityOwnershipRegistry.MayPushToCloud(item.EntityType, item.PayloadJson)
-                        || await IsCloudOwnedSourceProjectionAsync(db, item, stoppingToken))
-                    {
-                        // PublicCloud rows are authored in Supabase through RPCs.
-                        // A cached SQLite snapshot must never merge-upsert over them.
-                        item.Status = SyncStatus.Synced;
-                        item.LastError = null;
-                        item.LeaseUntilUtc = null;
-                        item.NextRetryAtUtc = null;
-                        item.CompletedAtUtc = DateTimeOffset.UtcNow;
-                        await db.SaveChangesAsync(stoppingToken);
-                        logger.LogDebug(
-                            "Skipped LAN push for PublicCloud authority row {EntityType}/{EntityId}",
-                            item.EntityType,
-                            item.EntityId);
-                        continue;
-                    }
-
-                    item.Status = SyncStatus.Syncing;
-                    item.LeaseUntilUtc = now.AddMinutes(
-                        Math.Max(2, cloudOptions.LeaseMinutes));
-                    item.LastAttemptAtUtc = DateTimeOffset.UtcNow;
-                    await MarkProjectionStatusAsync(
+                    var batchStartedAtUtc = DateTimeOffset.UtcNow;
+                    var items = await LoadEligibleBatchAsync(
                         db,
-                        item,
-                        SyncStatus.Syncing,
-                        null,
+                        batchStartedAtUtc,
+                        batchSize,
                         stoppingToken);
-                    await db.SaveChangesAsync(stoppingToken);
+                    if (items.Count == 0) break;
 
-                    try
+                    batchesProcessed++;
+                    foreach (var item in items)
                     {
-                        var result = await cloud.PushAsync(
-                            item,
-                            ct => db.SaveChangesAsync(ct),
-                            stoppingToken);
-                        item.Status = SyncStatus.Synced;
-                        item.LastError = null;
-                        item.LeaseUntilUtc = null;
-                        item.NextRetryAtUtc = null;
-                        item.CloudObjectPath = result.CloudObjectPath;
-                        item.CompletedAtUtc = DateTimeOffset.UtcNow;
-                        await MarkProjectionStatusAsync(
+                        await ProcessItemAsync(
                             db,
+                            cloud,
                             item,
-                            SyncStatus.Synced,
-                            result.CloudObjectPath,
+                            batchStartedAtUtc,
                             stoppingToken);
                     }
-                    catch (OperationCanceledException)
-                        when (stoppingToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (ApiException ex)
-                    {
-                        var roomCodeConflict = string.Equals(
-                            ex.Code,
-                            ErrorCodes.RoomCodeConflict,
-                            StringComparison.Ordinal);
-                        item.Status = roomCodeConflict
-                            ? SyncStatus.Conflict
-                            : SyncStatus.Failed;
-                        item.RetryCount++;
-                        item.LastError = JsonSerializer.Serialize(
-                            new CloudSyncFailure(ex.Code, ex.Message),
-                            JsonOptions);
-                        item.LeaseUntilUtc = null;
-                        item.NextRetryAtUtc = roomCodeConflict
-                            ? null
-                            : DateTimeOffset.UtcNow.AddSeconds(
-                                Math.Min(
-                                    3600,
-                                    Math.Pow(
-                                        2,
-                                        Math.Min(item.RetryCount, 10))));
-                        item.CompletedAtUtc = null;
-                        await MarkProjectionStatusAsync(
-                            db,
-                            item,
-                            item.Status,
-                            item.CloudObjectPath,
-                            stoppingToken);
-                        logger.LogWarning(
-                            "Cloud sync rejected for {EntityType}/{EntityId}. Code={Code}; Status={Status}; RetryScheduled={RetryScheduled}",
-                            item.EntityType,
-                            item.EntityId,
-                            ex.Code,
-                            item.Status,
-                            item.NextRetryAtUtc.HasValue);
-                    }
-                    catch (Exception ex)
-                    {
-                        item.Status = SyncStatus.Failed;
-                        item.RetryCount++;
-                        item.LastError = ex.Message;
-                        item.LeaseUntilUtc = null;
-                        item.NextRetryAtUtc =
-                            DateTimeOffset.UtcNow.AddSeconds(
-                                Math.Min(
-                                    3600,
-                                    Math.Pow(
-                                        2,
-                                        Math.Min(item.RetryCount, 10))));
-                        await MarkProjectionStatusAsync(
-                            db,
-                            item,
-                            SyncStatus.Failed,
-                            item.CloudObjectPath,
-                            stoppingToken);
-                        logger.LogWarning(
-                            ex,
-                            "Cloud sync failed for {EntityType}/{EntityId}",
-                            item.EntityType,
-                            item.EntityId);
-                    }
+                }
 
-                    await db.SaveChangesAsync(stoppingToken);
+                if (batchesProcessed == MaxBatchesPerWake
+                    && await HasEligibleWorkAsync(db, stoppingToken))
+                {
+                    cloudSyncSignal.Pulse();
                 }
             }
             catch (OperationCanceledException)
@@ -191,6 +86,169 @@ public sealed class CloudSyncWorker(
                 logger.LogError(ex, "Cloud sync worker failed");
             }
         }
+    }
+
+    private static Task<List<SyncQueueItem>> LoadEligibleBatchAsync(
+        AppDbContext db,
+        DateTimeOffset now,
+        int batchSize,
+        CancellationToken cancellationToken) =>
+        db.SyncQueueSet.FromSqlInterpolated($"""
+            SELECT *
+            FROM sync_queue
+            WHERE (
+                Status IN ({(int)SyncStatus.Pending}, {(int)SyncStatus.Failed})
+                AND (NextRetryAtUtc IS NULL
+                    OR julianday(NextRetryAtUtc) <= julianday({now}))
+                AND (LeaseUntilUtc IS NULL
+                    OR julianday(LeaseUntilUtc) < julianday({now}))
+            ) OR (
+                Status = {(int)SyncStatus.Syncing}
+                AND (LeaseUntilUtc IS NULL
+                    OR julianday(LeaseUntilUtc) < julianday({now}))
+            )
+            ORDER BY julianday(CreatedAtUtc), Id
+            LIMIT {batchSize}
+            """).ToListAsync(cancellationToken);
+
+    private static async Task<bool> HasEligibleWorkAsync(
+        AppDbContext db,
+        CancellationToken cancellationToken) =>
+        (await LoadEligibleBatchAsync(
+            db,
+            DateTimeOffset.UtcNow,
+            1,
+            cancellationToken)).Count != 0;
+
+    private async Task ProcessItemAsync(
+        AppDbContext db,
+        ICloudAdapter cloud,
+        SyncQueueItem item,
+        DateTimeOffset batchStartedAtUtc,
+        CancellationToken stoppingToken)
+    {
+        if (!CloudEntityOwnershipRegistry.MayPushToCloud(
+                item.EntityType,
+                item.PayloadJson)
+            || await IsCloudOwnedSourceProjectionAsync(
+                db,
+                item,
+                stoppingToken))
+        {
+            // PublicCloud rows are authored in Supabase through RPCs.
+            // A cached SQLite snapshot must never merge-upsert over them.
+            item.Status = SyncStatus.Synced;
+            item.LastError = null;
+            item.LeaseUntilUtc = null;
+            item.NextRetryAtUtc = null;
+            item.CompletedAtUtc = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(stoppingToken);
+            logger.LogDebug(
+                "Skipped LAN push for PublicCloud authority row {EntityType}/{EntityId}",
+                item.EntityType,
+                item.EntityId);
+            return;
+        }
+
+        item.Status = SyncStatus.Syncing;
+        item.LeaseUntilUtc = batchStartedAtUtc.AddMinutes(
+            Math.Max(2, cloudOptions.LeaseMinutes));
+        item.LastAttemptAtUtc = DateTimeOffset.UtcNow;
+        await MarkProjectionStatusAsync(
+            db,
+            item,
+            SyncStatus.Syncing,
+            null,
+            stoppingToken);
+        await db.SaveChangesAsync(stoppingToken);
+
+        try
+        {
+            var result = await cloud.PushAsync(
+                item,
+                ct => db.SaveChangesAsync(ct),
+                stoppingToken);
+            item.Status = SyncStatus.Synced;
+            item.LastError = null;
+            item.LeaseUntilUtc = null;
+            item.NextRetryAtUtc = null;
+            item.CloudObjectPath = result.CloudObjectPath;
+            item.CompletedAtUtc = DateTimeOffset.UtcNow;
+            await MarkProjectionStatusAsync(
+                db,
+                item,
+                SyncStatus.Synced,
+                result.CloudObjectPath,
+                stoppingToken);
+        }
+        catch (OperationCanceledException)
+            when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (ApiException ex)
+        {
+            var roomCodeConflict = string.Equals(
+                ex.Code,
+                ErrorCodes.RoomCodeConflict,
+                StringComparison.Ordinal);
+            item.Status = roomCodeConflict
+                ? SyncStatus.Conflict
+                : SyncStatus.Failed;
+            item.RetryCount++;
+            item.LastError = JsonSerializer.Serialize(
+                new CloudSyncFailure(ex.Code, ex.Message),
+                JsonOptions);
+            item.LeaseUntilUtc = null;
+            item.NextRetryAtUtc = roomCodeConflict
+                ? null
+                : DateTimeOffset.UtcNow.AddSeconds(
+                    Math.Min(
+                        3600,
+                        Math.Pow(
+                            2,
+                            Math.Min(item.RetryCount, 10))));
+            item.CompletedAtUtc = null;
+            await MarkProjectionStatusAsync(
+                db,
+                item,
+                item.Status,
+                item.CloudObjectPath,
+                stoppingToken);
+            logger.LogWarning(
+                "Cloud sync rejected for {EntityType}/{EntityId}. Code={Code}; Status={Status}; RetryScheduled={RetryScheduled}",
+                item.EntityType,
+                item.EntityId,
+                ex.Code,
+                item.Status,
+                item.NextRetryAtUtc.HasValue);
+        }
+        catch (Exception ex)
+        {
+            item.Status = SyncStatus.Failed;
+            item.RetryCount++;
+            item.LastError = ex.Message;
+            item.LeaseUntilUtc = null;
+            item.NextRetryAtUtc = DateTimeOffset.UtcNow.AddSeconds(
+                Math.Min(
+                    3600,
+                    Math.Pow(
+                        2,
+                        Math.Min(item.RetryCount, 10))));
+            await MarkProjectionStatusAsync(
+                db,
+                item,
+                SyncStatus.Failed,
+                item.CloudObjectPath,
+                stoppingToken);
+            logger.LogWarning(
+                ex,
+                "Cloud sync failed for {EntityType}/{EntityId}",
+                item.EntityType,
+                item.EntityId);
+        }
+
+        await db.SaveChangesAsync(stoppingToken);
     }
 
     private static async Task<bool> IsCloudOwnedSourceProjectionAsync(
