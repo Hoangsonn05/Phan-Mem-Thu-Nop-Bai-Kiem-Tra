@@ -308,7 +308,7 @@ public sealed class FinalCloudSourceCompatibilityTests
                 $"/quiz-sources/{sourceId}/source.bin",
                 firstPath,
                 StringComparison.Ordinal);
-            Assert.Equal(31, CloudSchemaCompatibility.RequiredVersion);
+            Assert.Equal(32, CloudSchemaCompatibility.RequiredVersion);
         }
         finally
         {
@@ -320,7 +320,7 @@ public sealed class FinalCloudSourceCompatibilityTests
     [Fact]
     public void PublicCloudCapability_RequiresCurrentSchemaAndCriticalRpcs()
     {
-        Assert.Equal(31, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(32, CloudSchemaCompatibility.RequiredVersion);
         Assert.Contains("save_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("return_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("reopen_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
@@ -390,10 +390,10 @@ public sealed class PublicCloudSchemaContractTests
     [Fact]
     public void RequiredSchemaVersion_MatchesCanonicalMigrationAndAcceptanceScript()
     {
-        Assert.Equal(31, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(32, CloudSchemaCompatibility.RequiredVersion);
 
         var migration = PublicCloudTestHarness.ReadRepositoryFile(
-            "backend/supabase/migrations/20260807044053_public_quiz_answer_snapshot_revision.sql");
+            "backend/supabase/migrations/20260807054739_public_quiz_score_history.sql");
         var migrationVersion = Regex.Match(
             migration,
             @"\bset\s+schema_version\s*=\s*(\d+)\b",
@@ -420,9 +420,9 @@ public sealed class PublicCloudSchemaContractTests
     }
 
     [Fact]
-    public async Task RemoteSchema31_PassesHealthAndPreflight()
+    public async Task RemoteSchema32_PassesHealthAndPreflight()
     {
-        using var fixture = SchemaAdapterFixture.Create(31);
+        using var fixture = SchemaAdapterFixture.Create(32);
 
         Assert.True(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
         var preflight = await fixture.Adapter.PreflightAsync(CancellationToken.None);
@@ -435,17 +435,17 @@ public sealed class PublicCloudSchemaContractTests
     }
 
     [Fact]
-    public async Task RemoteSchema30_IsRejectedAsStale()
+    public async Task RemoteSchema31_IsRejectedAsStale()
     {
-        using var fixture = SchemaAdapterFixture.Create(30);
+        using var fixture = SchemaAdapterFixture.Create(31);
 
         Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
     }
 
     [Fact]
-    public async Task RemoteSchema32_IsRejectedByExactMatchContract()
+    public async Task RemoteSchema33_IsRejectedByExactMatchContract()
     {
-        using var fixture = SchemaAdapterFixture.Create(32);
+        using var fixture = SchemaAdapterFixture.Create(33);
 
         Assert.False(await fixture.Adapter.CheckHealthAsync(CancellationToken.None));
     }
@@ -469,10 +469,10 @@ public sealed class PublicCloudSchemaContractTests
     }
 
     [Fact]
-    public async Task RemoteSchema31_UnblocksCloudWorkerAndPublicCloudPullPreflight()
+    public async Task RemoteSchema32_UnblocksCloudWorkerAndPublicCloudPullPreflight()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
-        using var fixture = SchemaAdapterFixture.Create(31);
+        using var fixture = SchemaAdapterFixture.Create(32);
         var services = new ServiceCollection();
         services.AddDbContext<AppDbContext>(builder =>
             builder.UseSqlite($"Data Source={database.Path}"));

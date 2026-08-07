@@ -210,7 +210,7 @@ public sealed record SupabaseAuthenticatedAccount(
 
 public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
 {
-    internal const int MinimumSupportedCloudSchemaVersion = 31;
+    internal const int MinimumSupportedCloudSchemaVersion = 32;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions NotificationJson = CreateNotificationJson();
     private readonly HttpClient http;

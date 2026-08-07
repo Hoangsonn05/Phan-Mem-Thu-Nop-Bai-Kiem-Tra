@@ -5,7 +5,7 @@ param(
 )
 . "$PSScriptRoot/acceptance-common.ps1"
 $traceId = New-AcceptanceTraceId
-$requiredSchemaVersion = 31
+$requiredSchemaVersion = 32
 try {
     $headers = @{ apikey=$PublishableKey; Authorization="Bearer $TeacherOrServiceJwt"; 'Content-Type'='application/json' }
     $result = Invoke-RestMethod -Method Post -Uri "$($SupabaseUrl.TrimEnd('/'))/rest/v1/rpc/get_examtransfer_cloud_capabilities" -Headers $headers -Body '{}'

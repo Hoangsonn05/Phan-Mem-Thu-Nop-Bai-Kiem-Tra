@@ -9,7 +9,7 @@ select has_table('public', 'classes', 'classes table exists');
 select has_table('public', 'exam_files', 'exam files table exists');
 select has_table('public', 'submission_files', 'submission files table exists');
 select has_table('public', 'backups', 'backups table exists');
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),31, 'schema version is 31');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),32, 'schema version is 32');
 select ok((select relrowsecurity from pg_class where oid = 'public.profiles'::regclass), 'profiles RLS enabled');
 select ok((select relrowsecurity from pg_class where oid = 'public.classes'::regclass), 'classes RLS enabled');
 select ok((select relrowsecurity from pg_class where oid = 'public.audit_logs'::regclass), 'audit RLS enabled');

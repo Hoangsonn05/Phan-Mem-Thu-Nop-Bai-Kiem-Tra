@@ -4,7 +4,7 @@ set local search_path = public, extensions;
 select plan(5);
 
 select is(
-  (select schema_version from public.examtransfer_cloud_meta where id=1),31,
+  (select schema_version from public.examtransfer_cloud_meta where id=1),32,
   'PublicCloud quiz runtime gate advances schema compatibility to 29');
 select has_function('public','start_public_quiz_attempt',array['uuid','text'],
   'quiz attempt start RPC remains available');

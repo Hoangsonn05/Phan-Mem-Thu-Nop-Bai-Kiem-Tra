@@ -246,6 +246,8 @@ public sealed class StudentResultsTests
     public async Task PublicCloudClientUsesActorScopedResultsRpcAndA05PageContract()
     {
         var attemptId = Guid.NewGuid();
+        var startedAt = new DateTimeOffset(2026, 8, 2, 9, 40, 0, TimeSpan.Zero);
+        var finalizedAt = new DateTimeOffset(2026, 8, 2, 9, 52, 34, TimeSpan.Zero);
         var handler = new StudentResultsCloudHandler(JsonSerializer.Serialize(new
         {
             items = new[]
@@ -263,7 +265,10 @@ public sealed class StudentResultsTests
                     score = 7.5m,
                     maxScore = 10m,
                     generalComment = "Returned",
-                    returnedAtUtc = new DateTimeOffset(2026, 8, 2, 10, 0, 0, TimeSpan.Zero),
+                    returnedAtUtc = finalizedAt,
+                    startedAtUtc = startedAt,
+                    finalizedAtUtc = finalizedAt,
+                    durationSeconds = 754,
                     attachments = Array.Empty<object>(),
                     quizSummary = new
                     {
@@ -292,6 +297,9 @@ public sealed class StudentResultsTests
         Assert.Equal(attemptId, result.AttemptId);
         Assert.Equal(StudentResultType.Quiz, result.ResultType);
         Assert.Equal(4, result.AttemptNumber);
+        Assert.Equal(startedAt, result.StartedAtUtc);
+        Assert.Equal(finalizedAt, result.FinalizedAtUtc);
+        Assert.Equal(754, result.DurationSeconds);
         Assert.Equal("/rest/v1/rpc/get_student_results", handler.RpcPath);
         Assert.Contains("\"p_page_size\":25", handler.RpcBody, StringComparison.Ordinal);
         Assert.DoesNotContain("student", handler.RpcBody, StringComparison.OrdinalIgnoreCase);
